@@ -1,0 +1,421 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { StackScreenProps } from '@react-navigation/stack';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { RootStackParamList } from '../navigation/types';
+import { ToggleRow } from '../components/ToggleRow';
+import { Chip } from '../components/Chip';
+import { useTheme } from '../theme/ThemeProvider';
+import { useAppState } from '../state/AppState';
+import { getCalendars, requestCalendarPermission } from '../services/calendar';
+import { requestLocationPermission } from '../services/location';
+import { deleteUserData } from '../services/user';
+import { addDebugMessage, clearDebugMessages, DebugMessage, subscribeDebugMessages } from '../services/debug';
+import { fetchTicketmasterSuggestions } from '../services/ticketmaster';
+import { fetchSeatGeekSuggestions } from '../services/seatgeek';
+import { fetchGooglePlacesSuggestions } from '../services/googlePlaces';
+import { fetchOsmSuggestions } from '../services/osmPlaces';
+import { Availability } from '../types';
+
+const radiusOptions = [2, 5, 10];
+const interestOptions = [
+  { id: 'fitness', label: 'Fitness' },
+  { id: 'wellness', label: 'Wellness' },
+  { id: 'nature', label: 'Nature' },
+  { id: 'art', label: 'Art' },
+  { id: 'music', label: 'Music' },
+  { id: 'movies', label: 'Movies' },
+  { id: 'food', label: 'Food' },
+  { id: 'coffee', label: 'Coffee' },
+  { id: 'learning', label: 'Learning' },
+  { id: 'focus', label: 'Focus' },
+  { id: 'social', label: 'Social' },
+  { id: 'explore', label: 'Explore' },
+];
+
+type Props = StackScreenProps<RootStackParamList, 'Settings'>;
+
+export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
+  const theme = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const { state, actions } = useAppState();
+  const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
+  const [debugMessages, setDebugMessages] = useState<DebugMessage[]>([]);
+  const insets = useSafeAreaInsets();
+
+  useEffect(() => {
+    const loadCalendars = async () => {
+      if (!state.permissions.calendarGranted) return;
+      const items = await getCalendars();
+      setCalendars(items.map((item) => ({ id: item.id, title: item.title })));
+    };
+    loadCalendars();
+  }, [state.permissions.calendarGranted]);
+
+  useEffect(() => {
+    const unsubscribe = subscribeDebugMessages(setDebugMessages);
+    return () => unsubscribe();
+  }, []);
+
+  const buildAvailability = (): Availability => {
+    if (state.availability) return state.availability;
+    const now = new Date();
+    const end = new Date(now.getTime() + 120 * 60 * 1000);
+    return {
+      start: now.toISOString(),
+      end: end.toISOString(),
+      durationMin: 120,
+      nextEventTitle: null,
+    };
+  };
+
+  const requireLocation = () => {
+    if (state.location.lat && state.location.lng) return true;
+    addDebugMessage('devops', 'Location missing. Enable location.');
+    return false;
+  };
+
+  const runTest = async (label: string, runner: () => Promise<number | null>) => {
+    try {
+      const count = await runner();
+      const safeCount = typeof count === 'number' && Number.isFinite(count) ? count : null;
+      if (safeCount !== null) {
+        addDebugMessage(label, `OK: ${safeCount} results`);
+        if (safeCount === 0) {
+          addDebugMessage(label, '0 results. Try increasing radius or enable serendipity.');
+        }
+      } else {
+        addDebugMessage(label, 'No response from API.');
+      }
+    } catch (error) {
+      addDebugMessage(label, 'Test failed.');
+    }
+  };
+
+  return (
+    <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
+      <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
+        <Pressable onPress={() => navigation.goBack()}>
+          <Text style={styles.back}>Back</Text>
+        </Pressable>
+
+        <Text style={styles.title}>Settings</Text>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Permissions</Text>
+          <Text style={styles.rowText}>
+            Calendar: {state.permissions.calendarGranted ? 'Granted' : 'Not granted'}
+          </Text>
+          {!state.permissions.calendarGranted && (
+            <Pressable
+              style={styles.actionButton}
+              onPress={async () => {
+                const granted = await requestCalendarPermission();
+                actions.setPermissions({ ...state.permissions, calendarGranted: granted });
+                if (granted) {
+                  const items = await getCalendars();
+                  setCalendars(items.map((item) => ({ id: item.id, title: item.title })));
+                }
+              }}
+            >
+              <Text style={styles.actionText}>Grant calendar</Text>
+            </Pressable>
+          )}
+          <Text style={styles.rowText}>
+            Location: {state.permissions.locationGranted ? 'Granted' : 'Not granted'}
+          </Text>
+          {!state.permissions.locationGranted && (
+            <Pressable
+              style={styles.actionButton}
+              onPress={async () => {
+                const granted = await requestLocationPermission();
+                actions.setPermissions({ ...state.permissions, locationGranted: granted });
+              }}
+            >
+              <Text style={styles.actionText}>Grant location</Text>
+            </Pressable>
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Mode</Text>
+          <ToggleRow
+            label="Open to going out"
+            value={state.prefs.openToGoingOut}
+            onValueChange={(value) => actions.setPrefs({ ...state.prefs, openToGoingOut: value })}
+          />
+          <ToggleRow
+            label="Surprise me outside my interests"
+            value={state.prefs.allowSerendipity}
+            onValueChange={(value) => actions.setPrefs({ ...state.prefs, allowSerendipity: value })}
+          />
+          <ToggleRow
+            label="Dark theme"
+            value={state.prefs.themeMode === 'dark'}
+            onValueChange={(value) => actions.setPrefs({ ...state.prefs, themeMode: value ? 'dark' : 'light' })}
+          />
+          <Text style={styles.rowText}>Interests</Text>
+          <View style={styles.chipsWrap}>
+            {interestOptions.map((interest) => {
+              const selected = state.prefs.interestTags.includes(interest.id);
+              return (
+                <Chip
+                  key={interest.id}
+                  label={interest.label}
+                  selected={selected}
+                  onPress={() => {
+                    const updated = selected
+                      ? state.prefs.interestTags.filter((tag) => tag !== interest.id)
+                      : [...state.prefs.interestTags, interest.id];
+                    actions.setPrefs({ ...state.prefs, interestTags: updated });
+                  }}
+                />
+              );
+            })}
+          </View>
+          <Text style={styles.rowText}>Radius</Text>
+          <View style={styles.chips}>
+            {radiusOptions.map((radius) => (
+              <Chip
+                key={radius}
+                label={`${radius} km`}
+                selected={state.prefs.radiusKm === radius}
+                onPress={() => actions.setPrefs({ ...state.prefs, radiusKm: radius })}
+              />
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Calendars</Text>
+          {state.permissions.calendarGranted ? (
+            calendars.map((cal) => {
+              const enabled = state.enabledCalendars.length
+                ? state.enabledCalendars.includes(cal.id)
+                : true;
+              return (
+                <Pressable
+                  key={cal.id}
+                  style={styles.calendarRow}
+                  onPress={() => {
+                    const current = state.enabledCalendars.length ? state.enabledCalendars : calendars.map((c) => c.id);
+                    const updated = enabled
+                      ? current.filter((id) => id !== cal.id)
+                      : [...current, cal.id];
+                    actions.setEnabledCalendars(updated);
+                  }}
+                >
+                  <Text style={styles.calendarTitle}>{cal.title}</Text>
+                  <Text style={styles.calendarStatus}>{enabled ? 'On' : 'Off'}</Text>
+                </Pressable>
+              );
+            })
+          ) : (
+            <Text style={styles.rowText}>Grant calendar access to manage calendars.</Text>
+          )}
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Privacy</Text>
+            <Pressable onPress={() => Linking.openURL('https://firebase.google.com/support/privacy')}>
+              <Text style={styles.link}>Data privacy</Text>
+            </Pressable>
+          <Pressable
+            onPress={() => {
+              Alert.alert('Delete my data', 'This clears your local data and user record.', [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Delete',
+                  style: 'destructive',
+                  onPress: async () => {
+                    await deleteUserData();
+                    await actions.resetData();
+                  },
+                },
+              ]);
+            }}
+          >
+            <Text style={styles.delete}>Delete my data</Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>DevOps</Text>
+          <View style={styles.debugActions}>
+            <Pressable
+              style={styles.debugButton}
+              onPress={() => runTest('ticketmaster_test', async () => {
+                const availability = buildAvailability();
+                const results = await fetchTicketmasterSuggestions(state.location, state.prefs, availability);
+                return results.length;
+              })}
+            >
+              <Text style={styles.debugButtonText}>Test Ticketmaster</Text>
+            </Pressable>
+            <Pressable
+              style={styles.debugButton}
+              onPress={() => runTest('seatgeek_test', async () => {
+                if (!requireLocation()) return null;
+                const availability = buildAvailability();
+                const results = await fetchSeatGeekSuggestions(state.location, state.prefs, availability);
+                return results.length;
+              })}
+            >
+              <Text style={styles.debugButtonText}>Test SeatGeek</Text>
+            </Pressable>
+            <Pressable
+              style={styles.debugButton}
+              onPress={() => runTest('google_places_test', async () => {
+                if (!requireLocation()) return null;
+                const availability = buildAvailability();
+                const results = await fetchGooglePlacesSuggestions(state.location, state.prefs, availability);
+                return results.length;
+              })}
+            >
+              <Text style={styles.debugButtonText}>Test Google Places</Text>
+            </Pressable>
+            <Pressable
+              style={styles.debugButton}
+              onPress={() => runTest('osm_test', async () => {
+                if (!requireLocation()) return null;
+                const availability = buildAvailability();
+                const results = await fetchOsmSuggestions(state.location, state.prefs, availability);
+                return results.length;
+              })}
+            >
+              <Text style={styles.debugButtonText}>Test OSM</Text>
+            </Pressable>
+          </View>
+          {debugMessages.length === 0 ? (
+            <Text style={styles.rowText}>No API errors logged.</Text>
+          ) : (
+            debugMessages.slice(0, 8).map((msg) => (
+              <View key={msg.id} style={styles.debugRow}>
+                <Text style={styles.debugSource}>{msg.source}</Text>
+                <Text style={styles.debugText}>{msg.message}</Text>
+                <Text style={styles.debugTime}>{new Date(msg.ts).toLocaleTimeString()}</Text>
+              </View>
+            ))
+          )}
+          {debugMessages.length > 0 && (
+            <Pressable onPress={clearDebugMessages}>
+              <Text style={styles.link}>Clear logs</Text>
+            </Pressable>
+          )}
+        </View>
+      </ScrollView>
+    </LinearGradient>
+  );
+};
+
+const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  scroll: {
+    padding: theme.spacing.lg,
+  },
+  back: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
+  title: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 28,
+    marginTop: theme.spacing.sm,
+    color: theme.colors.text,
+  },
+  section: {
+    marginTop: theme.spacing.lg,
+    padding: theme.spacing.md,
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.md,
+    gap: theme.spacing.sm,
+  },
+  sectionTitle: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
+  rowText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  actionButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: theme.colors.accentSoft,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: theme.radius.sm,
+  },
+  actionText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentDark,
+  },
+  chips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+  },
+  chipsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.sm,
+  },
+  calendarRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: 6,
+  },
+  calendarTitle: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.text,
+  },
+  calendarStatus: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
+  link: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentDark,
+  },
+  delete: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.danger,
+    marginTop: theme.spacing.sm,
+  },
+  debugRow: {
+    paddingVertical: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    gap: 2,
+  },
+  debugActions: {
+    gap: theme.spacing.sm,
+  },
+  debugButton: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.backgroundAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  debugButtonText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
+  debugSource: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
+  debugText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  debugTime: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 11,
+  },
+});

@@ -1,0 +1,156 @@
+import React, { useEffect, useMemo, useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { StackScreenProps } from '@react-navigation/stack';
+import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { RootStackParamList } from '../navigation/types';
+import { useTheme } from '../theme/ThemeProvider';
+import { useAppState } from '../state/AppState';
+import { getCalendars } from '../services/calendar';
+import { PrimaryButton } from '../components/PrimaryButton';
+
+type Props = StackScreenProps<RootStackParamList, 'CalendarSelect'>;
+
+export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
+  const theme = useTheme();
+  const styles = useMemo(() => createStyles(theme), [theme]);
+  const { state, actions } = useAppState();
+  const insets = useSafeAreaInsets();
+  const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
+
+  useEffect(() => {
+    const loadCalendars = async () => {
+      if (!state.permissions.calendarGranted) return;
+      const items = await getCalendars();
+      setCalendars(items.map((item) => ({ id: item.id, title: item.title })));
+    };
+    loadCalendars();
+  }, [state.permissions.calendarGranted]);
+
+  const isEnabled = (id: string) => (
+    state.enabledCalendars.length
+      ? state.enabledCalendars.includes(id)
+      : true
+  );
+
+  const toggleCalendar = (id: string) => {
+    const current = state.enabledCalendars.length
+      ? state.enabledCalendars
+      : calendars.map((cal) => cal.id);
+    const updated = current.includes(id)
+      ? current.filter((item) => item !== id)
+      : [...current, id];
+    if (updated.length === 0) return;
+    actions.setEnabledCalendars(updated);
+  };
+
+  return (
+    <LinearGradient
+      colors={[theme.colors.background, theme.colors.backgroundAlt]}
+      style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
+    >
+      <View style={styles.content}>
+        <Text style={styles.title}>Pick calendars to use</Text>
+        <Text style={styles.subtitle}>We only read availability blocks, not event details.</Text>
+
+        {!state.permissions.calendarGranted ? (
+          <View style={styles.noticeBox}>
+            <Text style={styles.noticeText}>Calendar permission not granted. You can skip this step.</Text>
+          </View>
+        ) : (
+          <View style={styles.list}>
+            {calendars.map((cal) => {
+              const enabled = isEnabled(cal.id);
+              return (
+                <Pressable
+                  key={cal.id}
+                  style={[styles.row, enabled && styles.rowOn]}
+                  onPress={() => toggleCalendar(cal.id)}
+                >
+                  <Text style={styles.rowTitle}>{cal.title}</Text>
+                  <Text style={[styles.rowStatus, enabled && styles.rowStatusOn]}>
+                    {enabled ? 'On' : 'Off'}
+                  </Text>
+                </Pressable>
+              );
+            })}
+            {!calendars.length && (
+              <Text style={styles.emptyText}>No calendars found.</Text>
+            )}
+          </View>
+        )}
+      </View>
+
+      <PrimaryButton
+        label="Continue"
+        onPress={() => navigation.navigate('LocationPermission')}
+        style={styles.button}
+      />
+    </LinearGradient>
+  );
+};
+
+const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
+  container: {
+    flex: 1,
+    padding: theme.spacing.xl,
+    justifyContent: 'space-between',
+  },
+  content: {
+    marginTop: theme.spacing.xxl,
+    gap: theme.spacing.lg,
+  },
+  title: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 30,
+    color: theme.colors.text,
+  },
+  subtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 16,
+    color: theme.colors.textMuted,
+    maxWidth: 300,
+  },
+  noticeBox: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+  },
+  noticeText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  list: {
+    gap: theme.spacing.sm,
+  },
+  row: {
+    paddingVertical: 10,
+    paddingHorizontal: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.card,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  rowOn: {
+    backgroundColor: theme.colors.backgroundAlt,
+  },
+  rowTitle: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.text,
+  },
+  rowStatus: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
+  rowStatusOn: {
+    color: theme.colors.accentDark,
+  },
+  emptyText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  button: {
+    marginBottom: theme.spacing.xl,
+  },
+});
