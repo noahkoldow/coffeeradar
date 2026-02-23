@@ -9,9 +9,11 @@ type Props = {
   style?: ViewStyle;
   glow?: boolean;
   variant?: 'default' | 'muted';
+  bgColor?: string;
+  textColor?: string;
 };
 
-export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style, glow, variant = 'default' }) => {
+export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style, glow, variant = 'default', bgColor, textColor }) => {
   const theme = useTheme();
   const pulse = useRef(new Animated.Value(0)).current;
 
@@ -39,14 +41,14 @@ export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style
     });
     const shadowOpacity = pulse.interpolate({
       inputRange: [0, 1],
-      outputRange: [0.2, 0.45],
+      outputRange: [0.08, 0.2],
     });
     return {
       transform: [{ scale }],
       shadowColor: theme.colors.accent,
       shadowOpacity,
-      shadowRadius: 18,
-      shadowOffset: { width: 0, height: 8 },
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 3 },
     };
   }, [glow, pulse, theme.colors.accent]);
 
@@ -60,11 +62,12 @@ export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style
         style={({ pressed }) => [
           styles.button,
           variant === 'muted' && styles.buttonMuted,
+          bgColor ? { backgroundColor: bgColor } : null,
           disabled && styles.disabled,
           pressed && !disabled && styles.pressed,
         ]}
       >
-        <Text style={[styles.label, variant === 'muted' && styles.labelMuted]}>{label}</Text>
+        <Text style={[styles.label, variant === 'muted' && styles.labelMuted, textColor ? { color: textColor } : null]}>{label}</Text>
       </Pressable>
     </Animated.View>
   );
@@ -78,10 +81,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: theme.colors.shadow,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.2,
-    shadowRadius: 16,
-    elevation: 6,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
   },
   pressed: {
     transform: [{ scale: 0.98 }],

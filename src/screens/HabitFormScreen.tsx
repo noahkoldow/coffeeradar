@@ -31,17 +31,44 @@ const timeOptions: { id: HabitTimeOfDay; label: string }[] = [
   { id: 'evening', label: 'Evening' },
 ];
 
-export const HabitFormScreen: React.FC<Props> = ({ navigation }) => {
+const tagOptions = [
+  { id: 'fitness', label: '🏋️ Fitness' },
+  { id: 'wellness', label: '🧘 Wellness' },
+  { id: 'nature', label: '🌿 Nature' },
+  { id: 'coffee', label: '☕ Coffee' },
+  { id: 'food', label: '🍽️ Food' },
+  { id: 'art', label: '🎨 Art' },
+  { id: 'music', label: '🎵 Music' },
+  { id: 'learning', label: '📚 Learning' },
+  { id: 'focus', label: '🎯 Focus' },
+  { id: 'social', label: '👫 Social' },
+  { id: 'explore', label: '🧭 Explore' },
+  { id: 'creative', label: '✏️ Creative' },
+  { id: 'cycling', label: '🚴 Cycling' },
+  { id: 'running', label: '🏃 Running' },
+];
+
+export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { actions } = useAppState();
   const insets = useSafeAreaInsets();
-  const [name, setName] = useState('');
-  const [habitType, setHabitType] = useState<HabitType>('AT_HOME');
-  const [lengthMin, setLengthMin] = useState('20');
-  const [description, setDescription] = useState('');
-  const [frequency, setFrequency] = useState<HabitFrequency>('daily');
-  const [timeOfDay, setTimeOfDay] = useState<HabitTimeOfDay>('any');
+  const existing = route.params?.habit;
+  const isEditing = !!existing;
+  const [name, setName] = useState(existing?.name ?? '');
+  const [habitType, setHabitType] = useState<HabitType>(existing?.type ?? 'AT_HOME');
+  const [lengthMin, setLengthMin] = useState(existing ? String(existing.lengthMin) : '20');
+  const [description, setDescription] = useState(existing?.description ?? '');
+  const [frequency, setFrequency] = useState<HabitFrequency>(existing?.frequency ?? 'daily');
+  const [timeOfDay, setTimeOfDay] = useState<HabitTimeOfDay>(existing?.timeOfDay ?? 'any');
+  const [preferredTime, setPreferredTime] = useState(existing?.preferredTime ?? '');
+  const [selectedTags, setSelectedTags] = useState<string[]>(existing?.tags ?? []);
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
+  };
 
   const onSave = () => {
     const length = Number(lengthMin);
@@ -49,18 +76,37 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation }) => {
       Alert.alert('Missing details', 'Add a name, length, and what to do.');
       return;
     }
-    const habit: Habit = {
-      id: `habit_${Date.now()}`,
-      name: name.trim(),
-      type: habitType,
-      lengthMin: length,
-      description: description.trim(),
-      frequency,
-      timeOfDay,
-      createdAt: new Date().toISOString(),
-      lastCompletedAt: null,
-    };
-    actions.addHabit(habit);
+    if (isEditing && existing) {
+      actions.updateHabit({
+        ...existing,
+        name: name.trim(),
+        type: habitType,
+        lengthMin: length,
+        description: description.trim(),
+        frequency,
+        timeOfDay,
+        preferredTime: preferredTime.trim() || undefined,
+        tags: selectedTags,
+      });
+    } else {
+      const habit: Habit = {
+        id: `habit_${Date.now()}`,
+        name: name.trim(),
+        type: habitType,
+        lengthMin: length,
+        description: description.trim(),
+        frequency,
+        timeOfDay,
+        preferredTime: preferredTime.trim() || undefined,
+        tags: selectedTags,
+        createdAt: new Date().toISOString(),
+        lastCompletedAt: null,
+        currentStreak: 0,
+        longestStreak: 0,
+        completionHistory: [],
+      };
+      actions.addHabit(habit);
+    }
     navigation.goBack();
   };
 
@@ -70,8 +116,8 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation }) => {
         <Pressable onPress={() => navigation.goBack()}>
           <Text style={styles.back}>Back</Text>
         </Pressable>
-        <Text style={styles.title}>New habit</Text>
-        <Text style={styles.subtitle}>Create a repeatable activity you want to keep up.</Text>
+        <Text style={styles.title}>{isEditing ? 'Edit habit' : 'New habit'}</Text>
+        <Text style={styles.subtitle}>{isEditing ? 'Update your habit details.' : 'Create a repeatable activity you want to keep up.'}</Text>
 
         <View style={styles.field}>
           <Text style={styles.label}>Name</Text>
@@ -149,8 +195,45 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation }) => {
             ))}
           </View>
         </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Preferred time (optional)</Text>
+          <Text style={styles.hint}>Set an exact time like 07:30 or 18:00. The reminder will be scheduled around this time based on your calendar availability.</Text>
+          <TextInput
+            style={styles.input}
+            placeholder="e.g. 07:30"
+            placeholderTextColor={theme.colors.textMuted}
+            value={preferredTime}
+            onChangeText={(t) => {
+              // Auto-format: allow digits and colon, insert colon after 2 digits
+              const cleaned = t.replace(/[^0-9:]/g, '');
+              if (cleaned.length === 2 && !cleaned.includes(':') && preferredTime.length < t.length) {
+                setPreferredTime(cleaned + ':');
+              } else {
+                setPreferredTime(cleaned.slice(0, 5));
+              }
+            }}
+            keyboardType="numbers-and-punctuation"
+            maxLength={5}
+          />
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Tags</Text>
+          <Text style={styles.hint}>Pick tags so this habit fits your interests and gets scored better.</Text>
+          <View style={styles.rowWrap}>
+            {tagOptions.map((tag) => (
+              <Chip
+                key={tag.id}
+                label={tag.label}
+                selected={selectedTags.includes(tag.id)}
+                onPress={() => toggleTag(tag.id)}
+              />
+            ))}
+          </View>
+        </View>
       </ScrollView>
-      <PrimaryButton label="Save habit" onPress={onSave} style={styles.button} />
+      <PrimaryButton label={isEditing ? 'Update habit' : 'Save habit'} onPress={onSave} style={styles.button} />
     </LinearGradient>
   );
 };
@@ -177,6 +260,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
     marginTop: theme.spacing.xs,
+  },
+  hint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.textMuted,
   },
   field: {
     marginTop: theme.spacing.lg,

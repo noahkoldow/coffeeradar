@@ -1,4 +1,4 @@
-import { ActivityLog } from '../types';
+import { ActivityLog, Habit } from '../types';
 import { BadgeDefinition, badgeDefinitions } from '../data/badges';
 
 export type BadgeProgress = BadgeDefinition & {
@@ -22,11 +22,17 @@ const computeLevel = (count: number, levels: number[]) => {
   return { level, currentTarget, nextTarget, progress: Math.min(1, Math.max(0, progress)) };
 };
 
-export const buildBadgeProgress = (activityLog: ActivityLog[]): BadgeProgress[] => {
+export const buildBadgeProgress = (activityLog: ActivityLog[], habits?: Habit[]): BadgeProgress[] => {
   return badgeDefinitions.map((badge) => {
-    const count = activityLog.filter((entry) => (
-      entry.tags?.some((tag) => badge.tags.includes(tag))
-    )).length;
+    let count: number;
+    if (badge.id === 'habits') {
+      // Count total habit completions across all habits
+      count = (habits ?? []).reduce((sum, h) => sum + (h.completionHistory?.length ?? 0), 0);
+    } else {
+      count = activityLog.filter((entry) => (
+        entry.tags?.some((tag) => badge.tags.includes(tag))
+      )).length;
+    }
     const { level, currentTarget, nextTarget, progress } = computeLevel(count, badge.levels);
     return {
       ...badge,

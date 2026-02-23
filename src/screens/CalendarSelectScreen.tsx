@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Image, Pressable, StyleSheet, Text, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -8,6 +8,10 @@ import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { getCalendars } from '../services/calendar';
 import { PrimaryButton } from '../components/PrimaryButton';
+
+const LOGO_HEIGHT = 30;
+const LOGO_WIDTH = LOGO_HEIGHT * 3;
+const bitsLogo = require('../../assets/logo.png');
 
 type Props = StackScreenProps<RootStackParamList, 'CalendarSelect'>;
 
@@ -50,6 +54,7 @@ export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
       <View style={styles.content}>
+        <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
         <Text style={styles.title}>Pick calendars to use</Text>
         <Text style={styles.subtitle}>We only read availability blocks, not event details.</Text>
 
@@ -99,6 +104,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   content: {
     marginTop: theme.spacing.xxl,
     gap: theme.spacing.lg,
+  },
+  logo: {
+    width: LOGO_WIDTH,
+    height: LOGO_HEIGHT,
   },
   title: {
     fontFamily: theme.fonts.heading,

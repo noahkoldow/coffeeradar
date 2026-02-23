@@ -38,11 +38,11 @@ export const getAvailability = async (enabledCalendarIds?: string[]): Promise<Av
     : calendars.map((cal) => cal.id);
 
   if (!calendarIds.length) {
-    const end = addMinutes(now, 120);
+    const end = addMinutes(now, 360);
     return {
       start: toISO(now),
       end: toISO(end),
-      durationMin: 120,
+      durationMin: 360,
       nextEventTitle: null,
     };
   }
@@ -64,27 +64,26 @@ export const getAvailability = async (enabledCalendarIds?: string[]): Promise<Av
       end: toISO(now),
       durationMin: 0,
       nextEventTitle: ongoing.title ?? null,
+      currentEventId: ongoing.id ?? null,
     };
   }
 
   const nextEvent = sorted[0];
   if (!nextEvent) {
-    const end = addMinutes(now, 120);
     return {
       start: toISO(now),
-      end: toISO(end),
-      durationMin: 120,
+      end: toISO(windowEnd),
+      durationMin: 360,
       nextEventTitle: null,
     };
   }
 
   const diff = minutesBetween(now, toDate(nextEvent.startDate));
   if (diff > 360) {
-    const end = addMinutes(now, 120);
     return {
       start: toISO(now),
-      end: toISO(end),
-      durationMin: 120,
+      end: toISO(windowEnd),
+      durationMin: 360,
       nextEventTitle: nextEvent.title ?? null,
     };
   }
@@ -116,6 +115,32 @@ export const createPlanEvent = async (payload: {
   });
 };
 
+/** Shorten an existing calendar event so it ends at `newEndDate`. */
+export const updatePlanEventEnd = async (eventId: string, newEndDate: Date): Promise<void> => {
+  await Calendar.updateEventAsync(eventId, {
+    endDate: newEndDate,
+  });
+};
+
 export const deletePlanEvent = async (eventId: string): Promise<void> => {
   await Calendar.deleteEventAsync(eventId);
+};
+
+/** Return upcoming calendar events in a time window for clash detection */
+export const getUpcomingEvents = async (
+  startDate: Date,
+  endDate: Date,
+  enabledCalendarIds?: string[],
+): Promise<{ title: string; startDate: Date; endDate: Date }[]> => {
+  const calendars = await getCalendars();
+  const calendarIds = enabledCalendarIds && enabledCalendarIds.length
+    ? enabledCalendarIds
+    : calendars.map((cal) => cal.id);
+  if (!calendarIds.length) return [];
+  const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
+  return events.map((e) => ({
+    title: e.title ?? 'Untitled',
+    startDate: toDate(e.startDate),
+    endDate: e.endDate ? toDate(e.endDate) : toDate(e.startDate),
+  }));
 };

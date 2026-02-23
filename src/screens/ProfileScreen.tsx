@@ -61,8 +61,6 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Current preferences</Text>
-          <Text style={styles.rowText}>Open to going out: {state.prefs.openToGoingOut ? 'Yes' : 'No'}</Text>
-          <Text style={styles.rowText}>Surprise me: {state.prefs.allowSerendipity ? 'Yes' : 'No'}</Text>
           <Text style={styles.rowText}>Radius: {state.prefs.radiusKm} km</Text>
           <Text style={styles.rowText}>
             Interests: {state.prefs.interestTags.length ? state.prefs.interestTags.join(', ') : 'None'}

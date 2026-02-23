@@ -24,6 +24,8 @@ export const TimerSteps: React.FC<Props> = ({ steps, startSignal, advanceSignal,
   const [currentIndex, setCurrentIndex] = useState(0);
   const [remaining, setRemaining] = useState(steps[0]?.minutes ? steps[0].minutes * 60 : 0);
   const lastAdvanceRef = useRef(0);
+  const onFinishRef = useRef(onFinish);
+  useEffect(() => { onFinishRef.current = onFinish; }, [onFinish]);
 
   const currentStep = steps[currentIndex];
   const totalSteps = steps.length;
@@ -51,9 +53,9 @@ export const TimerSteps: React.FC<Props> = ({ steps, startSignal, advanceSignal,
       setRemaining(steps[nextIndex].minutes * 60);
     } else {
       setIsRunning(false);
-      if (onFinish) onFinish();
+      if (onFinishRef.current) onFinishRef.current();
     }
-  }, [remaining, isRunning, currentIndex, totalSteps, steps, onFinish]);
+  }, [remaining, isRunning, currentIndex, totalSteps, steps]);
 
   useEffect(() => {
     if (startSignal && !isRunning) setIsRunning(true);
@@ -72,13 +74,16 @@ export const TimerSteps: React.FC<Props> = ({ steps, startSignal, advanceSignal,
     } else {
       setRemaining(0);
       setIsRunning(false);
-      if (onFinish) onFinish();
+      if (onFinishRef.current) onFinishRef.current();
     }
-  }, [advanceSignal, isRunning, currentIndex, totalSteps, steps, onFinish]);
+  }, [advanceSignal, isRunning, currentIndex, totalSteps, steps]);
+
+  const onStepChangeRef = useRef(onStepChange);
+  useEffect(() => { onStepChangeRef.current = onStepChange; }, [onStepChange]);
 
   useEffect(() => {
-    if (onStepChange) onStepChange(currentIndex);
-  }, [currentIndex, onStepChange]);
+    if (onStepChangeRef.current) onStepChangeRef.current(currentIndex);
+  }, [currentIndex]);
 
   return (
     <View style={styles.container}>

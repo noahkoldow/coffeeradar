@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Platform, Pressable, StyleSheet, Text, View } from 'react-native';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, Animated, Linking, PanResponder, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -11,7 +11,7 @@ import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { clamp, formatCountdown, formatDuration, formatTime } from '../utils/time';
 import { logEvent } from '../services/analytics';
-import { createPlanEvent, deletePlanEvent } from '../services/calendar';
+import { createPlanEvent, deletePlanEvent, updatePlanEventEnd } from '../services/calendar';
 import { useAppState } from '../state/AppState';
 
 export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> = ({ navigation, route }) => {
@@ -31,6 +31,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const [manualStartAt, setManualStartAt] = useState<Date | null>(null);
   const [guideChecks, setGuideChecks] = useState<boolean[]>([]);
   const [ctaPressed, setCtaPressed] = useState(false);
+  const cancelledRef = useRef(false);
+  const finishingRef = useRef(false);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
@@ -73,10 +75,33 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const routineProgress = useMemo(() => {
     if (routineFinished) return 1;
-    if (!manualStartAt || routineTotalSeconds <= 0) return 0;
+    if (!manualStartAt) return 0;
+    // Step-based progress weighted by each step's duration in minutes,
+    // with continuous time-based progress within the active step.
+    if (suggestion.steps?.length && routineTotalSeconds > 0) {
+      // Minutes already completed by finished steps
+      let completedSeconds = 0;
+      for (let i = 0; i < activeStepIndex && i < suggestion.steps.length; i++) {
+        completedSeconds += suggestion.steps[i].minutes * 60;
+      }
+      // Continuous progress within the currently active step based on elapsed time
+      const activeStep = suggestion.steps[activeStepIndex];
+      if (activeStep) {
+        // How much time has elapsed within this step specifically?
+        // We know the total elapsed time from manualStartAt, minus the time of previous steps.
+        const totalElapsed = (now.getTime() - manualStartAt.getTime()) / 1000;
+        const elapsedInStep = Math.max(0, totalElapsed - completedSeconds);
+        const stepDuration = activeStep.minutes * 60;
+        const stepProgress = clamp(elapsedInStep / stepDuration, 0, 1);
+        completedSeconds += stepProgress * stepDuration;
+      }
+      return clamp(completedSeconds / routineTotalSeconds, 0, 1);
+    }
+    // Time-based fallback for activities without steps
+    if (routineTotalSeconds <= 0) return 0;
     const elapsed = (now.getTime() - manualStartAt.getTime()) / 1000;
     return clamp(elapsed / routineTotalSeconds, 0, 1);
-  }, [manualStartAt, routineTotalSeconds, now, routineFinished]);
+  }, [manualStartAt, routineTotalSeconds, now, routineFinished, suggestion.steps, activeStepIndex]);
 
   const progressColor = useMemo(() => {
     const start = { r: 248, g: 113, b: 113 };
@@ -90,11 +115,13 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const openMaps = async () => {
     if (!suggestion.place?.lat || !suggestion.place?.lng) return;
-    const destination = `${suggestion.place.lat},${suggestion.place.lng}`;
+    const lat = suggestion.place.lat;
+    const lng = suggestion.place.lng;
+    const label = encodeURIComponent(suggestion.place.name ?? suggestion.title);
     const url = Platform.select({
-      ios: `maps:0,0?q=${destination}`,
-      android: `geo:0,0?q=${destination}`,
-      default: `https://www.google.com/maps/dir/?api=1&destination=${destination}`,
+      ios: `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=r`,
+      android: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=transit`,
+      default: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=transit`,
     });
     if (url) await Linking.openURL(url);
   };
@@ -152,7 +179,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     }
     if (commitment.type === 'GO_OUT') {
       setCtaPressed(true);
-      await openMaps();
+      const hasPlace = !!(suggestion.place?.lat && suggestion.place?.lng);
+      if (hasPlace) await openMaps();
       return;
     }
     if (commitment.type === 'EVENT' && commitment.ticketUrl) {
@@ -206,13 +234,13 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     if (commitment.type === 'GO_OUT') {
       return [
         `Head to ${suggestion.place?.name ?? 'your spot'}.`,
-        'Leave with a 10 minute buffer.',
+        'Catch the next bus/train — leave on time.',
         `Spend ${formatDuration(suggestion.durationMin)} there.`,
       ];
     }
     return [
       'Open tickets and confirm details.',
-      'Leave with a 10 minute buffer.',
+      'Catch the next bus/train — leave on time.',
       'Arrive a bit early.',
     ];
   }, [suggestion, commitment.type]);
@@ -226,8 +254,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     }
     if (commitment.type === 'GO_OUT') {
       const steps = [
-        'Open directions and confirm route.',
-        leaveBy ? `Leave by ${leaveBy}.` : 'Leave with a 10 minute buffer.',
+        'Open directions and plan your route.',
+        leaveBy ? `Leave by ${leaveBy} to catch public transport.` : 'Head to the nearest stop now.',
         `Spend ${formatDuration(suggestion.durationMin)} there.`,
       ];
       return steps;
@@ -235,7 +263,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     const startAt = formatTime(new Date(suggestion.event?.startAt || commitment.startAt));
     return [
       'Open tickets and confirm details.',
-      leaveBy ? `Leave by ${leaveBy}.` : 'Leave with a 10 minute buffer.',
+      leaveBy ? `Leave by ${leaveBy} to catch public transport.` : 'Head to the nearest stop now.',
       `Arrive by ${startAt}.`,
     ];
   }, [commitment.type, suggestion.steps, suggestion.durationMin, suggestion.event?.startAt, commitment.startAt, leaveBy, instructionList]);
@@ -244,13 +272,75 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     setGuideChecks(guideSteps.map(() => false));
   }, [guideSteps]);
 
+  // ── Swipe-to-cancel (same as the Cancel plan button) ──────────
+  const { width: screenWidth } = useWindowDimensions();
+  const swipeX = useRef(new Animated.Value(0)).current;
+  const SWIPE_THRESHOLD = screenWidth * 0.3;
+
+  const cancelPlan = useCallback(async () => {
+    cancelledRef.current = true;
+    await logEvent('plan_cancelled');
+    if (commitment.calendarEventId) {
+      try {
+        await deletePlanEvent(commitment.calendarEventId);
+      } catch (error) {
+        console.warn('Calendar delete failed', error);
+      }
+    }
+    navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+  }, [commitment.calendarEventId, navigation]);
+
+  const confirmCancel = useCallback(() => {
+    Alert.alert('Cancel plan?', 'This will remove the plan from your flow.', [
+      { text: 'Keep plan', style: 'cancel' },
+      { text: 'Cancel', style: 'destructive', onPress: cancelPlan },
+    ]);
+  }, [cancelPlan]);
+
+  const panResponder = useMemo(
+    () =>
+      PanResponder.create({
+        onMoveShouldSetPanResponder: (_, gesture) =>
+          Math.abs(gesture.dx) > 15 && Math.abs(gesture.dx) > Math.abs(gesture.dy) * 1.5,
+        onPanResponderMove: (_, gesture) => {
+          swipeX.setValue(gesture.dx);
+        },
+        onPanResponderRelease: (_, gesture) => {
+          if (Math.abs(gesture.dx) > SWIPE_THRESHOLD) {
+            // Animate off-screen then trigger cancel
+            Animated.timing(swipeX, {
+              toValue: gesture.dx > 0 ? screenWidth : -screenWidth,
+              duration: 200,
+              useNativeDriver: true,
+            }).start(() => {
+              swipeX.setValue(0);
+              confirmCancel();
+            });
+          } else {
+            Animated.spring(swipeX, {
+              toValue: 0,
+              useNativeDriver: true,
+              tension: 140,
+              friction: 12,
+            }).start();
+          }
+        },
+        onPanResponderTerminate: () => {
+          Animated.spring(swipeX, {
+            toValue: 0,
+            useNativeDriver: true,
+          }).start();
+        },
+      }),
+    [screenWidth, SWIPE_THRESHOLD, confirmCancel, swipeX],
+  );
+
   const autoChecks = useMemo(() => {
     if (commitment.type === 'AT_HOME' && manualStartAt && suggestion.steps?.length) {
-      const elapsed = (now.getTime() - manualStartAt.getTime()) / 1000;
-      let runningTotal = 0;
-      return suggestion.steps.map((step) => {
-        runningTotal += step.minutes * 60;
-        return elapsed >= runningTotal;
+      // Check off all steps up to and including the current step (it's been started)
+      return suggestion.steps.map((_, index) => {
+        if (routineFinished) return true;          // all done
+        return index < activeStepIndex;            // completed steps
       });
     }
     if (commitment.type === 'AT_HOME' && manualStartAt && guideSteps.length) {
@@ -260,11 +350,34 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       return guideSteps.map((_, index) => index === 0);
     }
     return guideSteps.map(() => false);
-  }, [commitment.type, manualStartAt, suggestion.steps, now, guideSteps, ctaPressed]);
+  }, [commitment.type, manualStartAt, suggestion.steps, guideSteps, ctaPressed, activeStepIndex, routineFinished]);
+
+  /** Index of the step currently being worked on (for highlighting) */
+  const activeGuideIndex = useMemo(() => {
+    if (commitment.type !== 'AT_HOME' || !manualStartAt) return -1;
+    if (routineFinished) return -1;
+    if (suggestion.steps?.length) return activeStepIndex;
+    return 0;
+  }, [commitment.type, manualStartAt, routineFinished, suggestion.steps, activeStepIndex]);
+
+  const navigateToCompletion = useCallback((durationMin: number) => {
+    if (cancelledRef.current || finishingRef.current === false) return;
+    navigation.replace('Completion', {
+      title: suggestion.title,
+      durationMin,
+      emojis: suggestion.emojis,
+      tags: suggestion.tags,
+      suggestionType: suggestion.type,
+      suggestionId: suggestion.id,
+      habitId: suggestion.habitId,
+      description: suggestion.description,
+    });
+  }, [navigation, suggestion]);
 
   useEffect(() => {
     if (commitment.type !== 'AT_HOME') return;
     if (!routineFinished || activityLogged || !manualStartAt) return;
+    if (finishingRef.current) return; // finishing in progress via button press
     const endTime = finishAt ?? new Date();
     const elapsedMin = Math.max(1, Math.round((endTime.getTime() - manualStartAt.getTime()) / 60000));
     actions.recordActivity({
@@ -283,25 +396,95 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       actions.completeHabit(suggestion.habitId);
     }
     setActivityLogged(true);
-  }, [commitment.type, routineFinished, activityLogged, manualStartAt, finishAt, actions, suggestion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [commitment.type, routineFinished, activityLogged, manualStartAt]);
+
+  const finishActivity = useCallback(() => {
+    // Guard against double-fire (prevents cascading state updates)
+    if (finishingRef.current) return;
+    finishingRef.current = true;
+
+    // Compute duration
+    const endTime = finishAt ?? new Date();
+    let dur = suggestion.durationMin;
+    if (commitment.type === 'AT_HOME' && manualStartAt) {
+      dur = Math.max(1, Math.round((endTime.getTime() - manualStartAt.getTime()) / 60000));
+    }
+
+    // Shorten calendar event if we finished early so it doesn't block the next activity
+    if (commitment.calendarEventId && !commitment.calendarWriteFailed) {
+      const originalEnd = new Date(commitment.endAt);
+      if (endTime.getTime() < originalEnd.getTime()) {
+        updatePlanEventEnd(commitment.calendarEventId, endTime).catch((err) =>
+          console.warn('Failed to shorten calendar event', err),
+        );
+      }
+    }
+
+    if (!activityLogged && commitment.type !== 'AT_HOME') {
+      // Log the activity first (AT_HOME already logged by the effect above)
+      actions.recordActivity({
+        id: `act_${Date.now()}`,
+        suggestionId: suggestion.id,
+        title: suggestion.title,
+        durationMin: dur,
+        timestamp: new Date().toISOString(),
+        source: suggestion.source,
+        isHabit: !!suggestion.habitId,
+        habitId: suggestion.habitId,
+        tags: suggestion.tags,
+        suggestionType: suggestion.type,
+      });
+      if (suggestion.habitId) {
+        actions.completeHabit(suggestion.habitId);
+      }
+      setActivityLogged(true);
+    }
+
+    navigateToCompletion(dur);
+  }, [activityLogged, actions, suggestion, navigateToCompletion, commitment, manualStartAt, finishAt]);
+
+  /** Whether the AT_HOME activity is on its very last step (or has no steps) */
+  const isLastStep = useMemo(() => {
+    if (commitment.type !== 'AT_HOME') return false;
+    if (!manualStartAt) return false;
+    const hasSteps = (suggestion.steps?.length ?? 0) > 0;
+    if (!hasSteps) return true;
+    const lastStepIndex = Math.max(0, (suggestion.steps?.length ?? 1) - 1);
+    return activeStepIndex >= lastStepIndex;
+  }, [commitment.type, manualStartAt, suggestion.steps, activeStepIndex]);
 
   const primaryLabel = useMemo(() => {
     if (commitment.type === 'AT_HOME') {
       if (!manualStartAt) return 'Start';
-      const hasSteps = (suggestion.steps?.length ?? 0) > 0;
-      if (!hasSteps) return 'Finish';
-      const lastStepIndex = Math.max(0, (suggestion.steps?.length ?? 1) - 1);
-      return activeStepIndex >= lastStepIndex ? 'Finish' : 'Next step';
+      if (routineFinished) return "I'm done! \uD83C\uDF89";
+      if (isLastStep) return "I'm done! \uD83C\uDF89";
+      return 'Next step →';
     }
-    if (commitment.type === 'GO_OUT') return 'Get directions';
+    if (commitment.type === 'GO_OUT') {
+      if (ctaPressed) return "I'm done! \uD83C\uDF89";
+      const hasPlace = !!(suggestion.place?.lat && suggestion.place?.lng);
+      return hasPlace ? 'Get directions' : 'Start';
+    }
+    if (ctaPressed) return "I'm done! \uD83C\uDF89";
     return 'Buy tickets';
-  }, [commitment.type, manualStartAt, suggestion.steps, activeStepIndex]);
+  }, [commitment.type, manualStartAt, suggestion.steps, activeStepIndex, routineFinished, isLastStep, ctaPressed]);
 
   return (
     <LinearGradient
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[styles.swipeWrap, { transform: [{ translateX: swipeX }] }]}
+      >
+      <ScrollView
+        style={styles.scrollView}
+        contentContainerStyle={styles.scrollContent}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
       <View style={styles.header}>
         <Text style={styles.headline}>{headline}</Text>
         {isRoutineStarted ? (
@@ -319,12 +502,35 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         <Text style={styles.subheadline}>{suggestion.title}</Text>
       </View>
 
-      <PrimaryButton
-        label={primaryLabel}
-        onPress={onPrimary}
-        glow
-        disabled={commitment.type === 'AT_HOME' && routineFinished}
-      />
+      {commitment.type === 'AT_HOME' && (routineFinished || isLastStep) ? (
+        <PrimaryButton
+          label={primaryLabel}
+          onPress={() => {
+            if (!routineFinished) {
+              setRoutineFinished(true);
+              setFinishAt(new Date());
+            }
+            finishActivity();
+          }}
+          glow
+          bgColor={theme.colors.success}
+          textColor={theme.colors.successText}
+        />
+      ) : commitment.type !== 'AT_HOME' && ctaPressed ? (
+        <PrimaryButton
+          label={primaryLabel}
+          onPress={finishActivity}
+          glow
+          bgColor={theme.colors.success}
+          textColor={theme.colors.successText}
+        />
+      ) : (
+        <PrimaryButton
+          label={primaryLabel}
+          onPress={onPrimary}
+          glow
+        />
+      )}
 
       <Text style={styles.calendarStatus}>
         {calendarFailed ? 'Could not add to calendar' : 'Added to calendar'}
@@ -338,7 +544,10 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       <View style={styles.contextBlock}>
         <View style={styles.guideBlock}>
           <Text style={styles.sectionTitle}>Next steps</Text>
-          {guideSteps.map((step, index) => (
+          {guideSteps.map((step, index) => {
+            const isChecked = guideChecks[index] || autoChecks[index];
+            const isActive = index === activeGuideIndex;
+            return (
             <Pressable
               key={`guide_${index}`}
               onPress={() => {
@@ -348,16 +557,17 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
                   return next;
                 });
               }}
-              style={styles.guideRow}
+              style={[styles.guideRow, isActive && styles.guideRowActive]}
             >
-              <Text style={[styles.guideCheck, (guideChecks[index] || autoChecks[index]) && styles.guideCheckOn]}>
-                {(guideChecks[index] || autoChecks[index]) ? '✓' : '○'}
+              <Text style={[styles.guideCheck, isChecked && styles.guideCheckOn, isActive && !isChecked && styles.guideCheckActive]}>
+                {isChecked ? '✓' : isActive ? '▶' : '○'}
               </Text>
-              <Text style={[styles.guideText, (guideChecks[index] || autoChecks[index]) && styles.guideTextOn]}>
+              <Text style={[styles.guideText, isChecked && styles.guideTextOn, isActive && !isChecked && styles.guideTextActive]}>
                 {step}
               </Text>
             </Pressable>
-          ))}
+            );
+          })}
         </View>
 
         {commitment.type === 'AT_HOME' && (
@@ -365,8 +575,11 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
             steps={suggestion.steps || []}
             startSignal={startSignal}
             advanceSignal={advanceSignal}
-            onStepChange={(index) => setActiveStepIndex(index)}
+            onStepChange={(index) => {
+              if (!finishingRef.current) setActiveStepIndex(index);
+            }}
             onFinish={() => {
+              if (finishingRef.current) return; // user already pressed "I'm done"
               setRoutineFinished(true);
               setFinishAt(new Date());
             }}
@@ -405,30 +618,12 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         )}
       </View>
 
-      <Pressable
-        onPress={() => {
-          Alert.alert('Cancel plan?', 'This will remove the plan from your flow.', [
-            { text: 'Keep plan', style: 'cancel' },
-            {
-              text: 'Cancel',
-              style: 'destructive',
-              onPress: async () => {
-                await logEvent('plan_cancelled');
-                if (commitment.calendarEventId) {
-                  try {
-                    await deletePlanEvent(commitment.calendarEventId);
-                  } catch (error) {
-                    console.warn('Calendar delete failed', error);
-                  }
-                }
-                navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
-              },
-            },
-          ]);
-        }}
-      >
+      <Pressable onPress={confirmCancel}>
         <Text style={styles.cancel}>Cancel plan</Text>
+        <Text style={styles.cancelHint}>or swipe to cancel</Text>
       </Pressable>
+      </ScrollView>
+      </Animated.View>
     </LinearGradient>
   );
 };
@@ -438,6 +633,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
     padding: theme.spacing.lg,
     gap: theme.spacing.md,
+  },
+  swipeWrap: {
+    flex: 1,
+  },
+  scrollView: {
+    flex: 1,
+  },
+  scrollContent: {
+    gap: theme.spacing.md,
+    paddingBottom: theme.spacing.xxl,
   },
   header: {
     marginTop: theme.spacing.lg,
@@ -478,7 +683,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.accentDark,
   },
   contextBlock: {
-    flex: 1,
     marginTop: theme.spacing.sm,
   },
   guideBlock: {
@@ -495,6 +699,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
+  guideRowActive: {
+    backgroundColor: theme.colors.backgroundAlt,
+    borderRadius: theme.radius.sm,
+    paddingVertical: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.sm,
+    marginHorizontal: -theme.spacing.sm,
+  },
   guideCheck: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
@@ -502,7 +713,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     width: 20,
   },
   guideCheckOn: {
-    color: theme.colors.accentDark,
+    color: theme.colors.success,
+  },
+  guideCheckActive: {
+    color: theme.colors.accent,
   },
   guideText: {
     fontFamily: theme.fonts.body,
@@ -511,6 +725,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   guideTextOn: {
     color: theme.colors.text,
+    textDecorationLine: 'line-through',
+  },
+  guideTextActive: {
+    color: theme.colors.text,
+    fontFamily: theme.fonts.semibold,
   },
   instructions: {
     marginTop: theme.spacing.sm,
@@ -536,6 +755,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     textAlign: 'center',
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
+    marginBottom: theme.spacing.xs,
+  },
+  cancelHint: {
+    textAlign: 'center',
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 12,
+    opacity: 0.6,
     marginBottom: theme.spacing.md,
   },
 });

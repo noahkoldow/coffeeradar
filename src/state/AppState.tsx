@@ -1,11 +1,15 @@
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActivityLog,
   Availability,
+  DeckSuggestion,
   Habit,
   HistoryState,
+  LocationProfile,
   LocationState,
   PermissionsState,
+  ScheduledActivity,
+  TagAffinities,
   UserPrefs,
 } from '../types';
 import {
@@ -16,17 +20,33 @@ import {
   loadHistory,
   loadOnboardingComplete,
   loadPrefs,
+  loadTagAffinities,
   saveActivityLog,
   saveEnabledCalendars,
   saveHabits,
   saveHistory,
   saveOnboardingComplete,
   savePrefs,
+  saveTagAffinities,
+  loadScheduledActivities,
+  saveScheduledActivities,
 } from '../utils/storage';
 import { getCalendarPermissionStatus } from '../services/calendar';
 import { getLocationPermissionStatus } from '../services/location';
 import { subscribeAuthState } from '../services/auth';
 import { firebaseEnabled } from '../services/firebase';
+import { buildDeck } from '../services/suggestions';
+import { recordComplete, recordTypeAccept, decayAffinities } from '../services/affinity';
+import { completeHabitEntry, uncompleteHabitEntry, migrateHabit } from '../utils/habits';
+import { rescheduleHabitReminders } from '../services/notifications';
+import {
+  loadFirebaseAffinities,
+  loadFirebaseLocationProfile,
+  syncTagAffinities,
+  syncLocationProfile,
+  syncHabits,
+  loadFirebaseHabits,
+} from '../services/user';
 
 const defaultPrefs: UserPrefs = {
   openToGoingOut: true,
@@ -39,6 +59,7 @@ const defaultPrefs: UserPrefs = {
 const defaultHistory: HistoryState = {
   lastAcceptedIds: [],
   lastRejectedIds: [],
+  lastShownIds: [],
 };
 
 const defaultPermissions: PermissionsState = {
@@ -66,6 +87,11 @@ type AppState = {
   location: LocationState;
   availability: Availability | null;
   enabledCalendars: string[];
+  preloadedDeck: { deck: DeckSuggestion[]; usedFallback: boolean } | null;
+  deckLoading: boolean;
+  tagAffinities: TagAffinities;
+  locationProfile: LocationProfile | null;
+  scheduledActivities: ScheduledActivity[];
 };
 
 type AppActions = {
@@ -75,12 +101,21 @@ type AppActions = {
   setHabits: (value: Habit[]) => void;
   addHabit: (habit: Habit) => void;
   updateHabit: (habit: Habit) => void;
+  removeHabit: (habitId: string) => void;
   completeHabit: (habitId: string) => void;
+  uncompleteHabit: (habitId: string) => void;
   recordActivity: (entry: ActivityLog) => void;
+  removeLatestActivityForHabit: (habitId: string) => void;
   setLocation: (value: LocationState) => void;
   setAvailability: (value: Availability | null) => void;
   setEnabledCalendars: (value: string[]) => void;
   completeOnboarding: () => void;
+  preloadDeck: (availability: Availability, durationOverride?: number | null) => void;
+  consumeDeck: () => { deck: DeckSuggestion[]; usedFallback: boolean } | null;
+  setTagAffinities: (value: TagAffinities) => void;
+  setLocationProfile: (value: LocationProfile | null) => void;
+  addScheduledActivity: (item: ScheduledActivity) => void;
+  removeScheduledActivity: (id: string) => void;
   resetData: () => Promise<void>;
 };
 
@@ -100,6 +135,21 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [location, setLocationState] = useState<LocationState>(defaultLocation);
   const [availability, setAvailabilityState] = useState<Availability | null>(null);
   const [enabledCalendars, setEnabledCalendarsState] = useState<string[]>([]);
+  const [preloadedDeck, setPreloadedDeck] = useState<{ deck: DeckSuggestion[]; usedFallback: boolean } | null>(null);
+  const [deckLoading, setDeckLoading] = useState(false);
+  const [tagAffinities, setTagAffinitiesState] = useState<TagAffinities>({});
+  const [locationProfile, setLocationProfileState] = useState<LocationProfile | null>(null);
+  const [scheduledActivities, setScheduledActivitiesState] = useState<ScheduledActivity[]>([]);
+
+  // Refs for preloadDeck so it always reads the latest values without
+  // being a useMemo dependency (which would cause infinite re-renders).
+  const preloadRef = useRef({ location, prefs, history, habits, tagAffinities, locationProfile });
+  useEffect(() => {
+    preloadRef.current = { location, prefs, history, habits, tagAffinities, locationProfile };
+  }, [location, prefs, history, habits, tagAffinities, locationProfile]);
+  const preloadedDeckRef = useRef(preloadedDeck);
+  useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
+  const deckBuildId = useRef(0);
 
   useEffect(() => {
     if (!firebaseEnabled) {
@@ -144,13 +194,20 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return;
         }
 
-        const [storedPrefs, storedHistory, storedCalendars, storedOnboarding, storedHabits, storedActivity] = await Promise.all([
+        const [storedPrefs, storedHistory, storedCalendars, storedOnboarding, storedHabits, storedActivity, storedAffinities, storedScheduled] = await Promise.all([
           loadPrefs(userId),
           loadHistory(userId),
           loadEnabledCalendars(userId),
           loadOnboardingComplete(userId),
           loadHabits(userId),
           loadActivityLog(userId),
+          loadTagAffinities(userId),
+          loadScheduledActivities(userId),
+        ]);
+        // Try loading from Firestore (cloud-first for cross-device sync)
+        const [fbAffinities, fbLocProfile] = await Promise.all([
+          loadFirebaseAffinities().catch(() => null),
+          loadFirebaseLocationProfile().catch(() => null),
         ]);
         if (!active) return;
         if (storedPrefs) {
@@ -163,13 +220,38 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } else {
           setPrefsState(defaultPrefs);
         }
-        if (storedHistory) setHistoryState(storedHistory);
-        else setHistoryState(defaultHistory);
+        if (storedHistory) {
+          setHistoryState({
+            ...defaultHistory,
+            ...storedHistory,
+            lastShownIds: storedHistory.lastShownIds ?? [],
+          });
+        } else {
+          setHistoryState(defaultHistory);
+        }
         if (storedCalendars) setEnabledCalendarsState(storedCalendars);
         else setEnabledCalendarsState([]);
         setOnboardingComplete(storedOnboarding);
-        setHabitsState(storedHabits ?? []);
+        // Merge: prefer Firebase habits, fall back to local, migrate legacy fields
+        const fbHabits = await loadFirebaseHabits().catch(() => null);
+        const rawHabits = fbHabits ?? storedHabits ?? [];
+        const migratedHabits = rawHabits.map(migrateHabit);
+        setHabitsState(migratedHabits);
+        // Sync migrated back to local cache
+        if (migratedHabits.length) saveHabits(migratedHabits, userId).catch(() => undefined);
         setActivityLogState(storedActivity ?? []);
+        // Prefer Firestore data, fall back to AsyncStorage
+        const mergedAffinities = fbAffinities ?? storedAffinities ?? {};
+        setTagAffinitiesState(mergedAffinities);
+        // If we got cloud affinities, sync them back to local cache
+        if (fbAffinities && !storedAffinities) {
+          saveTagAffinities(fbAffinities, userId).catch(() => undefined);
+        }
+        if (fbLocProfile) {
+          setLocationProfileState(fbLocProfile);
+        }
+        // Load scheduled activities
+        setScheduledActivitiesState(storedScheduled ?? []);
       } catch (error) {
         console.warn('Init error', error);
       } finally {
@@ -196,11 +278,15 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setHabits: (value) => {
       setHabitsState(value);
       saveHabits(value, userId).catch(() => undefined);
+      syncHabits(value).catch(() => undefined);
+      rescheduleHabitReminders(value).catch(() => undefined);
     },
     addHabit: (habit) => {
       setHabitsState((prev) => {
         const updated = [habit, ...prev];
         saveHabits(updated, userId).catch(() => undefined);
+        syncHabits(updated).catch(() => undefined);
+        rescheduleHabitReminders(updated).catch(() => undefined);
         return updated;
       });
     },
@@ -208,22 +294,68 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setHabitsState((prev) => {
         const updated = prev.map((item) => (item.id === habit.id ? habit : item));
         saveHabits(updated, userId).catch(() => undefined);
+        syncHabits(updated).catch(() => undefined);
+        rescheduleHabitReminders(updated).catch(() => undefined);
+        return updated;
+      });
+    },
+    removeHabit: (habitId) => {
+      setHabitsState((prev) => {
+        const updated = prev.filter((item) => item.id !== habitId);
+        saveHabits(updated, userId).catch(() => undefined);
+        syncHabits(updated).catch(() => undefined);
+        rescheduleHabitReminders(updated).catch(() => undefined);
         return updated;
       });
     },
     completeHabit: (habitId) => {
       setHabitsState((prev) => {
-        const now = new Date().toISOString();
         const updated = prev.map((item) => (
-          item.id === habitId ? { ...item, lastCompletedAt: now } : item
+          item.id === habitId ? completeHabitEntry(item) : item
         ));
         saveHabits(updated, userId).catch(() => undefined);
+        syncHabits(updated).catch(() => undefined);
+        rescheduleHabitReminders(updated).catch(() => undefined);
+        return updated;
+      });
+    },
+    uncompleteHabit: (habitId) => {
+      setHabitsState((prev) => {
+        const updated = prev.map((item) => (
+          item.id === habitId ? uncompleteHabitEntry(item) : item
+        ));
+        saveHabits(updated, userId).catch(() => undefined);
+        syncHabits(updated).catch(() => undefined);
+        rescheduleHabitReminders(updated).catch(() => undefined);
         return updated;
       });
     },
     recordActivity: (entry) => {
       setActivityLogState((prev) => {
         const updated = [entry, ...prev].slice(0, 200);
+        saveActivityLog(updated, userId).catch(() => undefined);
+        return updated;
+      });
+      // Strongest affinity signal: user completed the activity
+      if (entry.tags?.length) {
+        setTagAffinitiesState((prev) => {
+          let aff = decayAffinities(prev, new Date().toISOString());
+          aff = recordComplete(aff, entry.tags!);
+          if (entry.suggestionType) {
+            aff = recordTypeAccept(aff, entry.suggestionType);
+          }
+          saveTagAffinities(aff, userId).catch(() => undefined);
+          syncTagAffinities(aff).catch(() => undefined);
+          return aff;
+        });
+      }
+    },
+    removeLatestActivityForHabit: (habitId) => {
+      setActivityLogState((prev) => {
+        const idx = prev.findIndex((entry) => entry.habitId === habitId);
+        if (idx === -1) return prev;
+        const updated = [...prev];
+        updated.splice(idx, 1);
         saveActivityLog(updated, userId).catch(() => undefined);
         return updated;
       });
@@ -238,6 +370,69 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setOnboardingComplete(true);
       saveOnboardingComplete(true, userId).catch(() => undefined);
     },
+    preloadDeck: (avail, durationOverride) => {
+      const finalAvail = durationOverride
+        ? (() => {
+            const now = new Date();
+            return {
+              start: now.toISOString(),
+              end: new Date(now.getTime() + durationOverride * 60000).toISOString(),
+              durationMin: durationOverride,
+              nextEventTitle: null,
+            };
+          })()
+        : avail;
+      const id = ++deckBuildId.current;
+      setDeckLoading(true);
+      setPreloadedDeck(null);
+      const { location: loc, prefs: p, history: h, habits: hb, tagAffinities: ta, locationProfile: lp } = preloadRef.current;
+      // Background preload gets a generous 15 s API timeout
+      // (the user isn't waiting — they're on HomeScreen or swiping)
+      buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp)
+        .then((result) => {
+          // Only apply if this is still the latest build request
+          if (deckBuildId.current === id) {
+            setPreloadedDeck(result);
+          }
+        })
+        .catch(() => {
+          if (deckBuildId.current === id) setPreloadedDeck(null);
+        })
+        .finally(() => {
+          if (deckBuildId.current === id) setDeckLoading(false);
+        });
+    },
+    consumeDeck: () => {
+      const result = preloadedDeckRef.current;
+      preloadedDeckRef.current = null;
+      setPreloadedDeck(null);
+      return result;
+    },
+    setTagAffinities: (value) => {
+      setTagAffinitiesState(value);
+      saveTagAffinities(value, userId).catch(() => undefined);
+      syncTagAffinities(value).catch(() => undefined);
+    },
+    setLocationProfile: (value) => {
+      setLocationProfileState(value);
+      if (value) {
+        syncLocationProfile(value).catch(() => undefined);
+      }
+    },
+    addScheduledActivity: (item) => {
+      setScheduledActivitiesState((prev) => {
+        const updated = [item, ...prev];
+        saveScheduledActivities(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
+    removeScheduledActivity: (id) => {
+      setScheduledActivitiesState((prev) => {
+        const updated = prev.filter((i) => i.id !== id);
+        saveScheduledActivities(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
     resetData: async () => {
       await clearStorage(userId);
       setPrefsState(defaultPrefs);
@@ -248,6 +443,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setOnboardingComplete(false);
       setAvailabilityState(null);
       setLocationState(defaultLocation);
+      setTagAffinitiesState({});
+      setLocationProfileState(null);
+      setScheduledActivitiesState([]);
     },
   }), [userId]);
 
@@ -265,6 +463,11 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     location,
     availability,
     enabledCalendars,
+    preloadedDeck,
+    deckLoading,
+    tagAffinities,
+    locationProfile,
+    scheduledActivities,
   };
 
   return (

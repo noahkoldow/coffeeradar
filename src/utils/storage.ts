@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ActivityLog, Habit, HistoryState, UserPrefs } from '../types';
+import { ActivityLog, Habit, HistoryState, LocationProfile, ScheduledActivity, TagAffinities, UserPrefs } from '../types';
 
 const KEYS = {
   prefs: 'prefs',
@@ -8,6 +8,9 @@ const KEYS = {
   onboarding: 'onboarding_complete',
   habits: 'habits',
   activity: 'activity_log',
+  tagAffinities: 'tag_affinities',
+  locationProfile: 'location_profile',
+  scheduledActivities: 'scheduled_activities',
 };
 
 const keyFor = (base: string, userId?: string | null): string => {
@@ -67,6 +70,44 @@ export const loadActivityLog = async (userId?: string | null): Promise<ActivityL
 
 export const saveActivityLog = async (log: ActivityLog[], userId?: string | null): Promise<void> => {
   await AsyncStorage.setItem(keyFor(KEYS.activity, userId), JSON.stringify(log));
+};
+
+export const loadWeatherCondition = async (): Promise<string | null> => {
+  return AsyncStorage.getItem('last_weather');
+};
+
+export const saveWeatherCondition = async (condition: string): Promise<void> => {
+  await AsyncStorage.setItem('last_weather', condition);
+};
+
+// ── Tag affinities (learned taste profile) ──────────────────────────────
+export const loadTagAffinities = async (userId?: string | null): Promise<TagAffinities | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.tagAffinities, userId));
+  return raw ? (JSON.parse(raw) as TagAffinities) : null;
+};
+
+export const saveTagAffinities = async (affinities: TagAffinities, userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.tagAffinities, userId), JSON.stringify(affinities));
+};
+
+// ── Location profile (coastal / urban / suburban) ───────────────────────
+export const loadLocationProfile = async (userId?: string | null): Promise<LocationProfile | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.locationProfile, userId));
+  return raw ? (JSON.parse(raw) as LocationProfile) : null;
+};
+
+export const saveLocationProfile = async (profile: LocationProfile, userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.locationProfile, userId), JSON.stringify(profile));
+};
+
+// ── Scheduled activities ("schedule for later" entries) ───────────────────
+export const loadScheduledActivities = async (userId?: string | null): Promise<ScheduledActivity[] | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.scheduledActivities, userId));
+  return raw ? (JSON.parse(raw) as ScheduledActivity[]) : null;
+};
+
+export const saveScheduledActivities = async (items: ScheduledActivity[], userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.scheduledActivities, userId), JSON.stringify(items));
 };
 
 export const clearStorage = async (userId?: string | null): Promise<void> => {

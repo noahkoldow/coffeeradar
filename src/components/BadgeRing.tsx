@@ -9,9 +9,11 @@ type Props = {
   progress: number;
   level: number;
   color: string;
+  /** When true, show the level number centred inside the ring */
+  showLevel?: boolean;
 };
 
-export const BadgeRing: React.FC<Props> = ({ size = 64, strokeWidth = 6, progress, level, color }) => {
+export const BadgeRing: React.FC<Props> = ({ size = 64, strokeWidth = 6, progress, level, color, showLevel = false }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const radius = (size - strokeWidth) / 2;
@@ -42,9 +44,11 @@ export const BadgeRing: React.FC<Props> = ({ size = 64, strokeWidth = 6, progres
           transform={`rotate(-90 ${size / 2} ${size / 2})`}
         />
       </Svg>
-      <View style={styles.center}>
-        <Text style={styles.levelText}>{level}</Text>
-      </View>
+      {showLevel && (
+        <View style={styles.center}>
+          <Text style={[styles.levelText, { fontSize: Math.round(size * 0.32), color }]}>{level}</Text>
+        </View>
+      )}
     </View>
   );
 };

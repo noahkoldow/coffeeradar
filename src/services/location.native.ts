@@ -22,7 +22,7 @@ export const getCurrentLocation = async (): Promise<LocationState> => {
       latitude,
       longitude,
     });
-    areaLabel = place.subregion || place.district || place.city || place.region || null;
+    areaLabel = place.district || place.subregion || place.city || place.region || null;
   } catch {
     areaLabel = null;
   }

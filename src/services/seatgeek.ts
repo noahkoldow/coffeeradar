@@ -29,7 +29,7 @@ export const fetchSeatGeekSuggestions = async (
   const now = new Date();
   const start = now.toISOString();
   const end = new Date(now.getTime() + 6 * 60 * 60 * 1000).toISOString();
-  const radiusMiles = Math.max(1, Math.min(prefs.radiusKm || 5, 30));
+  const radiusMiles = Math.max(1, Math.min(prefs.radiusKm || 5, 25));
 
   const url = buildUrl(BASE_URL, {
     client_id: SEATGEEK_KEY,

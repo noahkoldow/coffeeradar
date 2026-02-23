@@ -28,6 +28,14 @@ export const createPlanEvent = async (): Promise<string> => {
   throw new Error('Calendar not supported on web');
 };
 
+export const updatePlanEventEnd = async (_eventId: string, _newEndDate: Date): Promise<void> => {
+  return;
+};
+
 export const deletePlanEvent = async (): Promise<void> => {
   return;
+};
+
+export const getUpcomingEvents = async (): Promise<{ title: string; startDate: Date; endDate: Date }[]> => {
+  return [];
 };

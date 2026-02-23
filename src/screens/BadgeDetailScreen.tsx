@@ -7,6 +7,7 @@ import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { BadgeRing } from '../components/BadgeRing';
+import { BadgeIcon } from '../components/BadgeIcon';
 import { buildBadgeProgress, getBadgeById } from '../utils/badges';
 
 type Props = StackScreenProps<RootStackParamList, 'BadgeDetail'>;
@@ -19,8 +20,8 @@ export const BadgeDetailScreen: React.FC<Props> = ({ navigation, route }) => {
   const { badgeId } = route.params;
 
   const badgeProgress = useMemo(
-    () => buildBadgeProgress(state.activityLog),
-    [state.activityLog],
+    () => buildBadgeProgress(state.activityLog, state.habits),
+    [state.activityLog, state.habits],
   );
 
   const badge = badgeProgress.find((item) => item.id === badgeId);
@@ -60,14 +61,15 @@ export const BadgeDetailScreen: React.FC<Props> = ({ navigation, route }) => {
         </Pressable>
 
         <View style={styles.header}>
-          <BadgeRing size={120} strokeWidth={10} progress={data.progress} level={data.level} color={data.color} />
-          <Text style={styles.title}>{data.title}</Text>
+          <BadgeIcon badgeId={data.id} size={56} color={data.color} />
+          <BadgeRing size={120} strokeWidth={10} progress={data.progress} level={data.level} color={data.color} showLevel />
+          <Text style={[styles.title, { color: data.color }]}>{data.title}</Text>
           <Text style={styles.subtitle}>{data.description}</Text>
         </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Progress</Text>
-          <Text style={styles.body}>Level {data.level}</Text>
+          <Text style={[styles.body, { color: data.color, fontFamily: theme.fonts.semibold }]}>Level {data.level}</Text>
           <Text style={styles.body}>{nextLabel}</Text>
           {data.nextTarget && <Text style={styles.body}>{toNext} to next level</Text>}
         </View>

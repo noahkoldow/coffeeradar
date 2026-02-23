@@ -3,6 +3,7 @@ import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'r
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Slider from '@react-native-community/slider';
 import { RootStackParamList } from '../navigation/types';
 import { ToggleRow } from '../components/ToggleRow';
 import { Chip } from '../components/Chip';
@@ -18,20 +19,51 @@ import { fetchGooglePlacesSuggestions } from '../services/googlePlaces';
 import { fetchOsmSuggestions } from '../services/osmPlaces';
 import { Availability } from '../types';
 
-const radiusOptions = [2, 5, 10];
-const interestOptions = [
-  { id: 'fitness', label: 'Fitness' },
-  { id: 'wellness', label: 'Wellness' },
-  { id: 'nature', label: 'Nature' },
-  { id: 'art', label: 'Art' },
-  { id: 'music', label: 'Music' },
-  { id: 'movies', label: 'Movies' },
-  { id: 'food', label: 'Food' },
-  { id: 'coffee', label: 'Coffee' },
-  { id: 'learning', label: 'Learning' },
-  { id: 'focus', label: 'Focus' },
-  { id: 'social', label: 'Social' },
-  { id: 'explore', label: 'Explore' },
+const interestGroups = [
+  {
+    title: 'Active',
+    options: [
+      { id: 'fitness', label: '🏋️ Fitness' },
+      { id: 'cycling', label: '🚴 Cycling' },
+      { id: 'running', label: '🏃 Running' },
+      { id: 'swimming', label: '🏊 Swimming' },
+      { id: 'hiking', label: '🥾 Hiking' },
+      { id: 'wellness', label: '🧘 Wellness' },
+    ],
+  },
+  {
+    title: 'Explore',
+    options: [
+      { id: 'nature', label: '🌿 Nature' },
+      { id: 'beaches', label: '🏖️ Beaches' },
+      { id: 'parks', label: '🌳 Parks' },
+      { id: 'explore', label: '🧭 Explore' },
+    ],
+  },
+  {
+    title: 'Food & Drink',
+    options: [
+      { id: 'coffee', label: '☕ Coffee & Cafés' },
+      { id: 'food', label: '🍽️ Dining' },
+      { id: 'street_food', label: '🌮 Street Food' },
+    ],
+  },
+  {
+    title: 'Culture & Learning',
+    options: [
+      { id: 'art', label: '🎨 Art' },
+      { id: 'music', label: '🎵 Music' },
+      { id: 'movies', label: '🎬 Movies' },
+      { id: 'learning', label: '📚 Learning' },
+    ],
+  },
+  {
+    title: 'Productivity & Social',
+    options: [
+      { id: 'focus', label: '🎯 Focus' },
+      { id: 'social', label: '🫢 Social' },
+    ],
+  },
 ];
 
 type Props = StackScreenProps<RootStackParamList, 'Settings'>;
@@ -141,49 +173,49 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Mode</Text>
           <ToggleRow
-            label="Open to going out"
-            value={state.prefs.openToGoingOut}
-            onValueChange={(value) => actions.setPrefs({ ...state.prefs, openToGoingOut: value })}
-          />
-          <ToggleRow
-            label="Surprise me outside my interests"
-            value={state.prefs.allowSerendipity}
-            onValueChange={(value) => actions.setPrefs({ ...state.prefs, allowSerendipity: value })}
-          />
-          <ToggleRow
             label="Dark theme"
             value={state.prefs.themeMode === 'dark'}
             onValueChange={(value) => actions.setPrefs({ ...state.prefs, themeMode: value ? 'dark' : 'light' })}
           />
           <Text style={styles.rowText}>Interests</Text>
-          <View style={styles.chipsWrap}>
-            {interestOptions.map((interest) => {
-              const selected = state.prefs.interestTags.includes(interest.id);
-              return (
-                <Chip
-                  key={interest.id}
-                  label={interest.label}
-                  selected={selected}
-                  onPress={() => {
-                    const updated = selected
-                      ? state.prefs.interestTags.filter((tag) => tag !== interest.id)
-                      : [...state.prefs.interestTags, interest.id];
-                    actions.setPrefs({ ...state.prefs, interestTags: updated });
-                  }}
-                />
-              );
-            })}
-          </View>
-          <Text style={styles.rowText}>Radius</Text>
-          <View style={styles.chips}>
-            {radiusOptions.map((radius) => (
-              <Chip
-                key={radius}
-                label={`${radius} km`}
-                selected={state.prefs.radiusKm === radius}
-                onPress={() => actions.setPrefs({ ...state.prefs, radiusKm: radius })}
-              />
-            ))}
+          {interestGroups.map((group) => (
+            <View key={group.title}>
+              <Text style={styles.groupLabel}>{group.title}</Text>
+              <View style={styles.chipsWrap}>
+                {group.options.map((interest) => {
+                  const selected = state.prefs.interestTags.includes(interest.id);
+                  return (
+                    <Chip
+                      key={interest.id}
+                      label={interest.label}
+                      selected={selected}
+                      onPress={() => {
+                        const updated = selected
+                          ? state.prefs.interestTags.filter((tag) => tag !== interest.id)
+                          : [...state.prefs.interestTags, interest.id];
+                        actions.setPrefs({ ...state.prefs, interestTags: updated });
+                      }}
+                    />
+                  );
+                })}
+              </View>
+            </View>
+          ))}
+          <Text style={styles.rowText}>Radius — {state.prefs.radiusKm} km</Text>
+          <Slider
+            style={styles.slider}
+            minimumValue={1}
+            maximumValue={25}
+            step={1}
+            value={state.prefs.radiusKm}
+            onSlidingComplete={(val) => actions.setPrefs({ ...state.prefs, radiusKm: val })}
+            minimumTrackTintColor={theme.colors.accent}
+            maximumTrackTintColor={theme.colors.border}
+            thumbTintColor={theme.colors.accent}
+          />
+          <View style={styles.sliderLabels}>
+            <Text style={styles.sliderLabel}>1 km</Text>
+            <Text style={styles.sliderLabel}>25 km</Text>
           </View>
         </View>
 
@@ -356,10 +388,32 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
   },
+  slider: {
+    width: '100%',
+    height: 40,
+    marginTop: theme.spacing.xs,
+  },
+  sliderLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  sliderLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+  },
   chipsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: theme.spacing.sm,
+  },
+  groupLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.md,
+    marginBottom: 2,
+    opacity: 0.7,
   },
   calendarRow: {
     flexDirection: 'row',

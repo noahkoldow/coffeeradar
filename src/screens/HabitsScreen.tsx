@@ -1,22 +1,82 @@
-import React, { useMemo } from 'react';
-import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useCallback, useRef, useState } from 'react';
+import { Alert, Animated, InteractionManager, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import * as Haptics from 'expo-haptics';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { recommendedHabits } from '../data/habits';
 import { Habit } from '../types';
-import { formatHabitFrequency, formatHabitTimeOfDay, isHabitDue } from '../utils/habits';
+import {
+  formatHabitFrequency,
+  formatHabitTimeOfDay,
+  isHabitDue,
+  weeklyDots,
+  weeklyCompletionCount,
+  streakEmoji,
+  buildWeeklyHistory,
+  DAY_LABELS,
+  habitToSuggestion,
+  getHabitUrgency,
+} from '../utils/habits';
+import { Commitment, DeckSuggestion } from '../types';
 
 type Props = StackScreenProps<RootStackParamList, 'Habits'>;
 
-export const HabitsScreen: React.FC<Props> = ({ navigation }) => {
+const DOT_LABELS_SHORT = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+
+/* ── Flip-card wrapper ───────────────────────── */
+const FlipCard: React.FC<{ front: React.ReactNode; back: React.ReactNode; flipped: boolean; onFlip: () => void }> = ({ front, back, flipped, onFlip }) => {
+  const animRef = useRef(new Animated.Value(flipped ? 1 : 0)).current;
+
+  const doFlip = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    onFlip();
+    Animated.spring(animRef, { toValue: flipped ? 0 : 1, tension: 80, friction: 12, useNativeDriver: true }).start();
+  };
+
+  const frontRotate = animRef.interpolate({ inputRange: [0, 1], outputRange: ['0deg', '180deg'] });
+  const backRotate = animRef.interpolate({ inputRange: [0, 1], outputRange: ['180deg', '360deg'] });
+  const frontOpacity = animRef.interpolate({ inputRange: [0, 0.5, 0.5, 1], outputRange: [1, 1, 0, 0] });
+  const backOpacity = animRef.interpolate({ inputRange: [0, 0.5, 0.5, 1], outputRange: [0, 0, 1, 1] });
+
+  return (
+    <Pressable onPress={doFlip}>
+      <View>
+        <Animated.View style={{ backfaceVisibility: 'hidden', opacity: frontOpacity, transform: [{ perspective: 800 }, { rotateY: frontRotate }] }}>
+          {front}
+        </Animated.View>
+        <Animated.View style={{ backfaceVisibility: 'hidden', opacity: backOpacity, position: 'absolute', top: 0, left: 0, right: 0, transform: [{ perspective: 800 }, { rotateY: backRotate }] }}>
+          {back}
+        </Animated.View>
+      </View>
+    </Pressable>
+  );
+};
+
+
+
+export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
+  const navigatingRef = useRef(false);
+  const flippedParam = route.params?.flippedHabitId;
+  const [flippedCards, setFlippedCards] = useState<Set<string>>(
+    flippedParam ? new Set([flippedParam]) : new Set(),
+  );
+
+  const toggleFlip = useCallback((habitId: string) => {
+    setFlippedCards((prev) => {
+      const next = new Set(prev);
+      if (next.has(habitId)) next.delete(habitId);
+      else next.add(habitId);
+      return next;
+    });
+  }, []);
 
   const suggestedHabits = useMemo(() => {
     const existing = new Set(state.habits.map((habit) => habit.name.toLowerCase()));
@@ -41,8 +101,225 @@ export const HabitsScreen: React.FC<Props> = ({ navigation }) => {
       tags: template.tags,
       createdAt: new Date().toISOString(),
       lastCompletedAt: null,
+      currentStreak: 0,
+      longestStreak: 0,
+      completionHistory: [],
     };
     actions.addHabit(habit);
+  };
+
+  const handleComplete = useCallback((habit: Habit) => {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    actions.recordActivity({
+      id: `act_${Date.now()}`,
+      suggestionId: habit.id,
+      title: habit.name,
+      durationMin: habit.lengthMin,
+      timestamp: new Date().toISOString(),
+      source: 'habit',
+      isHabit: true,
+      habitId: habit.id,
+      tags: habit.tags ?? [],
+      suggestionType: habit.type,
+    });
+    actions.completeHabit(habit.id);
+    // Defer navigation so React settles all state updates before pushing
+    InteractionManager.runAfterInteractions(() => {
+      navigation.navigate('Completion', {
+        title: habit.name,
+        durationMin: habit.lengthMin,
+        emojis: ['✨', '🎉', '⭐', '🔥'],
+        tags: habit.tags ?? [],
+        suggestionType: habit.type,
+        habitId: habit.id,
+        description: habit.description,
+      });
+      navigatingRef.current = false;
+    });
+  }, [actions, navigation]);
+
+  const confirmDelete = useCallback((habit: Habit) => {
+    Alert.alert(
+      'Delete habit?',
+      `Remove "${habit.name}" from your habits? This cannot be undone.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Delete', style: 'destructive', onPress: () => actions.removeHabit(habit.id) },
+      ],
+    );
+  }, [actions]);
+
+  const handleDoNow = useCallback((habit: Habit) => {
+    if (navigatingRef.current) return;
+    navigatingRef.current = true;
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    const suggestion: DeckSuggestion = {
+      ...habitToSuggestion(habit),
+      steps: [{ label: habit.name, minutes: habit.lengthMin }],
+    };
+    const now = new Date();
+    const endAt = new Date(now.getTime() + habit.lengthMin * 60_000);
+    const commitment: Commitment = {
+      suggestionId: suggestion.id,
+      type: habit.type,
+      title: habit.name,
+      startAt: now.toISOString(),
+      endAt: endAt.toISOString(),
+    };
+    InteractionManager.runAfterInteractions(() => {
+      navigation.navigate('Plan', { commitment, suggestion });
+      navigatingRef.current = false;
+    });
+  }, [navigation]);
+
+  const renderHabitCard = (habit: Habit) => {
+    const due = isHabitDue(habit);
+    const dots = weeklyDots(habit);
+    const weekCount = weeklyCompletionCount(habit);
+    const streak = habit.currentStreak ?? 0;
+    const longest = habit.longestStreak ?? 0;
+    const isFlipped = flippedCards.has(habit.id);
+    const weeklyHistory = buildWeeklyHistory(habit);
+    const urgency = getHabitUrgency(habit);
+
+    const front = (
+      <View style={styles.habitCard}>
+        {/* Header row: name + streak */}
+        <View style={styles.habitHeader}>
+          <View style={styles.habitNameWrap}>
+            <View style={styles.habitNameRow}>
+              {(urgency === 'approaching' || urgency === 'overdue') && (
+                <Text style={styles.hourglassIcon}>⏳</Text>
+              )}
+              <Text style={styles.habitName}>{habit.name}</Text>
+            </View>
+            <Text style={styles.habitMeta}>
+              {formatHabitFrequency(habit.frequency)} · {formatHabitTimeOfDay(habit.timeOfDay)} · {habit.lengthMin}m
+            </Text>
+          </View>
+          {streak > 0 && (
+            <View style={styles.streakBadge}>
+              <Text style={styles.streakText}>{streakEmoji(streak)} {streak}</Text>
+            </View>
+          )}
+        </View>
+
+        {/* Weekly dots */}
+        <View style={styles.dotsRow}>
+          {dots.map((done, i) => (
+            <View key={`dot_${i}`} style={styles.dotCol}>
+              <View style={[styles.dot, done ? styles.dotDone : styles.dotEmpty]} />
+              <Text style={styles.dotLabel}>{DOT_LABELS_SHORT[i]}</Text>
+            </View>
+          ))}
+          <View style={styles.dotSummary}>
+            <Text style={styles.dotSummaryText}>{weekCount}× this week</Text>
+          </View>
+        </View>
+
+        {/* Stats row */}
+        {(streak > 0 || longest > 0) && (
+          <View style={styles.statsRow}>
+            {streak > 0 && <Text style={styles.statText}>Current: {streak}</Text>}
+            {longest > 0 && <Text style={styles.statText}>Best: {longest}</Text>}
+          </View>
+        )}
+
+        {/* Action buttons */}
+        <View style={styles.habitActions}>
+          {due ? (
+            <>
+              <Pressable
+                style={({ pressed }) => [styles.completeBtn, pressed && styles.btnPressed]}
+                onPress={() => handleComplete(habit)}
+              >
+                <Text style={styles.completeBtnText}>✓ Mark done</Text>
+              </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.doNowBtn, pressed && styles.btnPressed]}
+                onPress={() => handleDoNow(habit)}
+              >
+                <Text style={styles.doNowBtnText}>▶ DO NOW</Text>
+              </Pressable>
+            </>
+          ) : (
+            <>
+              <Pressable
+                style={({ pressed }) => [styles.doneLabel, pressed && styles.btnPressed]}
+                onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); actions.uncompleteHabit(habit.id); actions.removeLatestActivityForHabit(habit.id); }}
+              >
+                <Text style={styles.doneLabelText}>↩ Undo</Text>
+              </Pressable>
+              <View style={[styles.doNowBtnDisabled]}>
+                <Text style={styles.doNowBtnDisabledText}>▶ DO NOW</Text>
+              </View>
+            </>
+          )}
+          <View style={styles.habitActionsRight}>
+            <Pressable
+              style={({ pressed }) => [styles.editBtn, pressed && styles.btnPressed]}
+              onPress={() => navigation.navigate('HabitForm', { habit })}
+            >
+              <Text style={styles.editBtnText}>Edit</Text>
+            </Pressable>
+            <Pressable
+              style={({ pressed }) => [styles.deleteIconBtn, pressed && styles.btnPressed]}
+              onPress={() => confirmDelete(habit)}
+            >
+              <Text style={styles.deleteIconText}>🗑</Text>
+            </Pressable>
+          </View>
+        </View>
+
+        <Text style={styles.flipHint}>Tap card to see history</Text>
+      </View>
+    );
+
+    const back = (
+      <View style={[styles.habitCard, styles.habitCardBack]}>
+        <View style={styles.backHeader}>
+          <Text style={styles.habitName}>{habit.name} — History</Text>
+          <Text style={styles.flipHint}>Tap to flip back</Text>
+        </View>
+        {/* Day labels header */}
+        <View style={styles.weekRow}>
+          <View style={styles.weekLabel} />
+          {DAY_LABELS.map((d, i) => (
+            <View key={`lbl_${i}`} style={styles.historyDotCol}>
+              <Text style={styles.historyDayLabel}>{d}</Text>
+            </View>
+          ))}
+        </View>
+        <ScrollView style={styles.historyScroll} nestedScrollEnabled showsVerticalScrollIndicator={false}>
+          {weeklyHistory.map((week, wi) => (
+            <View key={`w_${wi}`} style={styles.weekRow}>
+              <Text style={styles.weekLabel} numberOfLines={1}>{week.label}</Text>
+              {week.days.map((status, di) => (
+                <View key={`wd_${wi}_${di}`} style={styles.historyDotCol}>
+                  {status === null ? (
+                    <View style={[styles.historyDot, styles.historyDotNA]} />
+                  ) : (
+                    <View style={[styles.historyDot, status ? styles.historyDotDone : styles.historyDotMissed]}>
+                      <Text style={[styles.historyDotIcon, status ? styles.historyDotIconDone : styles.historyDotIconMissed]}>
+                        {status ? '✓' : '✕'}
+                      </Text>
+                    </View>
+                  )}
+                </View>
+              ))}
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    );
+
+    return (
+      <View key={habit.id}>
+        <FlipCard front={front} back={back} flipped={isFlipped} onFlip={() => toggleFlip(habit.id)} />
+      </View>
+    );
   };
 
   return (
@@ -55,47 +332,34 @@ export const HabitsScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.headerRow}>
           <Text style={styles.title}>Habits</Text>
           <Pressable onPress={() => navigation.navigate('HabitForm')}>
-            <Text style={styles.addLink}>Add habit</Text>
+            <Text style={styles.addLink}>+ Add habit</Text>
           </Pressable>
         </View>
         <Text style={styles.subtitle}>Build routines that show up in your swipe deck.</Text>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Your habits</Text>
-          {state.habits.length === 0 && (
-            <Text style={styles.emptyText}>No habits yet. Add one to keep it in your deck.</Text>
-          )}
-          {state.habits.map((habit) => {
-            const due = isHabitDue(habit);
-            return (
-              <View key={habit.id} style={styles.habitRow}>
-                <View>
-                  <Text style={styles.habitName}>{habit.name}</Text>
-                  <Text style={styles.habitMeta}>
-                    {formatHabitFrequency(habit.frequency)} - {formatHabitTimeOfDay(habit.timeOfDay)} - {habit.lengthMin}m
-                  </Text>
-                </View>
-                <Text style={[styles.habitStatus, due ? styles.habitDue : styles.habitOk]}>
-                  {due ? 'Due' : 'Done'}
-                </Text>
-              </View>
-            );
-          })}
-        </View>
+        {/* Your habits */}
+        {state.habits.length === 0 && (
+          <View style={styles.emptyCard}>
+            <Text style={styles.emptyEmoji}>🌱</Text>
+            <Text style={styles.emptyText}>No habits yet. Add one to build a streak!</Text>
+          </View>
+        )}
+        {state.habits.map(renderHabitCard)}
 
+        {/* Suggested habits */}
         {suggestedHabits.length > 0 && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Suggested habits</Text>
             {suggestedHabits.map((habit) => (
-              <View key={habit.name} style={styles.habitRow}>
-                <View>
-                  <Text style={styles.habitName}>{habit.name}</Text>
+              <View key={habit.name} style={styles.suggestedRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.suggestedName}>{habit.name}</Text>
                   <Text style={styles.habitMeta}>
-                    {formatHabitFrequency(habit.frequency)} - {formatHabitTimeOfDay(habit.timeOfDay)} - {habit.lengthMin}m
+                    {formatHabitFrequency(habit.frequency)} · {formatHabitTimeOfDay(habit.timeOfDay)} · {habit.lengthMin}m
                   </Text>
                 </View>
                 <Pressable onPress={() => addSuggestedHabit(habit)}>
-                  <Text style={styles.addLink}>Add</Text>
+                  <Text style={styles.addLink}>+ Add</Text>
                 </Pressable>
               </View>
             ))}
@@ -103,10 +367,10 @@ export const HabitsScreen: React.FC<Props> = ({ navigation }) => {
         )}
 
         <Pressable
-          style={({ pressed }) => [styles.addButton, pressed && styles.addButtonPressed]}
+          style={({ pressed }) => [styles.addButton, pressed && styles.btnPressed]}
           onPress={() => navigation.navigate('HabitForm')}
         >
-          <Text style={styles.addButtonText}>Add habit</Text>
+          <Text style={styles.addButtonText}>+ Create custom habit</Text>
         </Pressable>
       </ScrollView>
     </LinearGradient>
@@ -114,77 +378,146 @@ export const HabitsScreen: React.FC<Props> = ({ navigation }) => {
 };
 
 const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
-  container: {
-    flex: 1,
-  },
-  scroll: {
-    padding: theme.spacing.lg,
-    paddingBottom: theme.spacing.xl,
-  },
-  back: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.textMuted,
-  },
+  container: { flex: 1 },
+  scroll: { padding: theme.spacing.lg, paddingBottom: theme.spacing.xxl },
+  back: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted },
   headerRow: {
     marginTop: theme.spacing.sm,
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
-  title: {
-    fontFamily: theme.fonts.heading,
-    fontSize: 28,
-    color: theme.colors.text,
-  },
-  subtitle: {
-    fontFamily: theme.fonts.body,
-    color: theme.colors.textMuted,
-    marginTop: theme.spacing.sm,
-  },
-  section: {
+  title: { fontFamily: theme.fonts.heading, fontSize: 28, color: theme.colors.text },
+  subtitle: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, marginTop: theme.spacing.xs },
+  addLink: { fontFamily: theme.fonts.semibold, color: theme.colors.accent, fontSize: 14 },
+
+  /* ── Empty state ─── */
+  emptyCard: {
     marginTop: theme.spacing.lg,
-    padding: theme.spacing.md,
     backgroundColor: theme.colors.card,
     borderRadius: theme.radius.md,
+    padding: theme.spacing.xl,
+    alignItems: 'center',
     gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
-  sectionTitle: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.text,
+  emptyEmoji: { fontSize: 36 },
+  emptyText: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, textAlign: 'center' },
+
+  /* ── Habit card ─── */
+  habitCard: {
+    marginTop: theme.spacing.md,
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
   },
-  emptyText: {
-    fontFamily: theme.fonts.body,
-    color: theme.colors.textMuted,
+  habitHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
+  habitNameWrap: { flex: 1 },
+  habitNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  hourglassIcon: { fontSize: 14 },
+  habitName: { fontFamily: theme.fonts.semibold, fontSize: 16, color: theme.colors.text },
+  habitMeta: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
+  streakBadge: {
+    backgroundColor: theme.colors.accentSoft,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
   },
-  habitRow: {
+  streakText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.accentDark },
+
+  /* ── Weekly dots ─── */
+  dotsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
+  dotCol: { alignItems: 'center', gap: 2 },
+  dot: { width: 20, height: 20, borderRadius: 10 },
+  dotDone: { backgroundColor: theme.colors.accent },
+  dotEmpty: { backgroundColor: theme.colors.backgroundAlt, borderWidth: 1, borderColor: theme.colors.border },
+  dotLabel: { fontFamily: theme.fonts.body, fontSize: 9, color: theme.colors.textMuted },
+  dotSummary: { marginLeft: 'auto' },
+  dotSummaryText: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.textMuted },
+
+  /* ── Stats ─── */
+  statsRow: { flexDirection: 'row', gap: 16 },
+  statText: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted },
+
+  /* ── Actions ─── */
+  habitActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
+  habitActionsRight: { flexDirection: 'row', gap: theme.spacing.sm },
+  completeBtn: {
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: theme.radius.sm,
+  },
+  completeBtnText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: '#fff' },
+  doNowBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1.5,
+    borderColor: theme.colors.accent,
+    backgroundColor: '#fff',
+  },
+  doNowBtnText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.accent },
+  doNowBtnDisabled: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1.5,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.backgroundAlt,
+    opacity: 0.5,
+  },
+  doNowBtnDisabledText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textMuted },
+  doneLabel: {
+    backgroundColor: theme.colors.backgroundAlt,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: theme.radius.sm,
+  },
+  doneLabelText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.accent },
+  deleteIconBtn: {
+    paddingHorizontal: 8,
+    paddingVertical: 8,
+    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  deleteIconText: { fontSize: 15 },
+  editBtn: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.colors.backgroundAlt,
+  },
+  editBtnText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textMuted },
+  btnPressed: { opacity: 0.7, transform: [{ scale: 0.97 }] },
+
+  /* ── Suggested ─── */
+  section: {
+    marginTop: theme.spacing.lg,
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  sectionTitle: { fontFamily: theme.fonts.semibold, color: theme.colors.text },
+  suggestedRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingVertical: 6,
   },
-  habitName: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.text,
-  },
-  habitMeta: {
-    fontFamily: theme.fonts.body,
-    color: theme.colors.textMuted,
-    fontSize: 12,
-  },
-  habitStatus: {
-    fontFamily: theme.fonts.semibold,
-    fontSize: 12,
-  },
-  habitDue: {
-    color: theme.colors.danger,
-  },
-  habitOk: {
-    color: theme.colors.accentDark,
-  },
-  addLink: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.accentDark,
-  },
+  suggestedName: { fontFamily: theme.fonts.semibold, color: theme.colors.text },
+
+  /* ── Bottom button ─── */
   addButton: {
     marginTop: theme.spacing.lg,
     paddingVertical: theme.spacing.md,
@@ -194,11 +527,77 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  addButtonPressed: {
-    transform: [{ scale: 0.98 }],
+  addButtonText: { fontFamily: theme.fonts.semibold, color: theme.colors.text },
+
+  /* ── Flip card ─── */
+  flipHint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+    textAlign: 'right',
+    marginTop: 2,
   },
-  addButtonText: {
+  habitCardBack: {
+    backgroundColor: theme.colors.backgroundAlt,
+    minHeight: 220,
+  },
+  backHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: theme.spacing.sm,
+  },
+  historyScroll: {
+    maxHeight: 200,
+  },
+  weekRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingVertical: 3,
+  },
+  weekLabel: {
+    width: 80,
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+  },
+  historyDotCol: {
+    flex: 1,
+    alignItems: 'center',
+  },
+  historyDayLabel: {
     fontFamily: theme.fonts.semibold,
-    color: theme.colors.text,
+    fontSize: 9,
+    color: theme.colors.textMuted,
+  },
+  historyDot: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  historyDotDone: {
+    backgroundColor: theme.colors.accent,
+  },
+  historyDotMissed: {
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  historyDotNA: {
+    backgroundColor: theme.colors.backgroundAlt,
+    opacity: 0.3,
+  },
+  historyDotIcon: {
+    fontSize: 11,
+    fontFamily: theme.fonts.semibold,
+  },
+  historyDotIconDone: {
+    color: '#fff',
+  },
+  historyDotIconMissed: {
+    color: theme.colors.textMuted,
   },
 });

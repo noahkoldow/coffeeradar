@@ -62,7 +62,6 @@ const INTEREST_TYPE_MAP: Record<string, string[]> = {
 const DEFAULT_TYPES = ['cafe', 'park', 'art_gallery', 'museum', 'library'];
 
 const TYPE_TAG_MAP: Record<string, string> = {
-  cafe: 'coffee',
   restaurant: 'food',
   bakery: 'food',
   bar: 'social',
@@ -75,7 +74,16 @@ const TYPE_TAG_MAP: Record<string, string> = {
   gym: 'fitness',
   spa: 'wellness',
   movie_theater: 'movies',
+  cafe: 'coffee', // Keep café last so it doesn't override more specific types
 };
+
+/** Ordered priority for picking the "primary" type label — first match wins */
+const TYPE_PRIORITY: string[] = [
+  'museum', 'art_gallery', 'library', 'book_store', 'movie_theater',
+  'park', 'tourist_attraction', 'spa', 'gym',
+  'restaurant', 'bakery', 'bar',
+  'cafe', // café is last resort
+];
 
 const TAG_APPEAL: Record<string, string> = {
   coffee: 'coffee break',
@@ -107,6 +115,97 @@ const parseTime = (time: string): { hours: number; minutes: number } | null => {
   const minutes = parseInt(time.slice(2), 10);
   if (Number.isNaN(hours) || Number.isNaN(minutes)) return null;
   return { hours, minutes };
+};
+
+/** Pick the best primary type for a place, using priority order */
+const pickPrimaryType = (types: string[]): string | undefined =>
+  TYPE_PRIORITY.find((t) => types.includes(t));
+
+const generatePlaceBlurb = (
+  name: string,
+  types: string[],
+  rating?: number,
+  ratingCount?: number,
+  address?: string,
+): string => {
+  const primary = pickPrimaryType(types);
+
+  // Per-type blurb templates — each has several variants picked by name hash
+  const templates: Record<string, string[]> = {
+    cafe: [
+      `${name} — a solid coffee spot nearby. Grab a drink, settle in, take a breather.`,
+      `Pop into ${name} for a coffee and a change of scenery.`,
+      `${name} is the kind of café where you can just sit and let time pass.`,
+    ],
+    restaurant: [
+      `${name} — a great place to sit down for a proper meal nearby.`,
+      `Hungry? ${name} has you covered. Sit down, order something good.`,
+      `Treat yourself to a meal at ${name}. No cooking, no cleanup.`,
+    ],
+    bakery: [
+      `${name} — fresh baked goods just around the corner.`,
+      `Walk into ${name}, pick something warm out of the oven, enjoy.`,
+      `Pastries, bread, good smells — that's ${name}.`,
+    ],
+    bar: [
+      `${name} — a chill spot for a drink and some downtime.`,
+      `Swing by ${name} for a drink. No plans needed.`,
+      `${name} is a good bar to just show up at.`,
+    ],
+    art_gallery: [
+      `${name} — browse some art and let your mind wander.`,
+      `Step into ${name} for a quiet dose of culture.`,
+      `${name} has exhibits worth seeing. Go look at something beautiful.`,
+    ],
+    museum: [
+      `${name} — spend some time exploring exhibits and learning something new.`,
+      `Curious? ${name} has plenty to discover. Give yourself an hour.`,
+      `${name} is a great museum to wander through at your own pace.`,
+    ],
+    library: [
+      `${name} — quiet, calm, free Wi-Fi. Perfect for reading or focused work.`,
+      `Head to ${name} for some uninterrupted focus time.`,
+      `${name} is nearby and ideal for deep reading or study.`,
+    ],
+    book_store: [
+      `${name} — browse shelves, discover something unexpected.`,
+      `Walk into ${name} with no plan. Leave with a new book.`,
+      `${name} is the kind of bookshop you can lose yourself in.`,
+    ],
+    park: [
+      `${name} — green space, fresh air, room to move or just sit.`,
+      `Take a walk through ${name}. Breathe. No agenda.`,
+      `${name} is a great spot to stretch your legs or find a bench.`,
+    ],
+    tourist_attraction: [
+      `${name} — something interesting nearby worth checking out.`,
+      `Go see ${name}. It's close and you haven't been in a while (or ever).`,
+      `${name} is one of those places you keep meaning to visit.`,
+    ],
+    gym: [
+      `${name} — get a workout in and burn off some energy.`,
+      `Head to ${name} and move your body for a bit.`,
+      `${name} is nearby. Time to sweat.`,
+    ],
+    spa: [
+      `${name} — unwind with some wellness time.`,
+      `Treat yourself at ${name}. You could use the reset.`,
+      `${name} is a good excuse to slow down and recharge.`,
+    ],
+    movie_theater: [
+      `${name} — see what's playing and catch a screening.`,
+      `Movie time at ${name}. Pick something, sit back, enjoy.`,
+      `${name} has films showing now. Big screen, no distractions.`,
+    ],
+  };
+
+  // Simple hash from name to pick a template variant
+  const hash = name.split('').reduce((sum, c) => sum + c.charCodeAt(0), 0);
+  const variants = (primary && templates[primary]) || templates.cafe!;
+  const blurb = variants[hash % variants.length];
+
+  const locationHint = address ? ` At ${address.split(',')[0]}.` : '';
+  return `${blurb}${locationHint}`;
 };
 
 const buildAppeal = (
@@ -198,7 +297,7 @@ export const fetchGooglePlacesSuggestions = async (
   }
   if (!location.lat || !location.lng) return [];
 
-  const radiusKm = Math.max(1, Math.min(prefs.radiusKm || 5, 10));
+  const radiusKm = Math.max(1, Math.min(prefs.radiusKm || 5, 25));
   const radius = Math.round(radiusKm * 1000);
   const interestTypes = prefs.allowSerendipity
     ? DEFAULT_TYPES
@@ -271,7 +370,8 @@ export const fetchGooglePlacesSuggestions = async (
     }
 
     if (openStatus === 'unknown') return;
-    if ((place.user_ratings_total ?? 0) < 20) return;
+    if ((place.user_ratings_total ?? 0) < 10) return;
+    if ((place.rating ?? 0) < 3.7) return;
 
     const durationMin = estimateDuration(place.types || []);
 
@@ -280,18 +380,35 @@ export const fetchGooglePlacesSuggestions = async (
       if (openAt > availabilityEnd) return;
     }
 
-    const tags = (place.types || [])
+    // Assign tags using priority order — first matching type becomes primary
+    const primary = pickPrimaryType(place.types || []);
+    const allTags = (place.types || [])
       .map((type) => TYPE_TAG_MAP[type])
       .filter(Boolean) as string[];
+    // Deduplicate and put primary tag first
+    const primaryTag = primary ? TYPE_TAG_MAP[primary] : undefined;
+    const seen = new Set<string>();
+    const tags: string[] = [];
+    if (primaryTag) { tags.push(primaryTag); seen.add(primaryTag); }
+    for (const t of allTags) {
+      if (!seen.has(t)) { tags.push(t); seen.add(t); }
+    }
 
     const label = buildAppeal(tags, openStatus, opensInMin, place.rating, place.user_ratings_total);
+    const placeBlurb = generatePlaceBlurb(
+      place.name,
+      place.types || [],
+      place.rating,
+      place.user_ratings_total,
+      detail?.result?.formatted_address ?? place.vicinity,
+    );
 
     suggestions.push({
       id: `google_${place.place_id}`,
       type: 'GO_OUT',
       source: 'curated',
       title: place.name,
-      description: label,
+      description: placeBlurb,
       durationMin,
       tags,
       openStatus,

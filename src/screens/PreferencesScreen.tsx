@@ -1,40 +1,73 @@
 import React, { useMemo, useState } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
+import { CommonActions } from '@react-navigation/native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import Slider from '@react-native-community/slider';
 import { PrimaryButton } from '../components/PrimaryButton';
-import { ToggleRow } from '../components/ToggleRow';
 import { Chip } from '../components/Chip';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 
-type Props = StackScreenProps<RootStackParamList, 'Preferences'>;
+const LOGO_HEIGHT = 30;
+const LOGO_WIDTH = LOGO_HEIGHT * 3;
+const bitsLogo = require('../../assets/logo.png');
 
-const radiusOptions = [2, 5, 10];
-const interestOptions = [
-  { id: 'fitness', label: 'Fitness' },
-  { id: 'wellness', label: 'Wellness' },
-  { id: 'nature', label: 'Nature' },
-  { id: 'art', label: 'Art' },
-  { id: 'music', label: 'Music' },
-  { id: 'movies', label: 'Movies' },
-  { id: 'food', label: 'Food' },
-  { id: 'coffee', label: 'Coffee' },
-  { id: 'learning', label: 'Learning' },
-  { id: 'focus', label: 'Focus' },
-  { id: 'social', label: 'Social' },
-  { id: 'explore', label: 'Explore' },
+type Props = StackScreenProps<RootStackParamList, 'Preferences'>;
+const interestGroups = [
+  {
+    title: 'Active',
+    options: [
+      { id: 'fitness', label: '🏋️ Fitness' },
+      { id: 'cycling', label: '🚴 Cycling' },
+      { id: 'running', label: '🏃 Running' },
+      { id: 'swimming', label: '🏊 Swimming' },
+      { id: 'hiking', label: '🥾 Hiking' },
+      { id: 'wellness', label: '🧘 Wellness' },
+    ],
+  },
+  {
+    title: 'Explore',
+    options: [
+      { id: 'nature', label: '🌿 Nature' },
+      { id: 'beaches', label: '🏖️ Beaches' },
+      { id: 'parks', label: '🌳 Parks' },
+      { id: 'explore', label: '🧭 Explore' },
+    ],
+  },
+  {
+    title: 'Food & Drink',
+    options: [
+      { id: 'coffee', label: '☕ Coffee & Cafés' },
+      { id: 'food', label: '🍽️ Dining' },
+      { id: 'street_food', label: '🌮 Street Food' },
+    ],
+  },
+  {
+    title: 'Culture & Learning',
+    options: [
+      { id: 'art', label: '🎨 Art' },
+      { id: 'music', label: '🎵 Music' },
+      { id: 'movies', label: '🎬 Movies' },
+      { id: 'learning', label: '📚 Learning' },
+    ],
+  },
+  {
+    title: 'Productivity & Social',
+    options: [
+      { id: 'focus', label: '🎯 Focus' },
+      { id: 'social', label: '🫢 Social' },
+    ],
+  },
 ];
 
-export const PreferencesScreen: React.FC<Props> = () => {
+export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
-  const [openToGoingOut, setOpenToGoingOut] = useState(state.prefs.openToGoingOut);
-  const [allowSerendipity, setAllowSerendipity] = useState(state.prefs.allowSerendipity);
   const [radiusKm, setRadiusKm] = useState(state.prefs.radiusKm);
   const [interestTags, setInterestTags] = useState<string[]>(state.prefs.interestTags || []);
 
@@ -46,13 +79,18 @@ export const PreferencesScreen: React.FC<Props> = () => {
 
   const onContinue = () => {
     actions.setPrefs({
-      openToGoingOut,
-      allowSerendipity,
+      openToGoingOut: state.prefs.openToGoingOut,
+      allowSerendipity: state.prefs.allowSerendipity,
       radiusKm,
       interestTags,
       themeMode: state.prefs.themeMode,
     });
     actions.completeOnboarding();
+    // Reset the nav stack so the user lands on Home with a clean history
+    // (no back-arrow to onboarding screens).
+    navigation.dispatch(
+      CommonActions.reset({ index: 0, routes: [{ name: 'Home' }] }),
+    );
   };
 
   return (
@@ -60,45 +98,51 @@ export const PreferencesScreen: React.FC<Props> = () => {
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
-      <View style={styles.content}>
-        <Text style={styles.title}>Quick preferences</Text>
-        <Text style={styles.subtitle}>One tap each. You can change later.</Text>
-        <View style={styles.section}>
-          <ToggleRow
-            label="Open to going out"
-            value={openToGoingOut}
-            onValueChange={setOpenToGoingOut}
-          />
-          <ToggleRow
-            label="Surprise me outside my interests"
-            value={allowSerendipity}
-            onValueChange={setAllowSerendipity}
-          />
-        </View>
-        <Text style={styles.sectionTitle}>Pick a few interests</Text>
-        <View style={styles.chipsWrap}>
-          {interestOptions.map((interest) => (
-            <Chip
-              key={interest.id}
-              label={interest.label}
-              selected={interestTags.includes(interest.id)}
-              onPress={() => toggleInterest(interest.id)}
-            />
+      <ScrollView
+        contentContainerStyle={styles.scroll}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+      >
+        <View style={styles.content}>
+          <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+          <Text style={styles.title}>Quick preferences</Text>
+          <Text style={styles.subtitle}>One tap each. You can change later.</Text>
+          <Text style={styles.sectionTitle}>Pick a few interests</Text>
+          {interestGroups.map((group) => (
+            <View key={group.title}>
+              <Text style={styles.groupLabel}>{group.title}</Text>
+              <View style={styles.chipsWrap}>
+                {group.options.map((interest) => (
+                  <Chip
+                    key={interest.id}
+                    label={interest.label}
+                    selected={interestTags.includes(interest.id)}
+                    onPress={() => toggleInterest(interest.id)}
+                  />
+                ))}
+              </View>
+            </View>
           ))}
+          <Text style={styles.sectionTitle}>Radius — {radiusKm} km</Text>
+          <Slider
+            style={styles.slider}
+            minimumValue={1}
+            maximumValue={25}
+            step={1}
+            value={radiusKm}
+            onValueChange={setRadiusKm}
+            minimumTrackTintColor={theme.colors.accent}
+            maximumTrackTintColor={theme.colors.border}
+            thumbTintColor={theme.colors.accent}
+          />
+          <View style={styles.sliderLabels}>
+            <Text style={styles.sliderLabel}>1 km</Text>
+            <Text style={styles.sliderLabel}>25 km</Text>
+          </View>
         </View>
-        <Text style={styles.sectionTitle}>Radius</Text>
-        <View style={styles.chips}>
-          {radiusOptions.map((radius) => (
-            <Chip
-              key={radius}
-              label={`${radius} km`}
-              selected={radiusKm === radius}
-              onPress={() => setRadiusKm(radius)}
-            />
-          ))}
-        </View>
-      </View>
-      <PrimaryButton label="Continue" onPress={onContinue} style={styles.button} />
+        <View style={styles.buttonSpacer} />
+        <PrimaryButton label="Continue" onPress={onContinue} style={styles.button} />
+      </ScrollView>
     </LinearGradient>
   );
 };
@@ -106,11 +150,19 @@ export const PreferencesScreen: React.FC<Props> = () => {
 const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   container: {
     flex: 1,
+  },
+  scroll: {
+    flexGrow: 1,
     padding: theme.spacing.xl,
     justifyContent: 'space-between',
   },
   content: {
     marginTop: theme.spacing.xxl,
+  },
+  logo: {
+    width: LOGO_WIDTH,
+    height: LOGO_HEIGHT,
+    marginBottom: theme.spacing.lg,
   },
   title: {
     fontFamily: theme.fonts.heading,
@@ -142,10 +194,35 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   chipsWrap: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    marginTop: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
     gap: theme.spacing.sm,
+  },
+  groupLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.md,
+    marginBottom: 2,
+    opacity: 0.7,
   },
   button: {
     marginBottom: theme.spacing.xl,
+  },
+  buttonSpacer: {
+    height: theme.spacing.lg,
+  },
+  slider: {
+    width: '100%',
+    height: 40,
+    marginTop: theme.spacing.sm,
+  },
+  sliderLabels: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  sliderLabel: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
   },
 });

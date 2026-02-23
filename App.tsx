@@ -23,6 +23,7 @@ import { ProfileScreen } from './src/screens/ProfileScreen';
 import { HabitFormScreen } from './src/screens/HabitFormScreen';
 import { HabitsScreen } from './src/screens/HabitsScreen';
 import { BadgeDetailScreen } from './src/screens/BadgeDetailScreen';
+import { CompletionScreen } from './src/screens/CompletionScreen';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { lightTheme } from './src/theme';
 import { logEvent } from './src/services/analytics';
@@ -72,26 +73,20 @@ const AppNavigator = () => {
         initialRouteName={showOnboarding ? 'Welcome' : 'Home'}
         screenOptions={{ headerShown: false }}
       >
-        {showOnboarding ? (
-          <>
-            <Stack.Screen name="Welcome" component={WelcomeScreen} />
-            <Stack.Screen name="CalendarPermission" component={CalendarPermissionScreen} />
-            <Stack.Screen name="CalendarSelect" component={CalendarSelectScreen} />
-            <Stack.Screen name="LocationPermission" component={LocationPermissionScreen} />
-            <Stack.Screen name="Preferences" component={PreferencesScreen} />
-          </>
-        ) : (
-          <>
-            <Stack.Screen name="Home" component={HomeScreen} />
-            <Stack.Screen name="Deck" component={DeckScreen} />
-            <Stack.Screen name="Plan" component={PlanScreen} />
-            <Stack.Screen name="Settings" component={SettingsScreen} />
-            <Stack.Screen name="Profile" component={ProfileScreen} />
-            <Stack.Screen name="HabitForm" component={HabitFormScreen} />
-            <Stack.Screen name="Habits" component={HabitsScreen} />
-            <Stack.Screen name="BadgeDetail" component={BadgeDetailScreen} />
-          </>
-        )}
+        <Stack.Screen name="Welcome" component={WelcomeScreen} />
+        <Stack.Screen name="CalendarPermission" component={CalendarPermissionScreen} />
+        <Stack.Screen name="CalendarSelect" component={CalendarSelectScreen} />
+        <Stack.Screen name="LocationPermission" component={LocationPermissionScreen} />
+        <Stack.Screen name="Preferences" component={PreferencesScreen} />
+        <Stack.Screen name="Home" component={HomeScreen} />
+        <Stack.Screen name="Deck" component={DeckScreen} />
+        <Stack.Screen name="Plan" component={PlanScreen} />
+        <Stack.Screen name="Settings" component={SettingsScreen} />
+        <Stack.Screen name="Profile" component={ProfileScreen} />
+        <Stack.Screen name="HabitForm" component={HabitFormScreen} />
+        <Stack.Screen name="Habits" component={HabitsScreen} />
+        <Stack.Screen name="BadgeDetail" component={BadgeDetailScreen} />
+        <Stack.Screen name="Completion" component={CompletionScreen} />
       </Stack.Navigator>
     </NavigationContainer>
   );
@@ -128,7 +123,7 @@ export default function App() {
 
 const ThemedStatusBar = () => {
   const theme = useTheme();
-  const isDark = theme.colors.background === '#1C1A18';
+  const isDark = theme.isDark;
   return <StatusBar style={isDark ? 'light' : 'dark'} />;
 };
 

@@ -8,6 +8,7 @@ export const curatedEvents: Suggestion[] = [
     id: 'ev_curated_1',
     type: 'EVENT',
     title: 'Sunset jazz set',
+    cta: 'Catch live jazz tonight',
     description: 'A short live set with seats available.',
     durationMin: 120,
     event: {
@@ -28,6 +29,7 @@ export const curatedEvents: Suggestion[] = [
     id: 'ev_curated_2',
     type: 'EVENT',
     title: 'Indie film screening',
+    cta: 'Watch an indie film tonight',
     description: 'Small cinema with a short feature.',
     durationMin: 110,
     event: {
@@ -48,6 +50,7 @@ export const curatedEvents: Suggestion[] = [
     id: 'ev_curated_3',
     type: 'EVENT',
     title: 'Late gallery opening',
+    cta: 'Drop into a gallery opening',
     description: 'Drop in for a quick exhibit loop.',
     durationMin: 90,
     event: {

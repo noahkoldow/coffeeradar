@@ -1,5 +1,5 @@
 import React, { useMemo } from 'react';
-import { StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackScreenProps } from '@react-navigation/stack';
@@ -7,18 +7,24 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 
+const LOGO_HEIGHT = 30;
+const LOGO_WIDTH = LOGO_HEIGHT * 3;
+const bitsLogo = require('../../assets/logo.png');
+
 type Props = StackScreenProps<RootStackParamList, 'Welcome'>;
 
 export const WelcomeScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
+
   return (
     <LinearGradient
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
       <View style={styles.content}>
+        <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
         <Text style={styles.title}>Tap once. Do something now.</Text>
         <Text style={styles.subtitle}>We fit it to your schedule, then commit.</Text>
       </View>
@@ -39,6 +45,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   content: {
     marginTop: theme.spacing.xxl,
+  },
+  logo: {
+    width: LOGO_WIDTH,
+    height: LOGO_HEIGHT,
+    marginBottom: theme.spacing.lg,
   },
   title: {
     fontFamily: theme.fonts.heading,

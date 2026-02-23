@@ -32,8 +32,12 @@ export type Suggestion = {
   source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback';
   habitId?: string;
   title: string;
+  /** Short action-oriented call-to-action displayed as headline */
+  cta?: string;
   description: string;
   durationMin: number;
+  /** Preferred time of day — used to filter curated suggestions */
+  timeOfDay?: HabitTimeOfDay;
   steps?: Step[];
   equipment?: string[];
   tags?: string[];
@@ -69,6 +73,8 @@ export type Availability = {
   end: string;
   durationMin: number;
   nextEventTitle?: string | null;
+  /** Calendar event ID of the currently-happening event (for deep-linking) */
+  currentEventId?: string | null;
 };
 
 export type UserPrefs = {
@@ -93,6 +99,8 @@ export type LocationState = {
 export type HistoryState = {
   lastAcceptedIds: string[];
   lastRejectedIds: string[];
+  /** IDs of all cards ever shown across decks — used to prevent repeats */
+  lastShownIds: string[];
 };
 
 export type Habit = {
@@ -103,9 +111,17 @@ export type Habit = {
   description: string;
   frequency: HabitFrequency;
   timeOfDay: HabitTimeOfDay;
+  /** Optional exact preferred time as HH:MM (24h). Overrides timeOfDay for scheduling. */
+  preferredTime?: string;
   tags?: string[];
   createdAt: string;
   lastCompletedAt?: string | null;
+  /** Current consecutive streak count */
+  currentStreak: number;
+  /** All-time longest streak */
+  longestStreak: number;
+  /** ISO timestamps of each completion (most recent first, max 90) */
+  completionHistory: string[];
 };
 
 export type ActivityLog = {
@@ -138,4 +154,36 @@ export type Commitment = {
   ticketUrl?: string;
   calendarEventId?: string;
   calendarWriteFailed?: boolean;
+};
+
+/** A "schedule for later" entry persisted so HomeScreen can show it */
+export type ScheduledActivity = {
+  id: string;
+  suggestionId: string;
+  title: string;
+  description: string;
+  durationMin: number;
+  startAt: string;
+  endAt: string;
+  type: SuggestionType;
+  tags?: string[];
+  calendarEventId?: string;
+  /** Serialised DeckSuggestion + Commitment so we can open PlanScreen */
+  suggestion: DeckSuggestion;
+  commitment: Commitment;
+};
+
+/** Per-tag affinity score learned from swipes & completions */
+export type TagAffinities = Record<string, number>;
+
+/** Detected location profile */
+export type LocationProfile = {
+  label: 'coastal' | 'urban' | 'suburban' | 'unknown';
+  /** Tag boosts derived from the profile (e.g. coastal → beaches +0.15) */
+  boosts: Record<string, number>;
+  /** Lat/lng used for detection — re-detect when user moves significantly */
+  lat: number;
+  lng: number;
+  /** ISO timestamp of last detection */
+  detectedAt: string;
 };

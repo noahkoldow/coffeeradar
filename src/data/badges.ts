@@ -64,4 +64,12 @@ export const badgeDefinitions: BadgeDefinition[] = [
     levels: [1, 3, 6, 10, 15],
     color: '#B45309',
   },
+  {
+    id: 'habits',
+    title: 'Habits',
+    description: 'Earned by building streaks and completing habits consistently.',
+    tags: ['__habit__'],
+    levels: [3, 7, 14, 30, 60],
+    color: '#059669',
+  },
 ];
