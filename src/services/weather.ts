@@ -15,6 +15,21 @@ export type WeatherInfo = {
   label: string;
 };
 
+export const resolveLocationTimeZone = async (lat: number, lng: number): Promise<string | null> => {
+  try {
+    const response = await fetch(
+      `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}&current=temperature_2m&timezone=auto`,
+    );
+    if (!response.ok) return null;
+    const data = await response.json();
+    return typeof data?.timezone === 'string' && data.timezone.trim().length > 0
+      ? data.timezone
+      : null;
+  } catch {
+    return null;
+  }
+};
+
 const CACHE_TTL_MS = 15 * 60 * 1000;
 let cached: { ts: number; lat: number; lng: number; data: WeatherInfo } | null = null;
 

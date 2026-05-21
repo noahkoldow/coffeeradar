@@ -8,10 +8,12 @@ import {
   LocationProfile,
   LocationState,
   PermissionsState,
+  SavedSuggestion,
   ScheduledActivity,
   TagAffinities,
   UserPrefs,
 } from '../types';
+import { BusinessProfile } from '../types/business';
 import {
   clearStorage,
   loadActivityLog,
@@ -29,9 +31,11 @@ import {
   savePrefs,
   saveTagAffinities,
   loadScheduledActivities,
+  loadSavedSuggestions,
   saveScheduledActivities,
+  saveSavedSuggestions,
 } from '../utils/storage';
-import { getCalendarPermissionStatus } from '../services/calendar';
+import { getCalendarPermissionStatus, getUpcomingEvents } from '../services/calendar';
 import { getLocationPermissionStatus } from '../services/location';
 import { subscribeAuthState } from '../services/auth';
 import { firebaseEnabled } from '../services/firebase';
@@ -46,13 +50,20 @@ import {
   syncLocationProfile,
   syncHabits,
   loadFirebaseHabits,
+  loadFirebaseSavedSuggestions,
+  loadFirebaseProfileContext,
+  syncSavedSuggestions,
+  syncUserProfileContext,
 } from '../services/user';
+import { setPreferredTimeZone } from '../utils/time';
 
 const defaultPrefs: UserPrefs = {
   openToGoingOut: true,
   allowSerendipity: false,
   radiusKm: 5,
   interestTags: [],
+  wakeStartTime: '07:00',
+  wakeEndTime: '23:00',
   themeMode: 'light',
 };
 
@@ -71,6 +82,7 @@ const defaultLocation: LocationState = {
   lat: null,
   lng: null,
   areaLabel: null,
+  timeZone: null,
 };
 
 type AppState = {
@@ -92,6 +104,10 @@ type AppState = {
   tagAffinities: TagAffinities;
   locationProfile: LocationProfile | null;
   scheduledActivities: ScheduledActivity[];
+  savedSuggestions: SavedSuggestion[];
+  accountType: 'consumer' | 'business';
+  businessProfile: BusinessProfile | null;
+  businessMode: boolean;
 };
 
 type AppActions = {
@@ -116,7 +132,12 @@ type AppActions = {
   setLocationProfile: (value: LocationProfile | null) => void;
   addScheduledActivity: (item: ScheduledActivity) => void;
   removeScheduledActivity: (id: string) => void;
+  saveSuggestion: (item: SavedSuggestion) => void;
+  removeSavedSuggestion: (id: string) => void;
   resetData: () => Promise<void>;
+  switchToBusinessMode: (profile: BusinessProfile) => void;
+  switchToConsumerMode: () => void;
+  setBusinessProfile: (profile: BusinessProfile | null) => void;
 };
 
 const AppStateContext = createContext<{ state: AppState; actions: AppActions } | undefined>(undefined);
@@ -140,13 +161,17 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [tagAffinities, setTagAffinitiesState] = useState<TagAffinities>({});
   const [locationProfile, setLocationProfileState] = useState<LocationProfile | null>(null);
   const [scheduledActivities, setScheduledActivitiesState] = useState<ScheduledActivity[]>([]);
+  const [savedSuggestions, setSavedSuggestionsState] = useState<SavedSuggestion[]>([]);
+  const [accountType, setAccountType] = useState<'consumer' | 'business'>('consumer');
+  const [businessProfile, setBusinessProfileState] = useState<BusinessProfile | null>(null);
+  const [businessMode, setBusinessMode] = useState(false);
 
   // Refs for preloadDeck so it always reads the latest values without
   // being a useMemo dependency (which would cause infinite re-renders).
-  const preloadRef = useRef({ location, prefs, history, habits, tagAffinities, locationProfile });
+  const preloadRef = useRef({ location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions });
   useEffect(() => {
-    preloadRef.current = { location, prefs, history, habits, tagAffinities, locationProfile };
-  }, [location, prefs, history, habits, tagAffinities, locationProfile]);
+    preloadRef.current = { location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions };
+  }, [location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions]);
   const preloadedDeckRef = useRef(preloadedDeck);
   useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
   const deckBuildId = useRef(0);
@@ -194,7 +219,26 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           return;
         }
 
-        const [storedPrefs, storedHistory, storedCalendars, storedOnboarding, storedHabits, storedActivity, storedAffinities, storedScheduled] = await Promise.all([
+        const [
+          storedPrefs,
+          storedHistory,
+          storedCalendars,
+          storedOnboarding,
+          storedHabits,
+          storedActivity,
+          storedAffinities,
+          storedScheduled,
+          storedSaved,
+          guestPrefs,
+          guestHistory,
+          guestCalendars,
+          guestOnboarding,
+          guestHabits,
+          guestActivity,
+          guestAffinities,
+          guestScheduled,
+          guestSaved,
+        ] = await Promise.all([
           loadPrefs(userId),
           loadHistory(userId),
           loadEnabledCalendars(userId),
@@ -203,22 +247,58 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadActivityLog(userId),
           loadTagAffinities(userId),
           loadScheduledActivities(userId),
+          loadSavedSuggestions(userId),
+          loadPrefs(null),
+          loadHistory(null),
+          loadEnabledCalendars(null),
+          loadOnboardingComplete(null),
+          loadHabits(null),
+          loadActivityLog(null),
+          loadTagAffinities(null),
+          loadScheduledActivities(null),
+          loadSavedSuggestions(null),
         ]);
         // Try loading from Firestore (cloud-first for cross-device sync)
-        const [fbAffinities, fbLocProfile] = await Promise.all([
+        const [fbAffinities, fbLocProfile, fbSaved, fbProfileContext] = await Promise.all([
           loadFirebaseAffinities().catch(() => null),
           loadFirebaseLocationProfile().catch(() => null),
+          loadFirebaseSavedSuggestions().catch(() => null),
+          loadFirebaseProfileContext().catch(() => null),
         ]);
         if (!active) return;
+
+        const hasStoredProfile = !!(
+          storedPrefs || storedHistory || storedCalendars || storedOnboarding ||
+          (storedHabits && storedHabits.length) ||
+          (storedActivity && storedActivity.length) ||
+          (storedAffinities && Object.keys(storedAffinities).length) ||
+          (storedScheduled && storedScheduled.length) ||
+          (storedSaved && storedSaved.length)
+        );
+        const hasGuestProfile = !!(
+          guestPrefs || guestHistory || guestCalendars || guestOnboarding ||
+          (guestHabits && guestHabits.length) ||
+          (guestActivity && guestActivity.length) ||
+          (guestAffinities && Object.keys(guestAffinities).length) ||
+          (guestScheduled && guestScheduled.length) ||
+          (guestSaved && guestSaved.length)
+        );
+
         if (storedPrefs) {
           setPrefsState({
             ...defaultPrefs,
             ...storedPrefs,
+            ...fbProfileContext,
             interestTags: storedPrefs.interestTags ?? [],
             themeMode: storedPrefs.themeMode ?? 'light',
           });
         } else {
-          setPrefsState(defaultPrefs);
+          const sourcePrefs = guestPrefs ?? defaultPrefs;
+          setPrefsState({
+            ...defaultPrefs,
+            ...sourcePrefs,
+            ...fbProfileContext,
+          });
         }
         if (storedHistory) {
           setHistoryState({
@@ -227,21 +307,20 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             lastShownIds: storedHistory.lastShownIds ?? [],
           });
         } else {
-          setHistoryState(defaultHistory);
+          setHistoryState(guestHistory ? { ...defaultHistory, ...guestHistory, lastShownIds: guestHistory.lastShownIds ?? [] } : defaultHistory);
         }
         if (storedCalendars) setEnabledCalendarsState(storedCalendars);
-        else setEnabledCalendarsState([]);
-        setOnboardingComplete(storedOnboarding);
+        else setEnabledCalendarsState(guestCalendars ?? []);
         // Merge: prefer Firebase habits, fall back to local, migrate legacy fields
         const fbHabits = await loadFirebaseHabits().catch(() => null);
-        const rawHabits = fbHabits ?? storedHabits ?? [];
+        const rawHabits = fbHabits ?? storedHabits ?? guestHabits ?? [];
         const migratedHabits = rawHabits.map(migrateHabit);
         setHabitsState(migratedHabits);
         // Sync migrated back to local cache
         if (migratedHabits.length) saveHabits(migratedHabits, userId).catch(() => undefined);
-        setActivityLogState(storedActivity ?? []);
+        setActivityLogState(storedActivity ?? guestActivity ?? []);
         // Prefer Firestore data, fall back to AsyncStorage
-        const mergedAffinities = fbAffinities ?? storedAffinities ?? {};
+        const mergedAffinities = fbAffinities ?? storedAffinities ?? guestAffinities ?? {};
         setTagAffinitiesState(mergedAffinities);
         // If we got cloud affinities, sync them back to local cache
         if (fbAffinities && !storedAffinities) {
@@ -251,7 +330,38 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setLocationProfileState(fbLocProfile);
         }
         // Load scheduled activities
-        setScheduledActivitiesState(storedScheduled ?? []);
+        setScheduledActivitiesState(storedScheduled ?? guestScheduled ?? []);
+        const mergedSaved = fbSaved ?? storedSaved ?? guestSaved ?? [];
+        setSavedSuggestionsState(mergedSaved);
+        if (fbSaved && !storedSaved) {
+          saveSavedSuggestions(fbSaved, userId).catch(() => undefined);
+        }
+
+        const hasCloudProfile = !!(fbAffinities || fbLocProfile || fbSaved || fbProfileContext || (fbHabits && fbHabits.length));
+        // For authenticated users logging in: if they have NO local data but have cloud profile,
+        // they're a returning user and should skip onboarding. If they're brand-new, they'll have neither.
+        const isReturningUserWithCloudData = userId && !hasStoredProfile && hasCloudProfile;
+        const shouldSkipOnboarding = storedOnboarding || guestOnboarding || hasStoredProfile || hasGuestProfile || hasCloudProfile || isReturningUserWithCloudData;
+        setOnboardingComplete(shouldSkipOnboarding);
+
+        // If we detected a returning user via cloud data, cache the onboarding flag locally so future logins are faster
+        if (isReturningUserWithCloudData && !storedOnboarding) {
+          saveOnboardingComplete(true, userId).catch(() => undefined);
+        }
+
+        if (userId && !hasStoredProfile && hasGuestProfile) {
+          await Promise.all([
+            savePrefs(guestPrefs ?? defaultPrefs, userId),
+            saveHistory(guestHistory ?? defaultHistory, userId),
+            saveEnabledCalendars(guestCalendars ?? [], userId),
+            saveOnboardingComplete(true, userId),
+            saveHabits(migratedHabits, userId),
+            saveActivityLog(guestActivity ?? [], userId),
+            saveTagAffinities(mergedAffinities, userId),
+            saveScheduledActivities(guestScheduled ?? [], userId),
+            saveSavedSuggestions(mergedSaved, userId),
+          ]).catch(() => undefined);
+        }
       } catch (error) {
         console.warn('Init error', error);
       } finally {
@@ -270,6 +380,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setPrefs: (value) => {
       setPrefsState(value);
       savePrefs(value, userId).catch(() => undefined);
+      syncUserProfileContext(value).catch(() => undefined);
     },
     setHistory: (value) => {
       setHistoryState(value);
@@ -360,7 +471,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return updated;
       });
     },
-    setLocation: (value) => setLocationState(value),
+    setLocation: (value) => {
+      setLocationState(value);
+      setPreferredTimeZone(value.timeZone);
+    },
     setAvailability: (value) => setAvailabilityState(value),
     setEnabledCalendars: (value) => {
       setEnabledCalendarsState(value);
@@ -385,10 +499,18 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const id = ++deckBuildId.current;
       setDeckLoading(true);
       setPreloadedDeck(null);
-      const { location: loc, prefs: p, history: h, habits: hb, tagAffinities: ta, locationProfile: lp } = preloadRef.current;
+      const {
+        location: loc,
+        prefs: p,
+        history: h,
+        habits: hb,
+        tagAffinities: ta,
+        locationProfile: lp,
+        savedSuggestions: ss,
+      } = preloadRef.current;
       // Background preload gets a generous 15 s API timeout
       // (the user isn't waiting — they're on HomeScreen or swiping)
-      buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp)
+      buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp, undefined, ss)
         .then((result) => {
           // Only apply if this is still the latest build request
           if (deckBuildId.current === id) {
@@ -425,11 +547,219 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         saveScheduledActivities(updated, userId).catch(() => undefined);
         return updated;
       });
+
+      // Rebuild the preloaded deck so suggestions adapt to the new occupied time.
+      try {
+        const finalAvail = availability ?? (() => {
+          const now = new Date();
+          return {
+            start: now.toISOString(),
+            end: new Date(now.getTime() + 120 * 60000).toISOString(),
+            durationMin: 120,
+            nextEventTitle: null,
+          } as any;
+        })();
+        const id = ++deckBuildId.current;
+        setDeckLoading(true);
+        setPreloadedDeck(null);
+        const {
+          location: loc,
+          prefs: p,
+          history: h,
+          habits: hb,
+          tagAffinities: ta,
+          locationProfile: lp,
+          savedSuggestions: ss,
+        } = preloadRef.current;
+        // Background preload gets a generous 15 s API timeout
+        buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp, undefined, ss)
+          .then((result) => {
+            if (deckBuildId.current === id) {
+              setPreloadedDeck(result);
+            }
+          })
+          .catch(() => {
+            if (deckBuildId.current === id) setPreloadedDeck(null);
+          })
+          .finally(() => {
+            if (deckBuildId.current === id) setDeckLoading(false);
+          });
+      } catch (err) {
+        // ignore
+      }
+
+      // Also attempt to detect overlaps and try to re-fit overlapping scheduled activities
+      (async () => {
+        try {
+          const newStart = new Date(item.startAt).getTime();
+          const newEnd = new Date(item.endAt).getTime();
+          const dayStart = new Date(item.startAt);
+          dayStart.setHours(0, 0, 0, 0);
+          const dayEnd = new Date(item.startAt);
+          dayEnd.setHours(23, 59, 59, 999);
+
+          // Fetch external calendar events for that day
+          const calendarEvents = await getUpcomingEvents(dayStart, dayEnd).catch(() => []);
+
+          // Build occupied intervals: calendar events + current scheduled activities (including the newly added one)
+          const currentScheduled = (preloadRef.current.savedSuggestions ? [] : []); // placeholder to satisfy TS
+          const scheduled = (scheduledActivitiesRef()?.slice() ?? []);
+
+          // helper to get latest scheduledActivities state safely
+          function scheduledActivitiesRef() {
+            return preloadRef.current && (preloadRef.current as any).savedSuggestions === undefined ? state.scheduledActivities : state.scheduledActivities;
+          }
+
+          const occupied: { start: number; end: number }[] = [];
+          for (const ev of calendarEvents) {
+            const s = Math.max(dayStart.getTime(), ev.startDate.getTime());
+            const e = Math.min(dayEnd.getTime(), ev.endDate.getTime());
+            if (e > s) occupied.push({ start: s, end: e });
+          }
+          // include the newly added item as occupied
+          occupied.push({ start: newStart, end: newEnd });
+
+          // include other scheduled activities
+          for (const s of state.scheduledActivities) {
+            // skip the one we just added (it will be in state.scheduledActivities already)
+            if (s.id === item.id) continue;
+            const sStart = Math.max(dayStart.getTime(), new Date(s.startAt).getTime());
+            const sEnd = Math.min(dayEnd.getTime(), new Date(s.endAt).getTime());
+            if (sEnd > sStart) occupied.push({ start: sStart, end: sEnd });
+          }
+
+          // Merge occupied intervals
+          occupied.sort((a, b) => a.start - b.start);
+          const merged: { start: number; end: number }[] = [];
+          for (const iv of occupied) {
+            const last = merged[merged.length - 1];
+            if (!last || iv.start > last.end) merged.push({ ...iv });
+            else last.end = Math.max(last.end, iv.end);
+          }
+
+          // For each scheduled activity (other than new), if it overlaps the new item, attempt to find a gap
+          const updatedScheduled = state.scheduledActivities.map((s) => ({ ...s }));
+          let changed = false;
+          for (let i = 0; i < updatedScheduled.length; i++) {
+            const s = updatedScheduled[i];
+            if (s.id === item.id) continue;
+            const sStart = new Date(s.startAt).getTime();
+            const sEnd = new Date(s.endAt).getTime();
+            const overlaps = sStart < newEnd && sEnd > newStart;
+            if (!overlaps) continue;
+
+            const duration = sEnd - sStart;
+
+            // find gap using merged occupied intervals
+            let cursor = dayStart.getTime();
+            let foundSlot: { start: number; end: number } | null = null;
+            for (const iv of merged) {
+              if (iv.start - cursor >= duration) {
+                foundSlot = { start: cursor, end: cursor + duration };
+                break;
+              }
+              cursor = Math.max(cursor, iv.end);
+            }
+            if (!foundSlot && dayEnd.getTime() - cursor >= duration) {
+              foundSlot = { start: cursor, end: cursor + duration };
+            }
+
+            if (foundSlot) {
+              // update scheduled item to new slot and mark calendarWriteFailed so UI can reconcile
+              s.startAt = new Date(foundSlot.start).toISOString();
+              s.endAt = new Date(foundSlot.end).toISOString();
+              s.calendarWriteFailed = true;
+              changed = true;
+
+              // mark this new slot as occupied to avoid collisions with subsequent items
+              merged.push({ start: foundSlot.start, end: foundSlot.end });
+              merged.sort((a, b) => a.start - b.start);
+              // re-merge
+              const tmp: { start: number; end: number }[] = [];
+              for (const iv of merged) {
+                const last = tmp[tmp.length - 1];
+                if (!last || iv.start > last.end) tmp.push({ ...iv });
+                else last.end = Math.max(last.end, iv.end);
+              }
+              merged.length = 0;
+              merged.push(...tmp);
+            }
+          }
+
+          if (changed) {
+            setScheduledActivitiesState((prev) => {
+              saveScheduledActivities(updatedScheduled, userId).catch(() => undefined);
+              return updatedScheduled;
+            });
+          }
+        } catch (err) {
+          // ignore background reschedule errors
+        }
+      })();
     },
     removeScheduledActivity: (id) => {
       setScheduledActivitiesState((prev) => {
         const updated = prev.filter((i) => i.id !== id);
         saveScheduledActivities(updated, userId).catch(() => undefined);
+        return updated;
+      });
+
+      // Rebuild deck so suggestions adapt to freed up time slots
+      try {
+        const finalAvail = availability ?? (() => {
+          const now = new Date();
+          return {
+            start: now.toISOString(),
+            end: new Date(now.getTime() + 120 * 60000).toISOString(),
+            durationMin: 120,
+            nextEventTitle: null,
+          } as any;
+        })();
+        const id = ++deckBuildId.current;
+        setDeckLoading(true);
+        setPreloadedDeck(null);
+        const {
+          location: loc,
+          prefs: p,
+          history: h,
+          habits: hb,
+          tagAffinities: ta,
+          locationProfile: lp,
+          savedSuggestions: ss,
+        } = preloadRef.current;
+        buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp, undefined, ss)
+          .then((result) => {
+            if (deckBuildId.current === id) {
+              setPreloadedDeck(result);
+            }
+          })
+          .catch(() => {
+            if (deckBuildId.current === id) setPreloadedDeck(null);
+          })
+          .finally(() => {
+            if (deckBuildId.current === id) setDeckLoading(false);
+          });
+      } catch (err) {
+        // ignore
+      }
+    },
+    saveSuggestion: (item) => {
+      setSavedSuggestionsState((prev) => {
+        const existingIdx = prev.findIndex((x) => x.suggestion.id === item.suggestion.id);
+        const updated = existingIdx >= 0
+          ? prev.map((x, idx) => (idx === existingIdx ? { ...x, ...item } : x))
+          : [item, ...prev];
+        const capped = updated.slice(0, 300);
+        saveSavedSuggestions(capped, userId).catch(() => undefined);
+        syncSavedSuggestions(capped).catch(() => undefined);
+        return capped;
+      });
+    },
+    removeSavedSuggestion: (id) => {
+      setSavedSuggestionsState((prev) => {
+        const updated = prev.filter((x) => x.id !== id);
+        saveSavedSuggestions(updated, userId).catch(() => undefined);
+        syncSavedSuggestions(updated).catch(() => undefined);
         return updated;
       });
     },
@@ -443,9 +773,27 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setOnboardingComplete(false);
       setAvailabilityState(null);
       setLocationState(defaultLocation);
+      setPreferredTimeZone(null);
       setTagAffinitiesState({});
       setLocationProfileState(null);
       setScheduledActivitiesState([]);
+      setSavedSuggestionsState([]);
+    },
+    switchToBusinessMode: (profile) => {
+      setBusinessProfileState(profile);
+      setAccountType('business');
+      setBusinessMode(true);
+    },
+    switchToConsumerMode: () => {
+      setBusinessProfileState(null);
+      setAccountType('consumer');
+      setBusinessMode(false);
+    },
+    setBusinessProfile: (profile) => {
+      setBusinessProfileState(profile);
+      if (profile) {
+        setAccountType('business');
+      }
     },
   }), [userId]);
 
@@ -468,6 +816,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     tagAffinities,
     locationProfile,
     scheduledActivities,
+    savedSuggestions,
+    accountType,
+    businessProfile,
+    businessMode,
   };
 
   return (

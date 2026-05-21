@@ -1,32 +1,107 @@
 import { atHomeSuggestions } from '../data/atHome';
-import { curatedEvents } from '../data/events';
 import { fallbackSuggestions } from '../data/fallback';
 import { goOutSuggestions } from '../data/goOut';
 import {
   Availability,
+  Business,
   DeckSuggestion,
   Habit,
   HabitTimeOfDay,
   HistoryState,
   LocationProfile,
   LocationState,
+  SavedSuggestion,
   Suggestion,
   SuggestionMeta,
   SuggestionType,
   TagAffinities,
   UserPrefs,
 } from '../types';
-import { addMinutes, clamp, fromISO, minutesBetween } from '../utils/time';
+import { addMinutes, clamp, fromISO, minutesBetween, isSameCalendarDayInTimeZone, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
 import { chooseTravelMode, estimateDeparture, estimateEtaMinutes, haversineKm } from './travel';
 import { fetchTicketmasterSuggestions } from './ticketmaster';
-import { fetchSeatGeekSuggestions } from './seatgeek';
-import { fetchGooglePlacesSuggestions } from './googlePlaces';
 import { habitToSuggestion, isHabitDue, matchesTimeOfDay } from '../utils/habits';
 import { fetchWeather, WeatherInfo } from './weather';
+import { fetchGeminiSuggestions, GeminiLearningContext } from './geminiSuggestions';
 import { generateWhyNow } from './whyNow';
 import { affinityScore, typeAffinityScore } from './affinity';
+import { loadFirebaseBusinesses } from './user';
+import {
+  filterForHabitRepetition,
+  markRepetitionFriendly,
+  shouldSuggestHabitConversion,
+} from './activityRepetitionService';
+import { calculateBusinessHabitAlignment, findAlignedBusinesses, businessToSuggestion } from './businessService';
 
 const BUFFER_MIN = 10;
+const GEMINI_SOURCE_BOOST = 0.08;
+const MIN_GEMINI_IN_DECK = 2;
+
+const buildLocalBusinessCatalog = (location: LocationState): Business[] => {
+  if (!location.lat || !location.lng) return [];
+  const { lat, lng } = location;
+  const nowIso = new Date().toISOString();
+
+  return [
+    {
+      id: 'seed_fit_studio',
+      type: 'gym',
+      name: 'Pulse Fit Studio',
+      description: 'Functional training studio with short guided sessions and beginner-friendly coaching.',
+      place: {
+        name: 'Pulse Fit Studio',
+        lat: lat + 0.006,
+        lng: lng + 0.004,
+        address: '12 Active Lane',
+      },
+      rating: 4.6,
+      ratingCount: 241,
+      targetTags: ['fitness', 'wellness', 'explore'],
+      createdAt: nowIso,
+      isVerified: true,
+      conversionGoal: 'visits',
+      metrics: { impressions: 0, clicks: 0, conversions: 0 },
+    },
+    {
+      id: 'seed_focus_cafe',
+      type: 'cafe',
+      name: 'Focus Roast Lab',
+      description: 'Quiet specialty cafe with strong Wi-Fi and productivity-friendly seating for deep work blocks.',
+      place: {
+        name: 'Focus Roast Lab',
+        lat: lat - 0.004,
+        lng: lng + 0.003,
+        address: '38 Workday Street',
+      },
+      rating: 4.5,
+      ratingCount: 189,
+      targetTags: ['coffee', 'focus', 'study', 'productivity'],
+      createdAt: nowIso,
+      isVerified: true,
+      conversionGoal: 'visits',
+      metrics: { impressions: 0, clicks: 0, conversions: 0 },
+    },
+    {
+      id: 'seed_recover_kitchen',
+      type: 'restaurant',
+      name: 'Nourish Kitchen',
+      description: 'Healthy bowls and protein-forward meals ideal after workouts or evening recovery.',
+      place: {
+        name: 'Nourish Kitchen',
+        lat: lat + 0.003,
+        lng: lng - 0.005,
+        address: '7 Green Table Ave',
+      },
+      rating: 4.4,
+      ratingCount: 133,
+      targetTags: ['food', 'wellness', 'social'],
+      createdAt: nowIso,
+      isVerified: true,
+      conversionGoal: 'visits',
+      metrics: { impressions: 0, clicks: 0, conversions: 0 },
+    },
+  ];
+};
 
 /** Auto-generate a CTA for suggestions that don't have one */
 const generateCta = (suggestion: Suggestion): string => {
@@ -68,8 +143,9 @@ const generateCta = (suggestion: Suggestion): string => {
 };
 
 /** Current time-of-day bucket */
-const currentTimeOfDay = (now = new Date()): HabitTimeOfDay => {
-  const hour = now.getHours();
+const currentTimeOfDay = (now = new Date(), timeZone?: string | null): HabitTimeOfDay => {
+  const tzParts = getTimeZoneParts(now, timeZone ?? getPreferredTimeZone());
+  const hour = tzParts.hour;
   if (hour >= 5 && hour < 12) return 'morning';
   if (hour >= 12 && hour < 17) return 'afternoon';
   if (hour >= 17 && hour < 21) return 'evening';
@@ -77,9 +153,51 @@ const currentTimeOfDay = (now = new Date()): HabitTimeOfDay => {
 };
 
 /** Is it currently late night (21:00–05:00)? */
-const isLateNight = (now = new Date()): boolean => {
-  const hour = now.getHours();
+const isLateNight = (now = new Date(), timeZone?: string | null): boolean => {
+  const tzParts = getTimeZoneParts(now, timeZone ?? getPreferredTimeZone());
+  const hour = tzParts.hour;
   return hour >= 21 || hour < 5;
+};
+
+/** Strict time-of-day rules for activity types to prevent poor recommendations like "coffee at 6pm" */
+const isAppropriateTimeOfDay = (suggestion: Suggestion, now = new Date()): boolean => {
+  const hour = now.getHours();
+  const title = suggestion.title.toLowerCase();
+  const tags = suggestion.tags?.map((t) => t.toLowerCase()) ?? [];
+  
+  // Coffee/café activities: only 9-17 (breakfast, mid-morning, lunch, afternoon)
+  if (tags.includes('coffee') || /coffee|cafe|caffeine|espresso|latte/.test(title)) {
+    return hour >= 9 && hour < 18;
+  }
+  
+  // Breakfast activities: only morning (5-12)
+  if (/breakfast|brunch|morning meal/.test(title)) {
+    return hour >= 5 && hour < 12;
+  }
+  
+  // Lunch activities: 11:30-15:00
+  if (/lunch|midday meal|noon/.test(title)) {
+    return hour >= 11 && hour < 15;
+  }
+  
+  // Dinner activities: 17:00-22:00
+  if (/dinner|supper|evening meal/.test(title)) {
+    return hour >= 17 && hour < 22;
+  }
+  
+  // Late-night social (bars, clubs): only 19:00-02:00
+  if (/bar|pub|club|nightclub|nightlife|drinks/.test(title) || tags.includes('social')) {
+    if (tags.includes('coffee') || tags.includes('wellness')) return false; // unless also marked as wellness
+    return hour >= 19 || hour < 3;
+  }
+  
+  // Workouts: morning (5-12) or evening (17-21)
+  if (/workout|fitness|gym|exercise/.test(title) || tags.includes('fitness')) {
+    return (hour >= 5 && hour < 12) || (hour >= 17 && hour < 21);
+  }
+  
+  // All others pass (time-of-day is more flexible)
+  return true;
 };
 
 /** Tags that indicate outdoor / going-out activities unsuitable for late night */
@@ -90,14 +208,17 @@ const NIGHT_UNFRIENDLY_TAGS = new Set([
 ]);
 
 /** Filter curated suggestions to those matching the current time-of-day (or 'any') */
-const filterByTimeOfDay = (suggestions: Suggestion[], now = new Date()): Suggestion[] => {
-  const tod = currentTimeOfDay(now);
-  const lateNight = isLateNight(now);
+const filterByTimeOfDay = (suggestions: Suggestion[], now = new Date(), timeZone?: string | null): Suggestion[] => {
+  const tod = currentTimeOfDay(now, timeZone);
+  const lateNight = isLateNight(now, timeZone);
 
   const matched = suggestions.filter((s) => {
     // Basic time-of-day filtering
     const todMatch = !s.timeOfDay || s.timeOfDay === 'any' || s.timeOfDay === tod;
     if (!todMatch) return false;
+
+    // Strict activity-type time-of-day rules (e.g., coffee only 9-18)
+    if (!isAppropriateTimeOfDay(s, now)) return false;
 
     // Late-night filtering: exclude outdoor/café activities
     if (lateNight) {
@@ -241,127 +362,6 @@ const withSource = (suggestion: Suggestion, source: Suggestion['source']): Sugge
  * of venue it actually needs. This prevents e.g. "Park walk" (tagged fitness)
  * being matched to a gym.
  */
-const VENUE_KEYWORDS: { regex: RegExp; venueTags: string[] }[] = [
-  { regex: /park|garden|green|trail|forest|stroll|waterfront|loop walk|nature reserve/i, venueTags: ['nature'] },
-  { regex: /coffee|cafe|café|latte|cappuccino|espresso/i, venueTags: ['coffee'] },
-  { regex: /\b(eat|restaurant|brunch|cuisine|dining)\b/i, venueTags: ['food'] },
-  { regex: /museum|gallery|exhibit/i, venueTags: ['art'] },
-  { regex: /\b(gym|indoor climb|boulder|fitness centre|sports centre)\b/i, venueTags: ['fitness'] },
-  { regex: /library|bookshop|book\s?store/i, venueTags: ['learning'] },
-  { regex: /\bswim|\bpool\b|\blaps\b/i, venueTags: ['wellness'] },
-  { regex: /cinema|movie\s?theat/i, venueTags: ['movies'] },
-  { regex: /\bbar\b|\bpub\b|beer|biergarten/i, venueTags: ['social'] },
-  { regex: /live music|concert|venue|nightclub/i, venueTags: ['music'] },
-];
-
-/** Curated suggestions that are inherently about wandering — skip venue attachment */
-const FREE_ROAM_IDS = new Set([
-  'go_photo_walk_45',
-  'go_neighborhood_explore_40',
-  'go_bike_ride_45',
-  'go_street_art_walk_45',
-  'go_night_walk_30',
-  'go_stargazing_40',
-  'go_try_geocaching_60',
-  'go_food_walk',
-  'go_bakery_hop_40',
-  'go_history_walk_50',
-  'go_sunrise_walk_30',
-  'go_sunset_spot',
-  'go_volunteering_120',
-  'go_try_pottery_120',
-  'go_try_dance_class_60',
-  'go_try_skating_45',
-  'go_thrift_shop_60',
-  'go_plant_shop_30',
-  'go_farmers_market_60',
-  'go_waterfront_stroll',
-  'go_forest_bath_60',
-  'go_jog_30',
-  'go_run_5k',
-  'go_hill_climb_45',
-  'go_dog_park_30',
-  'go_mindful_sit_20',
-  'go_live_music_120',
-  'go_try_outdoor_sketching_45',
-  'go_ice_cream_walk_30',
-  'go_picnic_60',
-  'go_grocery_adventure_40',
-  'go_journal_cafe_45',
-  'go_try_new_cuisine_60',
-]);
-
-/**
- * Derive what kind of venue an activity actually needs by examining
- * its title and description — NOT its broad benefit tags.
- */
-const deriveVenueHints = (suggestion: Suggestion): string[] => {
-  const text = `${suggestion.title} ${suggestion.description}`.toLowerCase();
-  const hints = new Set<string>();
-  for (const { regex, venueTags } of VENUE_KEYWORDS) {
-    if (regex.test(text)) {
-      venueTags.forEach((t) => hints.add(t));
-    }
-  }
-  return Array.from(hints);
-};
-
-/**
- * Enrich curated GO_OUT suggestions with real nearby places.
- * Matches each curated suggestion's tags to fetched place suggestions,
- * attaching venue info (name, lat/lng, rating, etc.) so the card
- * shows a specific destination instead of a generic activity.
- */
-const enrichCuratedWithPlaces = (
-  curated: Suggestion[],
-  places: Suggestion[],
-): { enriched: Suggestion[]; usedPlaceIds: Set<string> } => {
-  const usedPlaceIds = new Set<string>();
-
-  const enriched = curated.map((suggestion) => {
-    // Only enrich curated GO_OUT suggestions without an existing place
-    if (
-      suggestion.type !== 'GO_OUT' ||
-      suggestion.source !== 'curated' ||
-      suggestion.place?.lat ||
-      FREE_ROAM_IDS.has(suggestion.id)
-    ) {
-      return suggestion;
-    }
-
-    const venueHints = deriveVenueHints(suggestion);
-    if (!venueHints.length) return suggestion;
-
-    // Find the best matching place not yet used.
-    // The place must match at least one venue hint, and we prefer places
-    // that share the PRIMARY (first) hint to avoid mismatches.
-    const primaryHint = venueHints[0];
-    const match = places.find((place) => {
-      if (usedPlaceIds.has(place.id)) return false;
-      if (!place.place?.lat || !place.place?.lng) return false;
-      // Place must match the primary venue type the activity needs
-      return place.tags?.includes(primaryHint) ?? false;
-    });
-
-    if (!match) return suggestion;
-
-    usedPlaceIds.add(match.id);
-
-    return {
-      ...suggestion,
-      place: match.place,
-      rating: match.rating,
-      ratingCount: match.ratingCount,
-      openStatus: match.openStatus,
-      opensInMin: match.opensInMin,
-      closesInMin: match.closesInMin,
-      cta: undefined, // Clear so generateCta produces a place-specific headline
-    };
-  });
-
-  return { enriched, usedPlaceIds };
-};
-
 /** Sub-tag → parent mapping so selecting 'cycling' also matches 'fitness' cards */
 const TAG_PARENTS: Record<string, string[]> = {
   cycling: ['fitness'],
@@ -442,18 +442,32 @@ const isFeasible = (
   suggestion: DeckSuggestion,
   availability: Availability,
   location: LocationState,
+  now: Date = new Date(),
 ): boolean => {
-  const now = new Date();
   const availabilityEnd = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
+  
+  // Check for upcoming event within next 10 minutes
+  let effectiveDurationMin = availability.durationMin;
+  if (availability.nextEventStartAt) {
+    const nextEventStart = fromISO(availability.nextEventStartAt);
+    if (nextEventStart) {
+      const minutesUntilEvent = Math.round((nextEventStart.getTime() - now.getTime()) / 60000);
+      if (minutesUntilEvent <= 10 && minutesUntilEvent > 0) {
+        // Tight window: only allow very short activities (fit within remaining time)
+        effectiveDurationMin = Math.max(3, minutesUntilEvent - 2);
+      }
+    }
+  }
+  
   const durationMin = suggestion.durationMin;
 
   if (suggestion.type === 'AT_HOME') {
-    return durationMin <= availability.durationMin;
+    return durationMin <= effectiveDurationMin;
   }
 
   if (!location.lat || !location.lng) {
     if (suggestion.type === 'GO_OUT') {
-      return durationMin <= availability.durationMin;
+      return durationMin <= effectiveDurationMin;
     }
     if (suggestion.type === 'EVENT' && suggestion.event?.startAt) {
       const startAt = new Date(suggestion.event.startAt);
@@ -470,7 +484,7 @@ const isFeasible = (
       : 0;
     const arrivalDelay = Math.max(eta, openDelay);
     const required = arrivalDelay + durationMin + BUFFER_MIN;
-    if (required > availability.durationMin) return false;
+    if (required > effectiveDurationMin) return false;
     if (suggestion.meta?.closesInMin !== undefined) {
       const closingBuffer = computeClosingBuffer(arrivalDelay, durationMin);
       return arrivalDelay + durationMin + closingBuffer <= suggestion.meta.closesInMin;
@@ -481,7 +495,21 @@ const isFeasible = (
   if (suggestion.type === 'EVENT' && suggestion.event?.startAt) {
     const startAt = new Date(suggestion.event.startAt);
     const earliest = addMinutes(now, eta + BUFFER_MIN);
-    return startAt >= earliest && startAt <= availabilityEnd && !!suggestion.event.ticketUrl;
+    
+    // STRICT CHECK: Event must start in FUTURE, allow enough travel time, and end before availability
+    if (startAt < earliest) return false; // Can't reach in time
+    if (startAt > availabilityEnd) return false; // Event starts after available window
+    if (!suggestion.event.ticketUrl) return false; // Must have booking link
+    
+    // Additional validation: event must be within the next 3 hours to feel "urgent"
+    // unless user has a lot of time (>120 min) in which case we're more flexible
+    const minutesUntilStart = minutesBetween(now, startAt);
+    if (minutesUntilStart > Math.min(180, availability.durationMin + 30)) {
+      // Event is too far away unless user specifically has time
+      return availability.durationMin > 120;
+    }
+    
+    return true;
   }
 
   return false;
@@ -541,6 +569,30 @@ const scoreSuggestion = (
   const startImmediacy = suggestion.type === 'EVENT' && suggestion.meta?.startInMin
     ? clamp(1 - suggestion.meta.startInMin / windowMinutes, 0, 1)
     : 0.5;
+  
+  // ── URGENCY SCORING: Events starting very soon get massive boost ──
+  // This ensures "Trivia at Tony's Bar TONIGHT at 8:30pm" beats generic "go to a bar" suggestions
+  let urgencyBoost = 0;
+  if (suggestion.type === 'EVENT' && suggestion.meta?.startInMin !== undefined) {
+    const minutesUntil = suggestion.meta.startInMin;
+    // Events in next 30 min: massive urgency boost
+    if (minutesUntil <= 30) {
+      urgencyBoost = 0.25;
+    }
+    // Events in next 60 min: strong boost
+    else if (minutesUntil <= 60) {
+      urgencyBoost = 0.15;
+    }
+    // Events in next 2 hours: moderate boost
+    else if (minutesUntil <= 120) {
+      urgencyBoost = 0.08;
+    }
+    // Events farther away: small boost based on proximity
+    else {
+      urgencyBoost = Math.max(0, 0.03 - (minutesUntil - 120) / 1000);
+    }
+  }
+  
   const interestMatch = prefs.allowSerendipity
     ? 1
     : !prefs.interestTags.length
@@ -550,6 +602,7 @@ const scoreSuggestion = (
         : 0.2;
   const confidence = suggestion.confidence;
   const habitBoost = suggestion.source === 'habit' ? 0.12 : 0;
+  const geminiBoost = suggestion.source === 'gemini' ? GEMINI_SOURCE_BOOST : 0;
 
   // ── Late-night penalty for outdoor / go-out activities ──
   const now = new Date();
@@ -592,8 +645,10 @@ const scoreSuggestion = (
     typeAff * 0.05 +
     openNowBonus +
     habitBoost +
+    geminiBoost +
     nightPenalty +
-    locationBoost;
+    locationBoost +
+    urgencyBoost;
 
   return weighted;
 };
@@ -696,48 +751,54 @@ const seedSuggestions = async (
   prefs: UserPrefs,
   habits: Habit[],
   apiTimeoutMs = API_TIMEOUT_MS,
+  nowOverride?: Date,
 ): Promise<Suggestion[]> => {
+  const now = nowOverride ?? new Date();
   const habitSuggestions = habits
-    .filter((habit) => isHabitDue(habit) && matchesTimeOfDay(habit))
-    .map((habit) => attachEmojis(habitToSuggestion(habit)));
+    .filter((habit) => isHabitDue(habit, now) && matchesTimeOfDay(habit, now))
+    .map((habit) => attachEmojis(habitToSuggestion(habit)))
+    .map((item) => markRepetitionFriendly(item)); // Mark habits as repetition-friendly
 
   const curated = prefs.openToGoingOut
     ? [...atHomeSuggestions, ...goOutSuggestions]
     : [...atHomeSuggestions];
 
   // Filter curated by time-of-day relevance
-  const timeFiltered = filterByTimeOfDay(curated);
+  const timeFiltered = filterByTimeOfDay(curated, now, location.timeZone);
 
   const inferredCurated = timeFiltered
     .map((item) => withSource(inferTags(item), 'curated'))
-    .map((item) => attachEmojis(item));
+    .map((item) => attachEmojis(item))
+    .map((item) => item.type === 'AT_HOME' ? markRepetitionFriendly(item) : item); // Mark AT_HOME as repetition-friendly
   const filteredCurated = inferredCurated.filter((item) => matchesInterest(item, prefs));
   const curatedResult = filteredCurated.length ? filteredCurated : inferredCurated;
+  
   if (prefs.openToGoingOut && location.lat && location.lng) {
-    const [ticketmaster, seatgeek, googlePlaces] = await Promise.all([
-      withTimeout(fetchTicketmasterSuggestions(location, prefs, availability).catch(() => []), apiTimeoutMs, []),
-      withTimeout(fetchSeatGeekSuggestions(location, prefs, availability).catch(() => []), apiTimeoutMs, []),
-      withTimeout(fetchGooglePlacesSuggestions(location, prefs, availability).catch(() => []), apiTimeoutMs, []),
-    ]);
-    const eventCandidates = [...ticketmaster, ...seatgeek];
-    const inferredEvents = eventCandidates.map((item) => attachEmojis(inferTags(item)));
+    // Fetch events from Ticketmaster only
+    const ticketmaster = await withTimeout(
+      fetchTicketmasterSuggestions(location, prefs, availability).catch(() => []),
+      apiTimeoutMs,
+      []
+    );
+    let inferredEvents = ticketmaster.map((item) => attachEmojis(inferTags(item)));
     const filteredEvents = inferredEvents.filter((item) => matchesInterest(item, prefs));
-    const eventResult = filteredEvents.length ? filteredEvents : inferredEvents;
-    const inferredPlaces = googlePlaces.map((item) => attachEmojis(inferTags(item)));
-    const filteredPlaces = inferredPlaces.filter((item) => matchesInterest(item, prefs));
-    const placeResult = filteredPlaces.length ? filteredPlaces : inferredPlaces;
-    const fallbackEvents = curatedEvents
-      .map((item) => withSource(inferTags(item), 'curated'))
-      .map((item) => attachEmojis(item));
-    // Enrich curated GO_OUT suggestions with specific nearby venues
-    const { enriched: enrichedCurated, usedPlaceIds } = enrichCuratedWithPlaces(curatedResult, placeResult);
-    const remainingPlaces = placeResult.filter((p) => !usedPlaceIds.has(p.id));
+    let eventResult = filteredEvents.length ? filteredEvents : inferredEvents;
+
+    // If the requested availability is for another calendar day (e.g., 'tomorrow'),
+    // enforce strict day-locking: only include events that start on that same day.
+    const planningForOtherDay = !isSameCalendarDayInTimeZone(now, new Date(), location.timeZone);
+    if (planningForOtherDay) {
+      eventResult = eventResult.filter((e) => {
+        const start = e.event?.startAt ? new Date(e.event.startAt) : null;
+        if (!start) return false;
+        return isSameCalendarDayInTimeZone(start, now, location.timeZone);
+      });
+    }
 
     return [
       ...habitSuggestions,
-      ...enrichedCurated,
-      ...remainingPlaces,
-      ...(eventResult.length ? eventResult : fallbackEvents),
+      ...curatedResult,
+      ...eventResult,
     ];
   }
   return [...habitSuggestions, ...curatedResult];
@@ -751,6 +812,8 @@ const DECK_SIZE = 5;
  *   Defaults to 2.5 s for user-facing builds.
  *   Pass a higher value (e.g. 15 000) for background preloads
  *   so the APIs have time to respond.
+ * @param filter – optional filter for rubric-specific suggestions
+ *   ('go_out', 'productive', 'at_home')
  */
 export const buildDeck = async (
   availability: Availability,
@@ -761,17 +824,49 @@ export const buildDeck = async (
   apiTimeoutMs = API_TIMEOUT_MS,
   tagAff: TagAffinities = {},
   locProfile: LocationProfile | null = null,
+  filter?: string,
+  savedSuggestions: SavedSuggestion[] = [],
+  nowOverride?: Date,
 ): Promise<{ deck: DeckSuggestion[]; usedFallback: boolean }> => {
-  console.log('[buildDeck] START', { durationMin: availability.durationMin, apiTimeoutMs });
+  console.log('[buildDeck] START', { durationMin: availability.durationMin, apiTimeoutMs, filter });
+  const now = nowOverride ?? new Date();
   // Fetch weather in parallel with suggestions (non-blocking, with timeout)
   const weatherPromise = location.lat && location.lng
     ? withTimeout(fetchWeather(location.lat, location.lng).catch(() => null), apiTimeoutMs, null)
     : Promise.resolve(null);
+  const businessCatalogPromise = location.lat && location.lng
+    ? withTimeout(loadFirebaseBusinesses(40).catch(() => []), Math.min(apiTimeoutMs, 1800), [] as Business[])
+    : Promise.resolve([] as Business[]);
 
-  const [candidates, weather] = await Promise.all([
-    seedSuggestions(availability, location, prefs, habits, apiTimeoutMs),
+  const baseCandidatesPromise = seedSuggestions(availability, location, prefs, habits, apiTimeoutMs, now);
+  const topPositiveTags = Object.entries(tagAff)
+    .filter(([tag, score]) => !tag.startsWith('__type_') && score > 0.25)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 8)
+    .map(([tag]) => tag);
+  const topSavedTitles = savedSuggestions.slice(0, 6).map((s) => s.suggestion.title);
+  const learning: GeminiLearningContext = {
+    filter,
+    lifestyle: prefs.lifestyle,
+    selfDescription: prefs.selfDescription,
+    customInterests: prefs.customInterests,
+    topPositiveTags,
+    topSavedTitles,
+  };
+
+  const geminiCandidatesPromise = weatherPromise.then((weather) => withTimeout(
+    fetchGeminiSuggestions(location, prefs, availability, weather, learning).catch(() => []),
+    apiTimeoutMs,
+    [],
+  ));
+
+  const [baseCandidates, weather, geminiCandidates, firebaseBusinesses] = await Promise.all([
+    baseCandidatesPromise,
     weatherPromise,
+    geminiCandidatesPromise,
+    businessCatalogPromise,
   ]);
+  const candidates = [...baseCandidates, ...geminiCandidates];
   console.log('[buildDeck] candidates:', candidates.length, 'weather:', weather ? 'yes' : 'no');
 
   const enriched = candidates.map((item) => enrichSuggestion(item, availability, location));
@@ -789,17 +884,20 @@ export const buildDeck = async (
     }
   }
   const unique = Array.from(uniqueMap.values());
-  const feasible = unique.filter((item) => isFeasible(item, availability, location));
+  const feasible = unique.filter((item) => isFeasible(item, availability, location, now));
   console.log('[buildDeck] unique:', unique.length, 'feasible:', feasible.length);
 
-  // Hard exclusion: never show a card that was already shown, accepted, or rejected
-  const seenIds = new Set([
+  // Smart repetition filter: allows habit-friendly activities to repeat every 72+ hours
+  // This enables actual habit formation (was impossible with hard "never repeat" filter)
+  const fresh = filterForHabitRepetition(feasible, history, now);
+  console.log('[buildDeck] after repetition filter:', fresh.length);
+
+  // Track originally-seen IDs for fallback pass (after smart filter is applied)
+  const originallySeenIds = new Set([
     ...(history.lastShownIds ?? []),
     ...history.lastRejectedIds,
     ...history.lastAcceptedIds,
   ]);
-  const fresh = feasible.filter((item) => !seenIds.has(item.id));
-  console.log('[buildDeck] seenIds:', seenIds.size, 'fresh:', fresh.length);
 
   const scored = fresh
     .map((item) => ({ item, score: scoreSuggestion(item, prefs, availability, history, weather, tagAff, locProfile) }));
@@ -808,17 +906,50 @@ export const buildDeck = async (
   // sorts nearest→farthest within each group, then round-robins
   // across categories for maximum variety.
   const deck: DeckSuggestion[] = buildInterleavedDeck(scored, DECK_SIZE);
+
+  const ensureMinGemini = (target: DeckSuggestion[], allScored: { item: DeckSuggestion; score: number }[]) => {
+    const currentGemini = target.filter((item) => item.source === 'gemini').length;
+    if (currentGemini >= MIN_GEMINI_IN_DECK) return;
+
+    const missing = MIN_GEMINI_IN_DECK - currentGemini;
+    const targetIds = new Set(target.map((x) => x.id));
+    const geminiPool = allScored
+      .filter((entry) => entry.item.source === 'gemini' && !targetIds.has(entry.item.id))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, missing)
+      .map((entry) => entry.item);
+
+    if (!geminiPool.length) return;
+
+    for (const geminiItem of geminiPool) {
+      let replaceIdx = -1;
+      let worstScore = Number.POSITIVE_INFINITY;
+      for (let i = 0; i < target.length; i++) {
+        const candidate = target[i];
+        if (candidate.source === 'gemini') continue;
+        const score = allScored.find((entry) => entry.item.id === candidate.id)?.score ?? 999;
+        if (score < worstScore) {
+          worstScore = score;
+          replaceIdx = i;
+        }
+      }
+      if (replaceIdx >= 0) {
+        target[replaceIdx] = geminiItem;
+      }
+    }
+  };
+  ensureMinGemini(deck, scored);
   let usedFallback = false;
   console.log('[buildDeck] after interleaved build:', deck.length);
 
-  // Pass 3: pull from fallback pool (also excluding seen IDs)
+  // Pass 3: pull from fallback pool (also excluding originally-seen IDs)
   if (deck.length < DECK_SIZE) {
     const deckIds = new Set(deck.map((item) => item.id));
-    const allExcluded = new Set([...seenIds, ...deckIds]);
+    const allExcluded = new Set([...originallySeenIds, ...deckIds]);
     const fallbackPool = fallbackSuggestions
       .map((item) => attachEmojis(inferTags(item)))
       .map((item) => enrichSuggestion(item, availability, location))
-      .filter((item) => isFeasible(item, availability, location))
+      .filter((item) => isFeasible(item, availability, location, now))
       .filter((item) => !allExcluded.has(item.id));
     console.log('[buildDeck] fallback pool size (pass 3):', fallbackPool.length);
     for (const candidate of fallbackPool) {
@@ -836,7 +967,7 @@ export const buildDeck = async (
     const lastResort = fallbackSuggestions
       .map((item) => attachEmojis(inferTags(item)))
       .map((item) => enrichSuggestion(item, availability, location))
-      .filter((item) => isFeasible(item, availability, location))
+      .filter((item) => isFeasible(item, availability, location, now))
       .filter((item) => !deckIds.has(item.id));
     console.log('[buildDeck] last resort pool (pass 4):', lastResort.length);
     for (const candidate of lastResort) {
@@ -865,13 +996,61 @@ export const buildDeck = async (
   }
   console.log('[buildDeck] final deck size:', deck.length);
 
+  // ── Business ad injection ──
+  // Inject at most one aligned promoted business in lower deck positions.
+  if (location.lat && location.lng && deck.length > 0) {
+    const businessCatalog = firebaseBusinesses.length ? firebaseBusinesses : buildLocalBusinessCatalog(location);
+    const aligned = findAlignedBusinesses(
+      businessCatalog,
+      location,
+      habits,
+      Math.max(2, prefs.radiusKm),
+      0.45,
+      2,
+    );
+
+    if (aligned.length) {
+      const existingPlaces = new Set(
+        deck
+          .map((item) => `${(item.place?.name ?? '').toLowerCase()}_${(item.place?.address ?? '').toLowerCase()}`)
+          .filter((value) => value !== '_'),
+      );
+
+      const candidate = aligned.find((biz) => {
+        const key = `${biz.name.toLowerCase()}_${(biz.place.address ?? '').toLowerCase()}`;
+        return !existingPlaces.has(key);
+      });
+
+      if (candidate) {
+        let matchingHabit: Habit | undefined;
+        let bestScore = 0;
+        for (const habit of habits) {
+          const score = calculateBusinessHabitAlignment(candidate, [habit]);
+          if (score > bestScore) {
+            bestScore = score;
+            matchingHabit = habit;
+          }
+        }
+        const promoted = enrichSuggestion(
+          attachEmojis(inferTags(businessToSuggestion(candidate, matchingHabit, bestScore))),
+          availability,
+          location,
+        );
+        const insertAt = Math.min(3, Math.max(1, deck.length - 1));
+        deck.splice(insertAt, 0, promoted);
+        if (deck.length > DECK_SIZE) {
+          deck.length = DECK_SIZE;
+        }
+      }
+    }
+  }
+
   // Apply dynamic whyNow and auto-generate CTA for every card in the final deck
-  const now = new Date();
   const whyNowCtx = { availability, weather, now, habits };
   const finalDeck = deck.slice(0, DECK_SIZE).map((item) => ({
     ...item,
-    cta: generateCta(item),
-    whyNow: generateWhyNow(item, whyNowCtx),
+    cta: item.cta ?? generateCta(item),
+    whyNow: item.whyNow ?? generateWhyNow(item, whyNowCtx),
   }));
 
   return { deck: finalDeck, usedFallback };
@@ -898,7 +1077,7 @@ export const buildFilteredFallbacks = (
     .map((item) => attachEmojis(inferTags(item)))
     .map((item) => enrichSuggestion(item, availability, location))
     .filter((item) => !excludeIds.has(item.id))
-    .filter((item) => isFeasible(item, availability, location));
+    .filter((item) => isFeasible(item, availability, location, now));
 
   // Apply the same filter logic as DeckScreen.filterDeck
   let filtered: DeckSuggestion[];

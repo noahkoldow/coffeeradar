@@ -149,6 +149,12 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
     navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   }, [navigation]);
 
+  const queueNextActivity = useCallback(() => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    logEvent('next_activity_queued_from_completion', {});
+    navigation.navigate('Deck', {});
+  }, [navigation]);
+
   const handleAddAsHabit = useCallback(() => {
     if (addedAsHabit) return;
     const newHabit: Habit = {
@@ -265,11 +271,17 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
         </Animated.View>
       )}
 
-      {/* Back to home */}
+      {/* Back to home + Next activity */}
       <Animated.View style={[styles.bottomSection, { opacity: contentOpacity, transform: [{ translateY: buttonSlide }] }]}>
-        <PrimaryButton label="Back to home" onPress={goHome} glow />
-        <Text style={styles.hint}>Keep the momentum going 🚀</Text>
+        <Pressable
+          style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7, transform: [{ scale: 0.96 }] }]}
+          onPress={goHome}
+        >
+          <Text style={styles.backButtonText}>← Back</Text>
+        </Pressable>
+        <PrimaryButton label="Next activity" onPress={queueNextActivity} glow style={styles.nextButtonWrap} />
       </Animated.View>
+      <Text style={[styles.hint, { marginTop: theme.spacing.sm }]}>Keep the momentum going 🚀</Text>
 
       <EmojiConfetti visible={showConfetti} emojis={confettiEmojis} />
     </LinearGradient>
@@ -285,7 +297,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   heroSection: {
     alignItems: 'center',
     gap: theme.spacing.md,
-    marginTop: theme.spacing.xxl,
+    marginTop: theme.spacing.lg,
   },
   checkCircle: {
     width: 80,
@@ -325,6 +337,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   statsSection: {
     gap: theme.spacing.md,
+    marginBottom: theme.spacing.md,
   },
   motivational: {
     fontFamily: theme.fonts.body,
@@ -384,13 +397,33 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: 2,
   },
   bottomSection: {
+    flexDirection: 'column',
+    alignItems: 'stretch',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.sm,
+  },
+  backButton: {
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    justifyContent: 'center',
     alignItems: 'center',
-    gap: theme.spacing.sm,
+  },
+  backButtonText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.colors.text,
+  },
+  nextButtonWrap: {
+    width: '100%',
   },
   hint: {
     fontFamily: theme.fonts.body,
     fontSize: 13,
     color: theme.colors.textMuted,
+    textAlign: 'center',
   },
   /* ── Streak callout ─── */
   streakCallout: {
@@ -399,6 +432,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: theme.radius.md,
     padding: theme.spacing.md,
     gap: 4,
+    marginBottom: theme.spacing.md,
   },
   streakBigEmoji: { fontSize: 32 },
   streakBigNum: { fontFamily: theme.fonts.heading, fontSize: 20, color: theme.colors.accentDark },
@@ -412,6 +446,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: theme.spacing.sm,
     borderWidth: 1,
     borderColor: theme.colors.border,
+    marginBottom: theme.spacing.md,
   },
   habitCtaTitle: { fontFamily: theme.fonts.semibold, fontSize: 16, color: theme.colors.text },
   habitCtaSubtitle: { fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.textMuted, textAlign: 'center' },

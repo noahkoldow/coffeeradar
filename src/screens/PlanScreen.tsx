@@ -18,7 +18,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { commitment, suggestion } = route.params;
-  const { actions } = useAppState();
+  const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const [now, setNow] = useState(new Date());
   const [startSignal, setStartSignal] = useState(0);
@@ -126,6 +126,20 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     if (url) await Linking.openURL(url);
   };
 
+  const websiteUrl = useMemo(() => {
+    const placeSite = suggestion.place?.websiteUrl?.trim();
+    if (placeSite) return placeSite;
+    const eventSite = suggestion.event?.ticketUrl?.trim() || commitment.ticketUrl?.trim();
+    if (eventSite) return eventSite;
+    return null;
+  }, [suggestion.place?.websiteUrl, suggestion.event?.ticketUrl, commitment.ticketUrl]);
+
+  const openWebsite = useCallback(async () => {
+    if (!websiteUrl) return;
+    await logEvent('cta_website_clicked', { type: commitment.type, suggestion_id: suggestion.id });
+    await Linking.openURL(websiteUrl);
+  }, [websiteUrl, commitment.type, suggestion.id]);
+
   const onPrimary = async () => {
     const typeMap = {
       AT_HOME: 'start',
@@ -205,7 +219,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         title = `Event: ${suggestion.title}`;
         notes = `${suggestion.event.venue}\nTickets: ${suggestion.event.ticketUrl}`;
       }
-      await createPlanEvent({
+      const eventId = await createPlanEvent({
         title,
         startDate: new Date(commitment.startAt),
         endDate: new Date(commitment.endAt),
@@ -213,6 +227,19 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       });
       await logEvent('calendar_event_created_success');
       setCalendarFailed(false);
+
+      // If we have a matching scheduled activity, update it with the calendar event id
+      try {
+        const match = state.scheduledActivities.find((s) => s.suggestionId === suggestion.id && s.startAt === commitment.startAt);
+        if (match) {
+          // Replace with updated calendar id and clear write-failed flag
+          const updated = { ...match, calendarEventId: eventId, calendarWriteFailed: false };
+          actions.removeScheduledActivity(match.id);
+          actions.addScheduledActivity(updated);
+        }
+      } catch (err) {
+        // best-effort
+      }
     } catch (error) {
       await logEvent('calendar_event_created_fail');
       setCalendarFailed(true);
@@ -286,6 +313,13 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       } catch (error) {
         console.warn('Calendar delete failed', error);
       }
+    }
+    // Also remove related scheduled activity if present
+    try {
+      const match = state.scheduledActivities.find((s) => s.calendarEventId === commitment.calendarEventId || (s.suggestionId === suggestion.id && s.startAt === commitment.startAt));
+      if (match) actions.removeScheduledActivity(match.id);
+    } catch (err) {
+      // ignore
     }
     navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   }, [commitment.calendarEventId, navigation]);
@@ -415,9 +449,21 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     if (commitment.calendarEventId && !commitment.calendarWriteFailed) {
       const originalEnd = new Date(commitment.endAt);
       if (endTime.getTime() < originalEnd.getTime()) {
-        updatePlanEventEnd(commitment.calendarEventId, endTime).catch((err) =>
-          console.warn('Failed to shorten calendar event', err),
-        );
+        updatePlanEventEnd(commitment.calendarEventId, endTime)
+          .then(() => {
+            // Update local scheduled activity end time if present
+            try {
+              const match = state.scheduledActivities.find((s) => s.calendarEventId === commitment.calendarEventId || (s.suggestionId === suggestion.id && s.startAt === commitment.startAt));
+              if (match) {
+                const updated = { ...match, endAt: endTime.toISOString() };
+                actions.removeScheduledActivity(match.id);
+                actions.addScheduledActivity(updated);
+              }
+            } catch (err) {
+              // ignore
+            }
+          })
+          .catch((err) => console.warn('Failed to shorten calendar event', err));
       }
     }
 
@@ -530,6 +576,12 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
           onPress={onPrimary}
           glow
         />
+      )}
+
+      {websiteUrl && (
+        <Pressable onPress={openWebsite}>
+          <Text style={styles.websiteLink}>Open website</Text>
+        </Pressable>
       )}
 
       <Text style={styles.calendarStatus}>
@@ -681,6 +733,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   retry: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.accentDark,
+  },
+  websiteLink: {
+    marginTop: theme.spacing.xs,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentDark,
+    textAlign: 'center',
   },
   contextBlock: {
     marginTop: theme.spacing.sm,

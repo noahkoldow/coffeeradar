@@ -50,6 +50,10 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
             label="Edit preferences"
             onPress={() => navigation.navigate('Settings')}
           />
+          <PrimaryButton
+            label="Submit a business ad"
+            onPress={() => navigation.navigate('BusinessHub')}
+          />
           <Pressable
             onPress={async () => {
               await actions.resetData();

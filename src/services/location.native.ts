@@ -1,5 +1,6 @@
 import * as Location from 'expo-location';
 import { LocationState } from '../types';
+import { resolveLocationTimeZone } from './weather';
 
 export const requestLocationPermission = async (): Promise<boolean> => {
   const { status } = await Location.requestForegroundPermissionsAsync();
@@ -26,9 +27,11 @@ export const getCurrentLocation = async (): Promise<LocationState> => {
   } catch {
     areaLabel = null;
   }
+  const timeZone = await resolveLocationTimeZone(latitude, longitude).catch(() => null);
   return {
     lat: latitude,
     lng: longitude,
     areaLabel,
+    timeZone,
   };
 };

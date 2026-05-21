@@ -11,13 +11,15 @@ import { DeckLoader } from '../components/DeckLoader';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
-import { Availability, Commitment, DeckSuggestion, HistoryState, ScheduledActivity } from '../types';
+import { Availability, Commitment, DeckSuggestion, HistoryState, SavedSuggestion, ScheduledActivity } from '../types';
 import { buildDeck, buildFilteredFallbacks } from '../services/suggestions';
-import { recordAccept, recordReject, recordTypeAccept, recordTypeReject, decayAffinities } from '../services/affinity';
+import { recordActivityShown, recordActivityCompleted, shouldSuggestHabitConversion } from '../services/activityRepetitionService';
+import { recordAccept, recordInterested, recordReject, recordTypeAccept, recordTypeReject, decayAffinities } from '../services/affinity';
 import { addMinutes, formatDuration, formatTime, toISO } from '../utils/time';
 import { chooseTravelMode, estimateEtaMinutes, haversineKm } from '../services/travel';
-import { createPlanEvent, getUpcomingEvents } from '../services/calendar';
+import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../services/calendar';
 import { logEvent } from '../services/analytics';
+import { syncBusinessMetric } from '../services/user';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -39,6 +41,17 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const [customMinute, setCustomMinute] = useState('');
   const [clashInfo, setClashInfo] = useState<{ title: string; start: string; end: string } | null>(null);
   const [pendingScheduleStart, setPendingScheduleStart] = useState<Date | null>(null);
+  const [schedulePreview, setSchedulePreview] = useState<{
+    title: string;
+    beforeTitle?: string | null;
+    afterTitle?: string | null;
+    slotStart: Date;
+    slotEnd: Date;
+  } | null>(null);
+  const [tomorrowAvailability, setTomorrowAvailability] = useState<Availability | null>(null);
+  const [tomorrowCalendarEvents, setTomorrowCalendarEvents] = useState<Array<{ title: string; startDate: Date; endDate: Date }>>([]);
+  const [savedPopupVisible, setSavedPopupVisible] = useState(false);
+  const [heartAnimIds, setHeartAnimIds] = useState<Set<string>>(new Set());
   const deckRef = useRef<SwipeDeckHandle>(null);
   const commitButtonRef = useRef<View>(null);
   const ripple = useRef(new Animated.Value(0)).current;
@@ -46,6 +59,17 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const historyRef = useRef(state.history);
   const loadingRef = useRef(true); // mirrors `loading` for use in effects
   const didLoadDeck = useRef(false); // true once we successfully showed a deck
+  const commitWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const uiAppear = useRef(new Animated.Value(0)).current;
+  const schedulePreviewAnim = useRef(new Animated.Value(0)).current;
+  const savedPopupAnim = useRef(new Animated.Value(0)).current;
+
+  const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> => {
+    return Promise.race([
+      promise,
+      new Promise<T>((resolve) => setTimeout(() => resolve(fallback), timeoutMs)),
+    ]);
+  };
   const goBack = () => {
     if (navigation.canGoBack()) {
       navigation.goBack();
@@ -54,7 +78,101 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   };
 
+  const planDate = route.params?.planDate ?? 'today';
+
+  const buildTomorrowFallbackAvailability = useCallback((): Availability => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    tomorrow.setHours(9, 0, 0, 0);
+    const end = new Date(tomorrow);
+    end.setHours(21, 0, 0, 0);
+    return {
+      start: toISO(tomorrow),
+      end: toISO(end),
+      durationMin: Math.max(0, Math.round((end.getTime() - tomorrow.getTime()) / 60000)),
+      nextEventTitle: null,
+      contextEventTitles: [],
+    };
+  }, []);
+
+  useEffect(() => {
+    if (planDate !== 'tomorrow') {
+      setTomorrowAvailability(null);
+      setTomorrowCalendarEvents([]);
+      return;
+    }
+
+    let cancelled = false;
+    setLoading(true);
+
+    (async () => {
+      try {
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const dayStart = new Date(tomorrow);
+        dayStart.setHours(0, 0, 0, 0);
+        const dayEnd = new Date(tomorrow);
+        dayEnd.setHours(23, 59, 59, 999);
+
+        const availabilityForTomorrow = state.permissions.calendarGranted
+          ? await getAvailabilityForDate(tomorrow, state.enabledCalendars)
+          : buildTomorrowFallbackAvailability();
+
+        const dayEvents = state.permissions.calendarGranted
+          ? await getUpcomingEvents(dayStart, dayEnd, state.enabledCalendars)
+          : [];
+
+        const mergedTitles = [
+          ...(availabilityForTomorrow.contextEventTitles ?? []),
+          ...dayEvents.map((event) => event.title),
+        ].filter((title, idx, arr) => !!title && arr.indexOf(title) === idx).slice(0, 12);
+
+        if (!cancelled) {
+          setTomorrowAvailability({
+            ...availabilityForTomorrow,
+            contextEventTitles: mergedTitles,
+          });
+          setTomorrowCalendarEvents(dayEvents);
+        }
+      } catch (error) {
+        console.warn('[DeckScreen] tomorrow availability failed', error);
+        if (!cancelled) {
+          setTomorrowAvailability(buildTomorrowFallbackAvailability());
+          setTomorrowCalendarEvents([]);
+        }
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+    })();
+
+    return () => { cancelled = true; };
+  }, [planDate, state.permissions.calendarGranted, state.enabledCalendars, buildTomorrowFallbackAvailability]);
+
   const availability: Availability = useMemo(() => {
+    if (planDate === 'tomorrow') {
+      if (tomorrowAvailability) {
+        const scheduledTitles = state.scheduledActivities
+          .filter((item) => {
+            const start = new Date(item.startAt);
+            const tomorrow = new Date(tomorrowAvailability.start);
+            return start.getFullYear() === tomorrow.getFullYear()
+              && start.getMonth() === tomorrow.getMonth()
+              && start.getDate() === tomorrow.getDate();
+          })
+          .map((item) => item.title);
+        const contextEventTitles = [
+          ...(tomorrowAvailability.contextEventTitles ?? []),
+          ...scheduledTitles,
+        ].filter((title, idx, arr) => !!title && arr.indexOf(title) === idx).slice(0, 12);
+        return {
+          ...tomorrowAvailability,
+          contextEventTitles,
+        };
+      }
+      return buildTomorrowFallbackAvailability();
+    }
     if (state.availability && !route.params?.durationOverride) {
       // The user explicitly tapped "Do something now" — if calendar says 0 min
       // (busy right now), give them at least 15 min so the deck isn't empty.
@@ -80,22 +198,165 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     };
     // Only recompute when the actual data changes, not every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.availability?.durationMin, state.availability?.start, route.params?.durationOverride]);
+  }, [planDate, tomorrowAvailability, state.scheduledActivities, state.availability?.durationMin, state.availability?.start, route.params?.durationOverride, buildTomorrowFallbackAvailability]);
 
-  /** Record all card IDs from a deck into lastShownIds so they never repeat */
+  type DayEvent = { title: string; start: number; end: number };
+
+  const tomorrowContextEvents = useMemo<DayEvent[]>(() => {
+    if (planDate !== 'tomorrow') return [];
+    const windowStart = new Date(availability.start).getTime();
+    const windowEnd = new Date(availability.end).getTime();
+
+    const fromCalendar: DayEvent[] = tomorrowCalendarEvents.map((event) => ({
+      title: event.title,
+      start: Math.max(windowStart, event.startDate.getTime()),
+      end: Math.min(windowEnd, event.endDate.getTime()),
+    }));
+
+    const fromScheduled: DayEvent[] = state.scheduledActivities.map((item) => ({
+      title: item.title,
+      start: Math.max(windowStart, new Date(item.startAt).getTime()),
+      end: Math.min(windowEnd, new Date(item.endAt).getTime()),
+    }));
+
+    return [...fromCalendar, ...fromScheduled]
+      .filter((event) => event.end > event.start)
+      .sort((a, b) => a.start - b.start);
+  }, [planDate, availability.start, availability.end, tomorrowCalendarEvents, state.scheduledActivities]);
+
+  const findBestTomorrowFit = useCallback((durationMin: number): {
+    slotStart: Date;
+    slotEnd: Date;
+    slackMin: number;
+    before?: DayEvent;
+    after?: DayEvent;
+  } | null => {
+    if (planDate !== 'tomorrow') return null;
+
+    const windowStart = new Date(availability.start).getTime();
+    const windowEnd = new Date(availability.end).getTime();
+    const requiredMs = Math.max(durationMin, 10) * 60 * 1000;
+    const events = tomorrowContextEvents;
+
+    let cursor = windowStart;
+    let previous: DayEvent | undefined;
+    let best: {
+      slotStart: Date;
+      slotEnd: Date;
+      slackMin: number;
+      before?: DayEvent;
+      after?: DayEvent;
+      score: number;
+    } | null = null;
+
+    const considerGap = (gapStart: number, gapEnd: number, before?: DayEvent, after?: DayEvent) => {
+      const gapMs = gapEnd - gapStart;
+      if (gapMs < requiredMs) return;
+      const slotStartMs = gapStart;
+      const slotEndMs = slotStartMs + requiredMs;
+      const slackMin = Math.round((gapMs - requiredMs) / 60000);
+      const offsetMin = Math.round((slotStartMs - windowStart) / 60000);
+      const score = slackMin * 1.5 + offsetMin * 0.08;
+
+      if (!best || score < best.score) {
+        best = {
+          slotStart: new Date(slotStartMs),
+          slotEnd: new Date(slotEndMs),
+          slackMin,
+          before,
+          after,
+          score,
+        };
+      }
+    };
+
+    for (const event of events) {
+      if (event.start > cursor) {
+        considerGap(cursor, event.start, previous, event);
+      }
+      if (event.end > cursor) {
+        cursor = event.end;
+        previous = event;
+      }
+    }
+
+    if (cursor < windowEnd) {
+      considerGap(cursor, windowEnd, previous, undefined);
+    }
+
+    if (!best) return null;
+    return {
+      slotStart: best.slotStart,
+      slotEnd: best.slotEnd,
+      slackMin: best.slackMin,
+      before: best.before,
+      after: best.after,
+    };
+  }, [planDate, availability.start, availability.end, tomorrowContextEvents]);
+
+  const rankTomorrowCards = useCallback((cards: DeckSuggestion[]): DeckSuggestion[] => {
+    if (planDate !== 'tomorrow') return cards;
+
+    return cards
+      .map((card) => {
+        const fit = findBestTomorrowFit(card.durationMin);
+        if (!fit) {
+          return { card, rank: Number.POSITIVE_INFINITY };
+        }
+        const rank = fit.slackMin + (fit.slotStart.getTime() - new Date(availability.start).getTime()) / 60000 * 0.08;
+        return {
+          rank,
+          card: {
+            ...card,
+            meta: {
+              ...(card.meta ?? {}),
+              planStartAt: fit.slotStart.toISOString(),
+              planEndAt: fit.slotEnd.toISOString(),
+              planBeforeTitle: fit.before?.title,
+              planBeforeEndsAt: fit.before ? new Date(fit.before.end).toISOString() : undefined,
+              planAfterTitle: fit.after?.title,
+              planAfterStartsAt: fit.after ? new Date(fit.after.start).toISOString() : undefined,
+            },
+          },
+        };
+      })
+      .sort((a, b) => a.rank - b.rank)
+      .map((entry) => entry.card);
+  }, [planDate, findBestTomorrowFit, availability.start]);
+
+  /** Record all card IDs from a deck using smart repetition tracking */
   const recordShown = useCallback((cards: DeckSuggestion[]) => {
     if (!cards.length) return;
+    const now = new Date();
+    let current = historyRef.current;
+    
+    // Update history with lastShownDates (new system) and maintain lastShownIds for fallback compatibility
     const newIds = cards.map((c) => c.id);
-    const current = historyRef.current;
     const existing = current.lastShownIds ?? [];
     const merged = [...newIds, ...existing];
-    // Keep up to 500 to cover many sessions without unbounded growth
+    
+    // Record each card's shown timestamp for smart repetition filtering
+    for (const card of cards) {
+      current = recordActivityShown(card.id, current, now);
+    }
+    
+    // Maintain lastShownIds for backwards compatibility with fallback logic
     const updated: HistoryState = {
       ...current,
       lastShownIds: [...new Set(merged)].slice(0, 500),
     };
     actions.setHistory(updated);
     historyRef.current = updated;
+
+    const businessShown = cards.filter((card) => card.source === 'business').slice(0, 3);
+    for (const item of businessShown) {
+      logEvent('business_impression', {
+        suggestion_id: item.id,
+        business_id: item.businessId,
+        title: item.title,
+      });
+      void syncBusinessMetric(item.businessId, 'impressions', 1);
+    }
   }, [actions]);
 
   /** Filter a deck based on the route filter param */
@@ -131,6 +392,9 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         undefined,
         state.tagAffinities,
         state.locationProfile,
+        route.params?.filter,
+        state.savedSuggestions,
+        planDate === 'tomorrow' ? new Date(availability.start) : undefined,
       );
       usedFallback = usedFallback || result.usedFallback;
       const filtered = filterDeck(result.deck);
@@ -177,8 +441,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         }
       }
     }
-    return { deck: collected.slice(0, DESIRED_SIZE), usedFallback };
-  }, [availability, state.location, state.prefs, state.habits, filterDeck, route.params?.filter]);
+    const trimmed = collected.slice(0, DESIRED_SIZE);
+    const ranked = rankTomorrowCards(trimmed);
+    return { deck: ranked, usedFallback };
+  }, [availability, state.location, state.prefs, state.habits, filterDeck, route.params?.filter, planDate, rankTomorrowCards]);
 
   /** Apply a deck result to local state */
   const applyDeck = useCallback((result: { deck: DeckSuggestion[]; usedFallback: boolean }, preloaded: boolean) => {
@@ -206,7 +472,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     if (didLoadDeck.current) return;
 
     // 1. Try consuming a ready preloaded deck (only when no filter or enough filtered cards)
-    if (state.preloadedDeck && state.preloadedDeck.deck.length > 0) {
+    if (planDate !== 'tomorrow' && state.preloadedDeck && state.preloadedDeck.deck.length > 0) {
       const result = actions.consumeDeck();
       if (result && result.deck.length > 0) {
         const filtered = filterDeck(result.deck);
@@ -220,7 +486,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
     // 2. Preload is still running — stay on loading screen, effect will
     //    re-fire when deckLoading or preloadedDeck changes.
-    if (state.deckLoading && !route.params?.filter) {
+    if (planDate !== 'tomorrow' && state.deckLoading && !route.params?.filter) {
       console.log('[DeckScreen] preload in progress, waiting...');
       return;
     }
@@ -254,12 +520,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     })();
 
     return () => { cancelled = true; };
-  }, [state.preloadedDeck, state.deckLoading, availability, state.location, state.prefs, state.habits, actions, applyDeck, buildFilteredDeck, filterDeck, recordShown, route.params?.filter]);
+  }, [planDate, state.preloadedDeck, state.deckLoading, availability, state.location, state.prefs, state.habits, actions, applyDeck, buildFilteredDeck, filterDeck, recordShown, route.params?.filter]);
 
   // Always-fresh rebuild for "New set" button
   const rebuildDeck = useCallback(async () => {
     // First try the preloaded deck (it had full API time in the background)
-    const preloaded = actions.consumeDeck();
+    const preloaded = planDate !== 'tomorrow' ? actions.consumeDeck() : null;
     if (preloaded && preloaded.deck.length > 0) {
       const filtered = filterDeck(preloaded.deck);
       if (filtered.length >= DESIRED_SIZE) {
@@ -284,7 +550,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       setLoading(false);
       loadingRef.current = false;
     }
-  }, [filterDeck, buildFilteredDeck, recordShown, actions, applyDeck]);
+  }, [planDate, filterDeck, buildFilteredDeck, recordShown, actions, applyDeck]);
 
   useEffect(() => {
     historyRef.current = state.history;
@@ -319,6 +585,23 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     updateRippleLayout();
   }, [updateRippleLayout, screenHeight, screenWidth]);
 
+  useEffect(() => {
+    if (loading) return;
+    uiAppear.setValue(0);
+    Animated.timing(uiAppear, {
+      toValue: 1,
+      duration: 240,
+      useNativeDriver: true,
+    }).start();
+  }, [loading, index, uiAppear]);
+
+  useEffect(() => () => {
+    if (commitWatchdogRef.current) {
+      clearTimeout(commitWatchdogRef.current);
+      commitWatchdogRef.current = null;
+    }
+  }, []);
+
   const triggerRipple = useCallback(() => {
     if (!rippleConfig) return;
     ripple.stopAnimation();
@@ -330,8 +613,46 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }).start();
   }, [ripple, rippleConfig]);
 
+  const playSchedulePreview = useCallback(async (picked: DeckSuggestion, slotStart: Date, slotEnd: Date) => {
+    if (planDate !== 'tomorrow') return;
+    setSchedulePreview({
+      title: picked.title,
+      beforeTitle: picked.meta?.planBeforeTitle,
+      afterTitle: picked.meta?.planAfterTitle,
+      slotStart,
+      slotEnd,
+    });
+    schedulePreviewAnim.setValue(0);
+    Animated.timing(schedulePreviewAnim, {
+      toValue: 1,
+      duration: 320,
+      useNativeDriver: true,
+    }).start();
+    await new Promise((resolve) => setTimeout(resolve, 420));
+  }, [planDate, schedulePreviewAnim]);
+
   const current = deck[index] ?? null;
   const next = deck[index + 1] ?? null;
+
+  const saveCurrentSuggestion = (source: SavedSuggestion['source'], moveToNext = false) => {
+    if (!current) return;
+    actions.saveSuggestion({
+      id: `saved_${current.id}_${Date.now()}`,
+      savedAt: new Date().toISOString(),
+      source,
+      suggestion: current,
+    });
+    if (current.tags?.length) {
+      let aff = decayAffinities(state.tagAffinities, new Date().toISOString());
+      aff = recordInterested(aff, current.tags);
+      aff = recordTypeAccept(aff, current.type);
+      actions.setTagAffinities(aff);
+    }
+    logEvent('save_for_later', { suggestion_id: current.id, type: current.type, source });
+    if (moveToNext) {
+      setIndex((prev) => prev + 1);
+    }
+  };
 
   // When the user runs out of cards, start preloading the next deck
   // in the background so it's ready if they tap "New set"
@@ -366,6 +687,32 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     logEvent('swipe_left', { suggestion_id: swiped.id, type: swiped.type });
   };
 
+  // Quick-save the current suggestion to the library and advance the deck
+  const handleSaveQuick = () => {
+    if (!current) return;
+    if (swipeLockRef.current) return;
+    swipeLockRef.current = true;
+
+    // Show heart animation
+    setHeartAnimIds((prev) => new Set([...prev, current.id]));
+    
+    // Use existing save flow which records affinities and analytics
+    saveCurrentSuggestion('saved_quick', false);
+    
+    // Show saved popup
+    setSavedPopupVisible(true);
+    savedPopupAnim.setValue(0);
+    Animated.sequence([
+      Animated.spring(savedPopupAnim, { toValue: 1, tension: 100, friction: 9, useNativeDriver: true }),
+      Animated.timing(savedPopupAnim, { toValue: 0, duration: 180, useNativeDriver: true }),
+    ]).start(() => {
+      setSavedPopupVisible(false);
+      setIndex((prev) => prev + 1);
+      swipeLockRef.current = false;
+    });
+    
+  };
+
   const buildNotes = (suggestion: DeckSuggestion, leaveBy?: string | null) => {
     if (suggestion.type === 'AT_HOME') {
       return `${suggestion.description}\n\nSteps:\n${(suggestion.steps || [])
@@ -385,131 +732,193 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const commitSuggestion = async (mode: 'now' | 'later', startOverride?: Date) => {
     if (!current) return;
     if (confirming || swipeLockRef.current) return;
+    const picked = current;
     swipeLockRef.current = true;
-    setConfettiEmojis(current.emojis && current.emojis.length ? current.emojis : ['✨', '🎉', '⭐']);
+    setConfettiEmojis(picked.emojis && picked.emojis.length ? picked.emojis : ['✨', '🎉', '⭐']);
     setConfirming(true);
-    triggerRipple();
-    await logEvent(mode === 'later' ? 'schedule_later_commit' : 'swipe_right_commit', {
-      suggestion_id: current.id,
-      type: current.type,
-    });
-    await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
-    const now = new Date();
-    let startDate = startOverride ?? addMinutes(now, 2);
-    let endDate = addMinutes(startDate, current.durationMin);
-    let title = current.title;
-    let leaveBy = current.meta?.leaveBy;
-
-    if (current.type === 'AT_HOME') {
-      title = `Plan: ${current.title}`;
-      if (startOverride) {
-        startDate = startOverride;
-        endDate = addMinutes(startDate, current.durationMin);
-      }
-    }
-
-    if (current.type === 'GO_OUT') {
-      title = `Plan: ${current.place?.name ?? current.title}`;
-      if (startOverride) {
-        startDate = startOverride;
-        endDate = addMinutes(startDate, current.durationMin);
-        leaveBy = startOverride.toISOString();
-      } else {
-        // Calculate PT-aware departure: walk to stop + wait + ride
-        let etaMin = current.meta?.etaMin ?? 15;
-        if (state.location.lat && state.location.lng && current.place?.lat && current.place?.lng) {
-          const dist = haversineKm(state.location.lat, state.location.lng, current.place.lat, current.place.lng);
-          const mode = chooseTravelMode(dist);
-          etaMin = estimateEtaMinutes(dist, mode);
-        }
-        // Leave in 3 minutes (time to get ready), arrive after transit ETA
-        const leaveAt = addMinutes(now, 3);
-        startDate = addMinutes(leaveAt, etaMin);
-        endDate = addMinutes(startDate, current.durationMin);
-        leaveBy = leaveAt.toISOString();
-      }
-    }
-
-    if (current.type === 'EVENT' && current.event) {
-      title = `Event: ${current.title}`;
-      startDate = new Date(current.event.startAt);
-      endDate = addMinutes(startDate, current.durationMin || 120);
-    }
-
-    const notes = buildNotes(current, leaveBy);
-    let calendarEventId: string | undefined;
-    let calendarWriteFailed = !state.permissions.calendarGranted;
-
-    try {
-      if (state.permissions.calendarGranted) {
-        calendarEventId = await createPlanEvent({
-          title,
-          startDate,
-          endDate,
-          notes,
-        });
-        await logEvent('calendar_event_created_success');
-        calendarWriteFailed = false;
-      }
-    } catch (error) {
-      calendarWriteFailed = true;
-      await logEvent('calendar_event_created_fail');
-    }
-
-    const commitment: Commitment = {
-      suggestionId: current.id,
-      type: current.type,
-      title: current.title,
-      startAt: startDate.toISOString(),
-      endAt: endDate.toISOString(),
-      leaveBy,
-      ticketUrl: current.event?.ticketUrl,
-      calendarEventId,
-      calendarWriteFailed,
-    };
-
-    actions.setHistory({
-      ...state.history,
-      lastAcceptedIds: [current.id, ...state.history.lastAcceptedIds].slice(0, 200),
-    });
-    // Record tag affinity: strong boost for accepted tags
-    if (current.tags?.length) {
-      let aff = decayAffinities(state.tagAffinities, new Date().toISOString());
-      aff = recordAccept(aff, current.tags);
-      aff = recordTypeAccept(aff, current.type);
-      actions.setTagAffinities(aff);
-    }
-
-    setTimeout(() => {
+    if (commitWatchdogRef.current) clearTimeout(commitWatchdogRef.current);
+    commitWatchdogRef.current = setTimeout(() => {
       setConfirming(false);
+      swipeLockRef.current = false;
+      Alert.alert('Taking longer than expected', 'Please try again.');
+    }, 8000);
+    triggerRipple();
+    try {
+      await withTimeout(logEvent(mode === 'later' ? 'schedule_later_commit' : 'swipe_right_commit', {
+        suggestion_id: picked.id,
+        type: picked.type,
+      }), 1500, undefined);
+      if (picked.source === 'business') {
+        await withTimeout(logEvent('business_click', {
+          suggestion_id: picked.id,
+          business_id: picked.businessId,
+          action: mode === 'later' ? 'schedule_later' : 'commit',
+        }), 1200, undefined);
+        void syncBusinessMetric(picked.businessId, 'clicks', 1);
+      }
+      await withTimeout(Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success), 1200, undefined);
+
+      const now = new Date();
+      let startDate = startOverride ?? addMinutes(now, 2);
+      let endDate = addMinutes(startDate, picked.durationMin);
+      let title = picked.title;
+      let leaveBy = picked.meta?.leaveBy;
+
+      if (picked.type === 'AT_HOME') {
+        title = `Plan: ${picked.title}`;
+        if (startOverride) {
+          startDate = startOverride;
+          endDate = addMinutes(startDate, picked.durationMin);
+        }
+      }
+
+      if (picked.type === 'GO_OUT') {
+        title = `Plan: ${picked.place?.name ?? picked.title}`;
+        if (startOverride) {
+          startDate = startOverride;
+          endDate = addMinutes(startDate, picked.durationMin);
+          leaveBy = startOverride.toISOString();
+        } else {
+          // Calculate PT-aware departure: walk to stop + wait + ride
+          let etaMin = picked.meta?.etaMin ?? 15;
+          if (state.location.lat && state.location.lng && picked.place?.lat && picked.place?.lng) {
+            const dist = haversineKm(state.location.lat, state.location.lng, picked.place.lat, picked.place.lng);
+            const mode = chooseTravelMode(dist);
+            etaMin = estimateEtaMinutes(dist, mode);
+          }
+          // Leave in 3 minutes (time to get ready), arrive after transit ETA
+          const leaveAt = addMinutes(now, 3);
+          startDate = addMinutes(leaveAt, etaMin);
+          endDate = addMinutes(startDate, picked.durationMin);
+          leaveBy = leaveAt.toISOString();
+        }
+      }
+
+      if (picked.type === 'EVENT' && picked.event) {
+        title = `Event: ${picked.title}`;
+        startDate = new Date(picked.event.startAt);
+        endDate = addMinutes(startDate, picked.durationMin || 120);
+      }
+
+      if (planDate === 'tomorrow' && mode === 'later') {
+        await playSchedulePreview(picked, startDate, endDate);
+      }
+
+      const notes = buildNotes(picked, leaveBy);
+      let calendarEventId: string | undefined;
+      let calendarWriteFailed = !state.permissions.calendarGranted;
+
+      try {
+        if (state.permissions.calendarGranted) {
+          calendarEventId = await withTimeout(createPlanEvent({
+            title,
+            startDate,
+            endDate,
+            notes,
+          }), 3500, '');
+          if (!calendarEventId) throw new Error('Calendar write timeout');
+          await withTimeout(logEvent('calendar_event_created_success'), 1500, undefined);
+          calendarWriteFailed = false;
+        }
+      } catch (error) {
+        calendarWriteFailed = true;
+        await withTimeout(logEvent('calendar_event_created_fail'), 1500, undefined);
+      }
+
+      const commitment: Commitment = {
+        suggestionId: picked.id,
+        type: picked.type,
+        title: picked.title,
+        startAt: startDate.toISOString(),
+        endAt: endDate.toISOString(),
+        leaveBy,
+        ticketUrl: picked.event?.ticketUrl,
+        calendarEventId,
+        calendarWriteFailed,
+      };
+
+      const updatedHistory = {
+        ...recordActivityCompleted(picked.id, state.history),
+        lastAcceptedIds: [picked.id, ...state.history.lastAcceptedIds].slice(0, 200),
+      };
+      actions.setHistory(updatedHistory);
+
+      // Check if activity should be suggested as a habit (3+ completions)
+      const completionCount = (updatedHistory.completedActivityIds?.[picked.id] ?? 0);
+      if (shouldSuggestHabitConversion(picked.id, completionCount)) {
+        // Activity has been completed 3+ times - ready to become a habit
+        // TODO: Show "Make this a habit?" dialog or card
+        // For now, log it for debugging
+        console.log(`[Habit Conversion] Activity "${picked.title}" ready to convert (${completionCount} completions)`);
+      }
+
+      // Record tag affinity: strong boost for accepted tags
+      if (picked.tags?.length) {
+        let aff = decayAffinities(state.tagAffinities, new Date().toISOString());
+        aff = recordAccept(aff, picked.tags);
+        aff = recordTypeAccept(aff, picked.type);
+        actions.setTagAffinities(aff);
+      }
+
+      if (commitWatchdogRef.current) {
+        clearTimeout(commitWatchdogRef.current);
+        commitWatchdogRef.current = null;
+      }
+      setConfirming(false);
+      setSchedulePreview(null);
+      swipeLockRef.current = false;
       if (mode === 'later') {
         // Save as scheduled activity — user will start it from the dashboard
         const scheduled: ScheduledActivity = {
           id: `sched_${Date.now()}`,
-          suggestionId: current.id,
-          title: current.title,
-          description: current.description,
-          durationMin: current.durationMin,
+          suggestionId: picked.id,
+          title: picked.title,
+          description: picked.description,
+          durationMin: picked.durationMin,
           startAt: startDate.toISOString(),
           endAt: endDate.toISOString(),
-          type: current.type,
-          tags: current.tags,
+          type: picked.type,
+          tags: picked.tags,
           calendarEventId,
-          suggestion: current,
+          suggestion: picked,
           commitment,
         };
         actions.addScheduledActivity(scheduled);
         // Skip to next card instead of leaving to Plan
         setIndex((prev) => prev + 1);
-        swipeLockRef.current = false;
       } else {
-        navigation.replace('Plan', { commitment, suggestion: current });
+        if (navigation.canGoBack()) {
+          navigation.navigate('Plan', { commitment, suggestion: picked });
+        } else {
+          navigation.replace('Plan', { commitment, suggestion: picked });
+        }
       }
-    }, 600);
+    } catch (error) {
+      console.warn('[DeckScreen] commitSuggestion failed', error);
+      if (commitWatchdogRef.current) {
+        clearTimeout(commitWatchdogRef.current);
+        commitWatchdogRef.current = null;
+      }
+      setConfirming(false);
+      setSchedulePreview(null);
+      swipeLockRef.current = false;
+      Alert.alert('Could not open plan', 'Please try again.');
+    }
   };
 
   const handleCommit = async () => {
+    if (planDate === 'tomorrow') {
+      if (!current) return;
+      const suggested = current.meta?.planStartAt ? new Date(current.meta.planStartAt) : null;
+      const computed = findBestTomorrowFit(current.durationMin);
+      const slot = computed?.slotStart ?? (suggested && !Number.isNaN(suggested.getTime()) ? suggested : null);
+      if (!slot) {
+        Alert.alert('Tomorrow is full', 'No slot fits this activity in your tomorrow plan window. Swipe for a shorter option.');
+        return;
+      }
+      await commitSuggestion('later', slot);
+      return;
+    }
     await commitSuggestion('now');
   };
 
@@ -600,18 +1009,47 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   if (loading) {
+    const deckTypeMap = {
+      'today': 'do_now' as const,
+      'tomorrow': 'plan_tomorrow' as const,
+    };
+    const deckType = route.params?.filter === 'productive' ? 'productive' 
+      : route.params?.filter === 'at_home' ? 'homebody'
+      : deckTypeMap[planDate] ?? 'do_now';
+    
     return (
       <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
-        <DeckLoader />
+        <DeckLoader deckType={deckType} />
       </LinearGradient>
     );
   }
 
+  // Map deck type to display colors (from HomeScreen)
+  const getDeckColors = () => {
+    const filter = route.params?.filter;
+    if (filter === 'productive') return { bg: '#A8D8EA', text: '#1A3A4A' };
+    if (filter === 'at_home') return { bg: '#E2B6CF', text: '#3A1A2E' };
+    if (planDate === 'tomorrow') return { bg: '#B5EAD7', text: '#1A4A3A' };
+    return { bg: theme.colors.accent, text: '#FFFFFF' };
+  };
+  const deckColors = getDeckColors();
+
   if (!current) {
     const ranOutEarly = deck.length < DESIRED_SIZE;
+    
+    // Auto-trigger rebuild on Plan Tomorrow if empty
+    if (planDate === 'tomorrow' && !loading) {
+      return (
+        <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
+          <DeckLoader />
+        </LinearGradient>
+      );
+    }
+    
+    // Allow a first tap anywhere on the empty area to queue a fresh deck
     return (
       <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
-        <View style={styles.emptyState}>
+        <Pressable style={styles.emptyState} onPress={rebuildDeck}>
           <Text style={styles.title}>Nothing clicked.</Text>
           <Text style={styles.subtitle}>
             {ranOutEarly
@@ -629,18 +1067,35 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               <Text style={styles.backLink}>Back</Text>
             </Pressable>
           </View>
-        </View>
+        </Pressable>
       </LinearGradient>
     );
   }
 
-  const freeLabel = availability.durationMin > 120
-    ? 'You are free today'
-    : `You have ${formatDuration(availability.durationMin)} free`;
+  const freeLabel = planDate === 'tomorrow'
+    ? (availability.nextEventTitle
+      ? `Free until ${availability.nextEventTitle}`
+      : `Tomorrow plan · ${formatDuration(availability.durationMin)} free`)
+    : (availability.durationMin > 120
+      ? 'You are free today'
+      : `You have ${formatDuration(availability.durationMin)} free`);
   const area = state.location.areaLabel ? `near ${state.location.areaLabel}` : 'near you';
 
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
+      <Animated.View
+        style={[{
+          opacity: uiAppear,
+          transform: [
+            {
+              translateY: uiAppear.interpolate({
+                inputRange: [0, 1],
+                outputRange: [10, 0],
+              }),
+            },
+          ],
+        }, styles.mainContent]}
+      >
       <View style={styles.header}>
         <Pressable
           onPress={() => {
@@ -652,13 +1107,15 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         >
           <Text style={styles.back}>Back</Text>
         </Pressable>
-        <Text style={styles.headerText}>{freeLabel} {area}</Text>
-        <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
-        {fallbackUsed && (
-          <Text style={styles.fallbackNote}>
-            Out of personalized picks — here are some quick ideas worth trying.
+        <View style={[styles.headerTypeTag, { backgroundColor: deckColors.bg }]}>
+          <Text style={[styles.headerTypeTagText, { color: deckColors.text }]}>
+            {planDate === 'tomorrow' ? 'PLAN AHEAD' : route.params?.filter === 'productive' ? 'BE PRODUCTIVE' : route.params?.filter === 'at_home' ? 'HOMEBODY IT' : 'DO SOMETHING NOW'}
           </Text>
-        )}
+        </View>
+        <View style={styles.headerMetaRow}>
+          <Text style={styles.headerText}>{freeLabel} {planDate === 'tomorrow' ? '' : area}</Text>
+          <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
+        </View>
       </View>
 
       <View style={styles.deckWrap}>
@@ -674,11 +1131,20 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
       <View style={styles.controls}>
         <Pressable
-          onPress={() => deckRef.current?.swipeLeft()}
+          onPress={handleSwipeLeft}
           style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
           disabled={confirming}
         >
-          <Text style={styles.controlText}>Nope</Text>
+          <Text style={styles.controlText}>X</Text>
+        </Pressable>
+        <Pressable
+          onPress={handleSaveQuick}
+          style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
+          disabled={confirming}
+        >
+          <Text style={[styles.controlText, heartAnimIds.has(current?.id ?? '') && { color: '#EF4444' }]}>
+            {heartAnimIds.has(current?.id ?? '') ? '❤️' : '♡'}
+          </Text>
         </Pressable>
         <View ref={commitButtonRef} onLayout={updateRippleLayout} collapsable={false} style={styles.controlSlot}>
           <Pressable
@@ -686,20 +1152,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             style={({ pressed }) => [styles.controlButton, styles.controlPrimary, pressed && styles.controlPressed]}
             disabled={confirming}
           >
-            <Text style={[styles.controlText, styles.controlTextPrimary]}>Do it</Text>
+            <Text style={[styles.controlText, styles.controlTextPrimary]}>{planDate === 'tomorrow' ? 'Add to calendar' : 'Do it'}</Text>
           </Pressable>
         </View>
       </View>
 
-      {current.type !== 'EVENT' && (
-        <Pressable
-          onPress={() => setLaterVisible(true)}
-          style={({ pressed }) => [styles.laterButton, pressed && styles.laterPressed]}
-          disabled={confirming}
-        >
-          <Text style={styles.laterText}>Schedule for later</Text>
-        </Pressable>
-      )}
+      </Animated.View>
 
       {confirming && (
         <View style={styles.confirmation}>
@@ -724,6 +1182,73 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       )}
       <EmojiConfetti visible={confirming} emojis={confettiEmojis} />
 
+      {savedPopupVisible && (
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            styles.savedPopup,
+            {
+              opacity: savedPopupAnim,
+              transform: [
+                { translateY: savedPopupAnim.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) },
+                { scale: savedPopupAnim.interpolate({ inputRange: [0, 1], outputRange: [0.92, 1] }) },
+              ],
+            },
+          ]}
+        >
+          <View style={styles.savedPopupBubble}>
+            <Text style={styles.savedPopupText}>❤️ Saved to do later</Text>
+          </View>
+        </Animated.View>
+      )}
+
+      <Modal transparent visible={!!schedulePreview} animationType="fade" onRequestClose={() => setSchedulePreview(null)}>
+        <Pressable style={styles.previewBackdrop} onPress={() => setSchedulePreview(null)}>
+          <Pressable style={styles.previewCard} onPress={() => undefined}>
+            <Text style={styles.previewTitle}>Fitting into tomorrow</Text>
+            <Text style={styles.previewSubtitle}>This activity slides into the open gap between the surrounding events.</Text>
+            {schedulePreview && (
+              <View style={styles.previewRail}>
+                <View style={styles.previewRailRow}>
+                  <View style={[styles.previewBlock, styles.previewBlockMuted]}>
+                    <Text style={styles.previewBlockLabel} numberOfLines={1}>{schedulePreview.beforeTitle ?? 'Before'}</Text>
+                  </View>
+                  <Animated.View
+                    style={[
+                      styles.previewBlock,
+                      styles.previewBlockAccent,
+                      {
+                        transform: [
+                          {
+                            translateY: schedulePreviewAnim.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [18, 0],
+                            }),
+                          },
+                          {
+                            scale: schedulePreviewAnim.interpolate({
+                              inputRange: [0, 1],
+                              outputRange: [0.92, 1],
+                            }),
+                          },
+                        ],
+                        opacity: schedulePreviewAnim,
+                      },
+                    ]}
+                  >
+                    <Text style={[styles.previewBlockLabel, styles.previewBlockLabelAccent]} numberOfLines={1}>{schedulePreview.title}</Text>
+                    <Text style={[styles.previewBlockSub, styles.previewBlockLabelAccent]} numberOfLines={1}>{`${formatTime(schedulePreview.slotStart)} - ${formatTime(schedulePreview.slotEnd)}`}</Text>
+                  </Animated.View>
+                  <View style={[styles.previewBlock, styles.previewBlockMuted]}>
+                    <Text style={styles.previewBlockLabel} numberOfLines={1}>{schedulePreview.afterTitle ?? 'After'}</Text>
+                  </View>
+                </View>
+              </View>
+            )}
+          </Pressable>
+        </Pressable>
+      </Modal>
+
       <Modal
         transparent
         visible={laterVisible}
@@ -732,8 +1257,18 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       >
         <Pressable style={styles.modalBackdrop} onPress={() => { setLaterVisible(false); setClashInfo(null); }}>
           <Pressable style={styles.modalCard} onPress={() => undefined}>
-            <Text style={styles.modalTitle}>Schedule for later</Text>
-            <Text style={styles.modalSubtitle}>Pick a time. We will add it to your calendar.</Text>
+            <Text style={styles.modalTitle}>Save for later</Text>
+            <Text style={styles.modalSubtitle}>Pick a time to schedule it, or just save it to your library.</Text>
+            <Pressable
+              style={[styles.modalOption, { marginTop: 6, backgroundColor: theme.colors.accent }]}
+              onPress={() => {
+                saveCurrentSuggestion('saved_later', true);
+                setLaterVisible(false);
+                setClashInfo(null);
+              }}
+            >
+              <Text style={[styles.modalOptionText, { color: theme.colors.accentText }]}>Just save ❤️</Text>
+            </Pressable>
             <View style={styles.modalOptions}>
               {laterOptions.map((option) => (
                 <Pressable
@@ -819,18 +1354,35 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
     padding: theme.spacing.lg,
   },
+  mainContent: {
+    flex: 1,
+  },
   header: {
     marginTop: theme.spacing.lg,
+    gap: theme.spacing.xs,
   },
   back: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
     marginBottom: theme.spacing.xs,
   },
+  headerTypeTag: {
+    alignSelf: 'flex-start',
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.sm,
+  },
+  headerTypeTagText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    letterSpacing: 0.5,
+  },
   headerText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 16,
     color: theme.colors.text,
+    flex: 1,
+    paddingRight: theme.spacing.sm,
   },
   fallbackNote: {
     marginTop: theme.spacing.xs,
@@ -839,10 +1391,21 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontSize: 13,
   },
   cardCounter: {
-    marginTop: theme.spacing.xs,
     fontFamily: theme.fonts.semibold,
-    fontSize: 13,
+    fontSize: 12,
     color: theme.colors.textMuted,
+    flexShrink: 0,
+    minWidth: 36,
+    textAlign: 'right',
+    alignSelf: 'center',
+  },
+  headerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    width: '100%',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.xs,
   },
   deckWrap: {
     flex: 1,
@@ -854,18 +1417,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'space-between',
     gap: theme.spacing.md,
     marginBottom: theme.spacing.lg,
-  },
-  laterButton: {
-    alignSelf: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-  },
-  laterPressed: {
-    opacity: 0.7,
-  },
-  laterText: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.textMuted,
   },
   controlButton: {
     flex: 1,
@@ -906,6 +1457,62 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.background,
     fontSize: 16,
+  },
+  previewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(10, 12, 18, 0.55)',
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+  },
+  previewCard: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+  },
+  previewTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 18,
+    color: theme.colors.text,
+  },
+  previewSubtitle: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  previewRail: {
+    marginTop: theme.spacing.xs,
+  },
+  previewRailRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: theme.spacing.sm,
+  },
+  previewBlock: {
+    flex: 1,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.sm,
+    minHeight: 72,
+    justifyContent: 'center',
+  },
+  previewBlockMuted: {
+    backgroundColor: theme.colors.backgroundAlt,
+  },
+  previewBlockAccent: {
+    backgroundColor: theme.colors.accent,
+  },
+  previewBlockLabel: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+    fontSize: 13,
+  },
+  previewBlockLabelAccent: {
+    color: theme.colors.accentText,
+  },
+  previewBlockSub: {
+    marginTop: 2,
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.textMuted,
   },
   ripple: {
     position: 'absolute',
@@ -1031,5 +1638,31 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexDirection: 'row',
     gap: theme.spacing.sm,
     marginTop: theme.spacing.xs,
+  },
+  savedPopup: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  savedPopupBubble: {
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.lg,
+    shadowColor: theme.colors.shadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.14,
+    shadowRadius: 12,
+    elevation: 8,
+  },
+  savedPopupText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentText,
+    fontSize: 14,
   },
 });

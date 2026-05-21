@@ -29,13 +29,20 @@ export type EventDetails = {
 export type Suggestion = {
   id: string;
   type: SuggestionType;
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback';
+  source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback' | 'gemini' | 'business';
   habitId?: string;
+  businessId?: string;  // Link to business if business-promoted
   title: string;
   /** Short action-oriented call-to-action displayed as headline */
   cta?: string;
+  /** Short, catchy label shown at the top of the card front */
+  hook?: string;
   description: string;
   durationMin: number;
+  /** Optional mood fit returned by AI suggestions */
+  moodFit?: Array<'low' | 'okay' | 'good' | 'high' | 'anxious' | 'bored' | 'surprise'>;
+  /** Indicates this activity is suitable for repetition/habit formation */
+  isRepetitionFriendly?: boolean;
   /** Preferred time of day — used to filter curated suggestions */
   timeOfDay?: HabitTimeOfDay;
   steps?: Step[];
@@ -62,6 +69,13 @@ export type SuggestionMeta = {
   openStatus?: 'open_now' | 'opens_soon' | 'unknown';
   opensInMin?: number;
   closesInMin?: number;
+  /** Suggested slot when planning into an existing day schedule */
+  planStartAt?: string;
+  planEndAt?: string;
+  planBeforeTitle?: string;
+  planBeforeEndsAt?: string;
+  planAfterTitle?: string;
+  planAfterStartsAt?: string;
 };
 
 export type DeckSuggestion = Suggestion & {
@@ -73,6 +87,14 @@ export type Availability = {
   end: string;
   durationMin: number;
   nextEventTitle?: string | null;
+  /** Optional start time for the next event after this free window */
+  nextEventStartAt?: string | null;
+  /** Optional title for the event immediately before this free window */
+  previousEventTitle?: string | null;
+  /** Optional end time for the event immediately before this free window */
+  previousEventEndAt?: string | null;
+  /** Titles of known commitments in the planned period for prompt personalization */
+  contextEventTitles?: string[];
   /** Calendar event ID of the currently-happening event (for deep-linking) */
   currentEventId?: string | null;
 };
@@ -82,7 +104,19 @@ export type UserPrefs = {
   allowSerendipity: boolean;
   radiusKm: number;
   interestTags: string[];
+  customInterests?: string[];
+  lifestyle?: 'active' | 'moderate' | 'chill' | 'mixed';
+  selfDescription?: string;
+  wakeStartTime?: string;
+  wakeEndTime?: string;
   themeMode: 'light' | 'dark';
+};
+
+export type SavedSuggestion = {
+  id: string;
+  savedAt: string;
+  source: 'saved_later' | 'interest_signal';
+  suggestion: DeckSuggestion;
 };
 
 export type PermissionsState = {
@@ -94,6 +128,7 @@ export type LocationState = {
   lat: number | null;
   lng: number | null;
   areaLabel: string | null;
+  timeZone?: string | null;
 };
 
 export type HistoryState = {
@@ -101,6 +136,10 @@ export type HistoryState = {
   lastRejectedIds: string[];
   /** IDs of all cards ever shown across decks — used to prevent repeats */
   lastShownIds: string[];
+  /** Track when specific activities were last shown (for habit repetition) */
+  lastShownDates?: Record<string, string>; // activityId -> ISO timestamp
+  /** Track which activities user has completed (for habit conversion learning) */
+  completedActivityIds?: Record<string, number>; // activityId -> count
 };
 
 export type Habit = {
@@ -130,7 +169,7 @@ export type ActivityLog = {
   title: string;
   durationMin: number;
   timestamp: string;
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback';
+  source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback' | 'gemini';
   isHabit?: boolean;
   habitId?: string;
   tags?: string[];
@@ -186,4 +225,80 @@ export type LocationProfile = {
   lng: number;
   /** ISO timestamp of last detection */
   detectedAt: string;
+};
+
+// ============ BUSINESS INTEGRATION TYPES ============
+
+export type BusinessType = 'gym' | 'cafe' | 'restaurant' | 'studio' | 'venue' | 'other';
+
+export type Business = {
+  id: string;
+  type: BusinessType;
+  name: string;
+  description: string;  // e.g., "Premium gym with morning classes"
+  place: Place;  // address + coordinates
+  rating?: number;
+  ratingCount?: number;
+  openingHours?: Record<string, string>;  // "Mo": "09:00-21:00"
+  phone?: string;
+  website?: string;
+  targetTags: string[];  // e.g., ["fitness", "wellness"]
+  promotionTags?: string[];  // e.g., ["free_trial", "morning_special"]
+  createdAt: string;
+  isVerified: boolean;  // Admin-verified business
+  monthlyBudget?: number;
+  conversionGoal?: 'visits' | 'booking' | 'signup' | 'awareness';
+  metrics?: {
+    impressions: number;
+    clicks: number;
+    conversions: number;
+  };
+};
+
+export type ActivityToHabitRecord = {
+  id: string;
+  activityId: string;  // Suggestion ID
+  title: string;
+  tags: string[];
+  completedAt: string;  // ISO timestamp
+  habitSuggestionId?: string;  // If converted to habit
+  userFeedback?: {
+    liked: boolean;
+    wouldRepeat: boolean;
+    businessId?: string;  // If from a business
+  };
+};
+
+export type HabitBusinessAlignment = {
+  habitId: string;
+  businessIds: string[];
+  alignmentScore: number;  // 0–1
+  matchReason: string;
+  lastUpdated: string;
+};
+
+export type UserBusinessProfile = {
+  userId: string;
+  businessImpressions: Record<string, number>;  // businessId -> count
+  businessInteractions: Record<string, {
+    clicked: number;
+    visited: number;
+    booked: number;
+  }>;
+  habitsActivelyBuilding: Record<string, number>;  // habitId -> strength (0-1)
+  lastUpdated: string;
+};
+
+export type BusinessSubmissionStatus = 'pending' | 'approved' | 'rejected';
+
+export type BusinessSubmission = {
+  id: string;
+  business: Business;
+  submittedBy: string;
+  submittedByEmail?: string | null;
+  status: BusinessSubmissionStatus;
+  submittedAt: string;
+  reviewedAt?: string | null;
+  reviewerId?: string | null;
+  reviewNote?: string | null;
 };

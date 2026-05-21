@@ -4,6 +4,19 @@ import { addDebugMessage } from './debug';
 
 const BASE_URL = 'https://app.ticketmaster.com/discovery/v2/events.json';
 
+const toTicketmasterWebUrl = (rawUrl: string | undefined, eventName: string): string => {
+  const fallback = `https://www.ticketmaster.com/search?q=${encodeURIComponent(eventName)}`;
+  if (!rawUrl) return fallback;
+  const trimmed = rawUrl.trim();
+  if (!trimmed) return fallback;
+  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (/^\/\//.test(trimmed)) return `https:${trimmed}`;
+  if (trimmed.toLowerCase().includes('ticketmaster.com')) {
+    return `https://${trimmed.replace(/^\/+/, '')}`;
+  }
+  return fallback;
+};
+
 /* ── Interest → Ticketmaster classificationName mapping ──────────── */
 
 const INTEREST_CLASSIFICATION: Record<string, string[]> = {
@@ -252,8 +265,10 @@ export const fetchTicketmasterSuggestions = async (
       const lng = venue?.location?.longitude ? Number(venue.location.longitude) : undefined;
       const startAt = event.dates?.start?.dateTime;
 
-      // Skip events without a start time or ticket URL
-      if (!startAt || !event.url) continue;
+      // Skip events without a start time
+      if (!startAt) continue;
+
+      const ticketUrl = toTicketmasterWebUrl(event.url, event.name ?? 'ticketmaster event');
 
       const segmentName = event.classifications?.[0]?.segment?.name;
       const tags = extractTags(event);
@@ -295,7 +310,7 @@ export const fetchTicketmasterSuggestions = async (
         event: {
           startAt,
           venue: venue?.name ?? 'Venue',
-          ticketUrl: event.url,
+          ticketUrl,
           priceRange,
         },
         place: {

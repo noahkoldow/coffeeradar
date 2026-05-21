@@ -2,20 +2,71 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 
-const MESSAGES = [
-  { text: 'Finding things you can do right now...', emoji: '🔍' },
-  { text: 'Checking what fits your schedule...', emoji: '⏱️' },
-  { text: 'Life is short — let\u2019s make this count.', emoji: '🚀' },
-  { text: 'Your next adventure is loading...', emoji: '✨' },
-  { text: 'Something good is coming...', emoji: '🎯' },
-  { text: 'Scanning nearby options...', emoji: '📍' },
-  { text: 'You showed up — that\u2019s step one.', emoji: '💪' },
-  { text: 'Building your perfect set...', emoji: '🃏' },
-];
+type DeckType = 'do_now' | 'productive' | 'plan_tomorrow' | 'homebody';
+type LoaderConfig = { messages: Array<{ text: string; emoji: string }>; emojis: string[]; color?: string };
 
-export const DeckLoader: React.FC = () => {
+const LOADER_CONFIG: Record<DeckType | 'default', LoaderConfig> = {
+  do_now: {
+    messages: [
+      { text: 'Finding things you can do right now...', emoji: '🔍' },
+      { text: 'Let\'s go-go-go! ⚡', emoji: '⚡' },
+      { text: 'Adventure time! 🚀', emoji: '🚀' },
+      { text: 'Something exciting is coming...', emoji: '✨' },
+    ],
+    emojis: ['🔥', '⚡', '🎯', '💨', '🚀'],
+  },
+  productive: {
+    messages: [
+      { text: 'Curating focused work for you...', emoji: '🧠' },
+      { text: 'Finding deep work opportunities...', emoji: '📚' },
+      { text: 'Building your focus session...', emoji: '🎯' },
+      { text: 'Energizing your productivity...', emoji: '💪' },
+    ],
+    emojis: ['🧠', '📚', '🎯', '✍️', '🔬'],
+  },
+  plan_tomorrow: {
+    messages: [
+      { text: 'Planning your perfect tomorrow...', emoji: '📅' },
+      { text: 'Scheduling your day ahead...', emoji: '⏰' },
+      { text: 'Building tomorrow\'s itinerary...', emoji: '🗺️' },
+      { text: 'Time to strategize...', emoji: '🎲' },
+    ],
+    emojis: ['📅', '⏰', '🗺️', '🎲', '✅'],
+  },
+  homebody: {
+    messages: [
+      { text: 'Finding cozy times for you...', emoji: '🏠' },
+      { text: 'Curating your comfort zone...', emoji: '☕' },
+      { text: 'Home sweet home ideas...', emoji: '🛋️' },
+      { text: 'Relaxation incoming...', emoji: '✨' },
+    ],
+    emojis: ['🏠', '☕', '🛋️', '🎬', '🎨'],
+  },
+  default: {
+    messages: [
+      { text: 'Finding things you can do right now...', emoji: '🔍' },
+      { text: 'Checking what fits your schedule...', emoji: '⏱️' },
+      { text: 'Life is short — let\'s make this count.', emoji: '🚀' },
+      { text: 'Your next adventure is loading...', emoji: '✨' },
+      { text: 'Something good is coming...', emoji: '🎯' },
+      { text: 'Scanning nearby options...', emoji: '📍' },
+      { text: 'You showed up — that\'s step one.', emoji: '💪' },
+      { text: 'Building your perfect set...', emoji: '🃏' },
+    ],
+    emojis: ['✨', '🎯', '💫', '🌟', '⭐'],
+  },
+};
+
+type Props = {
+  deckType?: DeckType;
+};
+
+export const DeckLoader: React.FC<Props> = ({ deckType }) => {
   const theme = useTheme();
   const [msgIndex, setMsgIndex] = useState(0);
+  const [randomEmojis, setRandomEmojis] = useState<string[]>([]);
+
+  const config = LOADER_CONFIG[deckType ?? 'default'];
 
   // Pulsing dot animation
   const pulse = useRef(new Animated.Value(0.3)).current;
@@ -23,6 +74,19 @@ export const DeckLoader: React.FC = () => {
   const fade = useRef(new Animated.Value(1)).current;
   // Spinner rotation
   const spin = useRef(new Animated.Value(0)).current;
+  // Floating emojis
+  const floatY = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    // Pick exactly 3 unique emojis from the type pool
+    const pool = [...new Set(config.emojis)];
+    const picked: string[] = [];
+    while (picked.length < 3 && pool.length > 0) {
+      const idx = Math.floor(Math.random() * pool.length);
+      picked.push(pool.splice(idx, 1)[0]);
+    }
+    setRandomEmojis(picked);
+  }, [deckType, config.emojis]);
 
   useEffect(() => {
     // Continuous pulse
@@ -38,26 +102,55 @@ export const DeckLoader: React.FC = () => {
       Animated.timing(spin, { toValue: 1, duration: 2000, easing: Easing.linear, useNativeDriver: true }),
     ).start();
 
+    // Floating animation for background emojis
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(floatY, { toValue: -20, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(floatY, { toValue: 0, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+      ]),
+    ).start();
+
     // Cycle messages every 1.5s
     const interval = setInterval(() => {
       Animated.timing(fade, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => {
-        setMsgIndex((prev) => (prev + 1) % MESSAGES.length);
+        setMsgIndex((prev) => (prev + 1) % config.messages.length);
         Animated.timing(fade, { toValue: 1, duration: 300, useNativeDriver: true }).start();
       });
     }, 1500);
 
     return () => clearInterval(interval);
-  }, [pulse, spin, fade]);
+  }, [pulse, spin, fade, config.messages.length, floatY]);
 
   const rotation = spin.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
   });
 
-  const msg = MESSAGES[msgIndex];
+  const msg = config.messages[msgIndex];
 
   return (
     <View style={styles.container}>
+      {/* Floating background emojis */}
+      <View style={styles.floatingEmojisContainer}>
+        {randomEmojis.map((emoji, idx) => (
+          <Animated.Text
+            key={`float_${idx}`}
+            style={[
+              styles.floatingEmoji,
+              {
+                transform: [
+                  { translateY: floatY },
+                  { translateX: ((idx - 1) * 40) },
+                ],
+                opacity: 0.3,
+              },
+            ]}
+          >
+            {emoji}
+          </Animated.Text>
+        ))}
+      </View>
+
       <Animated.View style={[styles.spinnerWrap, { transform: [{ rotate: rotation }] }]}>
         <View style={[styles.spinnerDot, { backgroundColor: theme.colors.accent }]} />
         <View style={[styles.spinnerDot, styles.spinnerDot2, { backgroundColor: theme.colors.accentDark ?? theme.colors.accent }]} />
@@ -90,6 +183,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: 20,
     paddingHorizontal: 32,
+  },
+  floatingEmojisContainer: {
+    position: 'absolute',
+    top: '20%',
+    width: '100%',
+    flexDirection: 'row',
+    justifyContent: 'center',
+    gap: 30,
+    pointerEvents: 'none',
+  },
+  floatingEmoji: {
+    fontSize: 28,
   },
   spinnerWrap: {
     width: 48,

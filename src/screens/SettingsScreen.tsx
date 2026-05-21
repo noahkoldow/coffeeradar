@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,7 +17,9 @@ import { fetchTicketmasterSuggestions } from '../services/ticketmaster';
 import { fetchSeatGeekSuggestions } from '../services/seatgeek';
 import { fetchGooglePlacesSuggestions } from '../services/googlePlaces';
 import { fetchOsmSuggestions } from '../services/osmPlaces';
+import { fetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { Availability } from '../types';
+import { formatTime, normalizeClockTime } from '../utils/time';
 
 const interestGroups = [
   {
@@ -74,6 +76,9 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
   const { state, actions } = useAppState();
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
   const [debugMessages, setDebugMessages] = useState<DebugMessage[]>([]);
+  const [clockTick, setClockTick] = useState(Date.now());
+  const [wakeStartTime, setWakeStartTime] = useState(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
+  const [wakeEndTime, setWakeEndTime] = useState(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
   const insets = useSafeAreaInsets();
 
   useEffect(() => {
@@ -90,6 +95,16 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     return () => unsubscribe();
   }, []);
 
+  useEffect(() => {
+    const timer = setInterval(() => setClockTick(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    setWakeStartTime(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
+    setWakeEndTime(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
+  }, [state.prefs.wakeStartTime, state.prefs.wakeEndTime]);
+
   const buildAvailability = (): Availability => {
     if (state.availability) return state.availability;
     const now = new Date();
@@ -100,6 +115,14 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
       durationMin: 120,
       nextEventTitle: null,
     };
+  };
+
+  const saveWakeWindow = () => {
+    actions.setPrefs({
+      ...state.prefs,
+      wakeStartTime: normalizeClockTime(wakeStartTime, '07:00'),
+      wakeEndTime: normalizeClockTime(wakeEndTime, '23:00'),
+    });
   };
 
   const requireLocation = () => {
@@ -133,6 +156,13 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         </Pressable>
 
         <Text style={styles.title}>Settings</Text>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Local time</Text>
+          <Text style={styles.rowText}>{formatTime(new Date(clockTick))}</Text>
+          <Text style={styles.rowText}>Timezone: {state.location.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}</Text>
+          <Text style={styles.rowText}>Wake window: {wakeStartTime} - {wakeEndTime}</Text>
+        </View>
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Permissions</Text>
@@ -217,6 +247,33 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.sliderLabel}>1 km</Text>
             <Text style={styles.sliderLabel}>25 km</Text>
           </View>
+
+          <Text style={styles.rowText}>Wake window</Text>
+          <Text style={styles.helperText}>Keeps suggestions away from sleep time unless you are clearly awake irregularly.</Text>
+          <View style={styles.inlineRow}>
+            <TextInput
+              style={styles.timeInput}
+              value={wakeStartTime}
+              onChangeText={setWakeStartTime}
+              placeholder="07:00"
+              placeholderTextColor={theme.colors.textMuted}
+              keyboardType="number-pad"
+              maxLength={5}
+            />
+            <Text style={styles.timeDash}>to</Text>
+            <TextInput
+              style={styles.timeInput}
+              value={wakeEndTime}
+              onChangeText={setWakeEndTime}
+              placeholder="23:00"
+              placeholderTextColor={theme.colors.textMuted}
+              keyboardType="number-pad"
+              maxLength={5}
+            />
+          </View>
+          <Pressable style={styles.actionButton} onPress={saveWakeWindow}>
+            <Text style={styles.actionText}>Save wake window</Text>
+          </Pressable>
         </View>
 
         <View style={styles.section}>
@@ -318,6 +375,16 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
             >
               <Text style={styles.debugButtonText}>Test OSM</Text>
             </Pressable>
+            <Pressable
+              style={styles.debugButton}
+              onPress={() => runTest('gemini_test', async () => {
+                const availability = buildAvailability();
+                const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null);
+                return results.length;
+              })}
+            >
+              <Text style={styles.debugButtonText}>Test Gemini</Text>
+            </Pressable>
           </View>
           {debugMessages.length === 0 ? (
             <Text style={styles.rowText}>No API errors logged.</Text>
@@ -400,6 +467,33 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   sliderLabel: {
     fontFamily: theme.fonts.body,
     fontSize: 11,
+    color: theme.colors.textMuted,
+  },
+  helperText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 12,
+  },
+  inlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+  },
+  timeInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: theme.colors.text,
+    fontFamily: theme.fonts.body,
+    backgroundColor: theme.colors.card,
+    textAlign: 'center',
+  },
+  timeDash: {
+    fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
   },
   chipsWrap: {

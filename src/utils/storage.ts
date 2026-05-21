@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ActivityLog, Habit, HistoryState, LocationProfile, ScheduledActivity, TagAffinities, UserPrefs } from '../types';
+import { ActivityLog, Habit, HistoryState, LocationProfile, SavedSuggestion, ScheduledActivity, TagAffinities, UserPrefs } from '../types';
 
 const KEYS = {
   prefs: 'prefs',
@@ -11,6 +11,7 @@ const KEYS = {
   tagAffinities: 'tag_affinities',
   locationProfile: 'location_profile',
   scheduledActivities: 'scheduled_activities',
+  savedSuggestions: 'saved_suggestions',
 };
 
 const keyFor = (base: string, userId?: string | null): string => {
@@ -108,6 +109,15 @@ export const loadScheduledActivities = async (userId?: string | null): Promise<S
 
 export const saveScheduledActivities = async (items: ScheduledActivity[], userId?: string | null): Promise<void> => {
   await AsyncStorage.setItem(keyFor(KEYS.scheduledActivities, userId), JSON.stringify(items));
+};
+
+export const loadSavedSuggestions = async (userId?: string | null): Promise<SavedSuggestion[] | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.savedSuggestions, userId));
+  return raw ? (JSON.parse(raw) as SavedSuggestion[]) : null;
+};
+
+export const saveSavedSuggestions = async (items: SavedSuggestion[], userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.savedSuggestions, userId), JSON.stringify(items));
 };
 
 export const clearStorage = async (userId?: string | null): Promise<void> => {

@@ -1,6 +1,9 @@
-import { deleteDoc, doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { Availability, Habit, LocationProfile, TagAffinities } from '../types';
+import { collection, deleteDoc, doc, getDoc, getDocs, increment, limit, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
+import { Availability, Business, BusinessSubmission, BusinessSubmissionStatus, Habit, LocationProfile, SavedSuggestion, TagAffinities, UserPrefs } from '../types';
 import { auth, db, ensureAuth, firebaseEnabled } from './firebase';
+import { validateBusinessSubmission } from './businessService';
+
+const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
 
 /** Skip Firestore writes for anonymous users — they have no server-side
  *  profile and default security rules reject the request. */
@@ -155,5 +158,341 @@ export const loadFirebaseHabits = async (): Promise<Habit[] | null> => {
   } catch (error) {
     console.warn('Habits load error', error);
     return null;
+  }
+};
+
+// ── Saved suggestions + profile context (Firestore) ───────────────────
+
+export const syncSavedSuggestions = async (items: SavedSuggestion[]): Promise<void> => {
+  if (!canSync()) return;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return;
+    await setDoc(
+      doc(db!, 'users', uid, 'learning', 'savedSuggestions'),
+      { items, updatedAt: serverTimestamp() },
+      { merge: true },
+    );
+  } catch (error) {
+    console.warn('Saved suggestions sync error', error);
+  }
+};
+
+export const loadFirebaseSavedSuggestions = async (): Promise<SavedSuggestion[] | null> => {
+  if (!canSync()) return null;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return null;
+    const snap = await getDoc(doc(db!, 'users', uid, 'learning', 'savedSuggestions'));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return (data?.items as SavedSuggestion[]) ?? null;
+  } catch (error) {
+    console.warn('Saved suggestions load error', error);
+    return null;
+  }
+};
+
+export const syncUserProfileContext = async (prefs: UserPrefs): Promise<void> => {
+  if (!canSync()) return;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return;
+    await setDoc(
+      doc(db!, 'users', uid, 'learning', 'profileContext'),
+      {
+        customInterests: prefs.customInterests ?? [],
+        lifestyle: prefs.lifestyle ?? null,
+        selfDescription: prefs.selfDescription ?? null,
+        wakeStartTime: prefs.wakeStartTime ?? null,
+        wakeEndTime: prefs.wakeEndTime ?? null,
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  } catch (error) {
+    console.warn('Profile context sync error', error);
+  }
+};
+
+export const loadFirebaseProfileContext = async (): Promise<Pick<UserPrefs, 'customInterests' | 'lifestyle' | 'selfDescription' | 'wakeStartTime' | 'wakeEndTime'> | null> => {
+  if (!canSync()) return null;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return null;
+    const snap = await getDoc(doc(db!, 'users', uid, 'learning', 'profileContext'));
+    if (!snap.exists()) return null;
+    const data = snap.data();
+    return {
+      customInterests: (data?.customInterests as string[] | undefined) ?? [],
+      lifestyle: data?.lifestyle as UserPrefs['lifestyle'] | undefined,
+      selfDescription: (data?.selfDescription as string | undefined) ?? '',
+      wakeStartTime: (data?.wakeStartTime as string | undefined) ?? '07:00',
+      wakeEndTime: (data?.wakeEndTime as string | undefined) ?? '23:00',
+    };
+  } catch (error) {
+    console.warn('Profile context load error', error);
+    return null;
+  }
+};
+
+// ── Business catalog (Firestore) ───────────────────────────────────────
+
+let cachedBusinesses: Business[] | null = null;
+let cachedBusinessesAt = 0;
+const BUSINESS_CACHE_TTL_MS = 5 * 60 * 1000;
+
+const toBusiness = (id: string, data: any): Business | null => {
+  const name = typeof data?.name === 'string' ? data.name.trim() : '';
+  const description = typeof data?.description === 'string' ? data.description.trim() : '';
+  const placeName = typeof data?.place?.name === 'string' ? data.place.name.trim() : '';
+  const address = typeof data?.place?.address === 'string' ? data.place.address.trim() : '';
+  const lat = typeof data?.place?.lat === 'number' ? data.place.lat : null;
+  const lng = typeof data?.place?.lng === 'number' ? data.place.lng : null;
+  const targetTags = Array.isArray(data?.targetTags)
+    ? data.targetTags.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+    : [];
+
+  if (!name || !description || !placeName || lat == null || lng == null || targetTags.length === 0) {
+    return null;
+  }
+
+  const createdAt = typeof data?.createdAt === 'string' && data.createdAt
+    ? data.createdAt
+    : new Date().toISOString();
+
+  const type = typeof data?.type === 'string' && ['gym', 'cafe', 'restaurant', 'studio', 'venue', 'other'].includes(data.type)
+    ? data.type
+    : 'other';
+
+  return {
+    id,
+    type,
+    name,
+    description,
+    place: {
+      name: placeName,
+      address,
+      lat,
+      lng,
+      costHint: typeof data?.place?.costHint === 'string' ? data.place.costHint : undefined,
+    },
+    rating: typeof data?.rating === 'number' ? data.rating : undefined,
+    ratingCount: typeof data?.ratingCount === 'number' ? data.ratingCount : undefined,
+    openingHours: data?.openingHours && typeof data.openingHours === 'object' ? data.openingHours as Record<string, string> : undefined,
+    phone: typeof data?.phone === 'string' ? data.phone : undefined,
+    website: typeof data?.website === 'string' ? data.website : undefined,
+    targetTags,
+    promotionTags: Array.isArray(data?.promotionTags)
+      ? data.promotionTags.filter((item: unknown): item is string => typeof item === 'string' && item.trim().length > 0)
+      : undefined,
+    createdAt,
+    isVerified: data?.isVerified !== false,
+    monthlyBudget: typeof data?.monthlyBudget === 'number' ? data.monthlyBudget : undefined,
+    conversionGoal: ['visits', 'booking', 'signup', 'awareness'].includes(data?.conversionGoal)
+      ? data.conversionGoal
+      : undefined,
+    metrics: data?.metrics && typeof data.metrics === 'object'
+      ? {
+          impressions: typeof data.metrics.impressions === 'number' ? data.metrics.impressions : 0,
+          clicks: typeof data.metrics.clicks === 'number' ? data.metrics.clicks : 0,
+          conversions: typeof data.metrics.conversions === 'number' ? data.metrics.conversions : 0,
+        }
+      : undefined,
+  };
+};
+
+export const loadFirebaseBusinesses = async (maxItems = 50): Promise<Business[]> => {
+  if (!firebaseEnabled || !db) return [];
+  const now = Date.now();
+  if (cachedBusinesses && now - cachedBusinessesAt < BUSINESS_CACHE_TTL_MS) {
+    return cachedBusinesses;
+  }
+
+  try {
+    const q = query(
+      collection(db, 'businesses'),
+      where('isVerified', '==', true),
+      limit(Math.max(1, maxItems)),
+    );
+    const snap = await getDocs(q);
+    const items = snap.docs
+      .map((d) => toBusiness(d.id, d.data()))
+      .filter((item): item is Business => item != null);
+
+    cachedBusinesses = items;
+    cachedBusinessesAt = now;
+    return items;
+  } catch (error) {
+    console.warn('Business catalog load error', error);
+    return [];
+  }
+};
+
+export const syncBusinessMetric = async (
+  businessId: string | undefined,
+  metric: 'impressions' | 'clicks' | 'conversions',
+  amount = 1,
+): Promise<void> => {
+  if (!businessId || !canSync()) return;
+  try {
+    await setDoc(
+      doc(db!, 'businesses', businessId),
+      {
+        [`metrics.${metric}`]: increment(Math.max(1, amount)),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  } catch (error) {
+    console.warn('Business metric sync error', error);
+  }
+};
+
+const businessSubmissionCollection = 'business_submissions';
+
+const readIsoTimestamp = (value: any): string | null => {
+  if (typeof value === 'string' && value) return value;
+  if (value && typeof value.toDate === 'function') {
+    try {
+      return value.toDate().toISOString();
+    } catch {
+      return null;
+    }
+  }
+  return null;
+};
+
+const getAdminEmails = (): string[] => {
+  const raw = String(env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS ?? env.EXPO_PUBLIC_ADMIN_EMAILS ?? '');
+  return raw
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0);
+};
+
+export const isBusinessAdmin = (email?: string | null): boolean => {
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  return getAdminEmails().includes(normalized);
+};
+
+const toBusinessSubmission = (id: string, data: any): BusinessSubmission | null => {
+  const business = data?.business as Business | undefined;
+  if (!business?.name || !business?.type || !business?.description) return null;
+  return {
+    id,
+    business,
+    submittedBy: typeof data?.submittedBy === 'string' ? data.submittedBy : '',
+    submittedByEmail: typeof data?.submittedByEmail === 'string' ? data.submittedByEmail : null,
+    status: (data?.status as BusinessSubmissionStatus) ?? 'pending',
+    submittedAt: readIsoTimestamp(data?.submittedAt) ?? new Date().toISOString(),
+    reviewedAt: readIsoTimestamp(data?.reviewedAt),
+    reviewerId: typeof data?.reviewerId === 'string' ? data.reviewerId : null,
+    reviewNote: typeof data?.reviewNote === 'string' ? data.reviewNote : null,
+  };
+};
+
+export const submitBusinessListing = async (
+  business: Business,
+  note?: string,
+): Promise<BusinessSubmission | null> => {
+  if (!canSync()) return null;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return null;
+    const current = auth?.currentUser;
+    const validation = validateBusinessSubmission(business);
+    if (!validation.isValid) {
+      throw new Error(validation.errors.join(', '));
+    }
+
+    const id = doc(collection(db!, businessSubmissionCollection)).id;
+    const payloadBusiness: Business = {
+      ...business,
+      id,
+      isVerified: false,
+      metrics: business.metrics ?? { impressions: 0, clicks: 0, conversions: 0 },
+      createdAt: business.createdAt || new Date().toISOString(),
+    };
+
+    await setDoc(doc(db!, businessSubmissionCollection, id), {
+      business: payloadBusiness,
+      submittedBy: uid,
+      submittedByEmail: current?.email ?? null,
+      status: 'pending',
+      submittedAt: serverTimestamp(),
+      reviewNote: note ?? null,
+    });
+
+    return {
+      id,
+      business: payloadBusiness,
+      submittedBy: uid,
+      submittedByEmail: current?.email ?? null,
+      status: 'pending',
+      submittedAt: new Date().toISOString(),
+      reviewNote: note ?? null,
+    };
+  } catch (error) {
+    console.warn('Business submission error', error);
+    return null;
+  }
+};
+
+export const loadPendingBusinessSubmissions = async (): Promise<BusinessSubmission[]> => {
+  if (!canSync()) return [];
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return [];
+    const snap = await getDocs(query(collection(db!, businessSubmissionCollection), where('status', '==', 'pending')));
+    return snap.docs
+      .map((item) => toBusinessSubmission(item.id, item.data()))
+      .filter((item): item is BusinessSubmission => item != null)
+      .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  } catch (error) {
+    console.warn('Business submissions load error', error);
+    return [];
+  }
+};
+
+export const reviewBusinessSubmission = async (
+  submissionId: string,
+  action: 'approve' | 'reject',
+  note?: string,
+): Promise<boolean> => {
+  if (!canSync()) return false;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return false;
+    if (!isBusinessAdmin(auth?.currentUser?.email ?? null)) return false;
+    const submissionRef = doc(db!, businessSubmissionCollection, submissionId);
+    const snap = await getDoc(submissionRef);
+    if (!snap.exists()) return false;
+    const submission = toBusinessSubmission(snap.id, snap.data());
+    if (!submission) return false;
+
+    const reviewedAt = new Date().toISOString();
+    if (action === 'approve') {
+      await setDoc(doc(db!, 'businesses', submission.business.id), {
+        ...submission.business,
+        isVerified: true,
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
+    }
+
+    await setDoc(submissionRef, {
+      ...snap.data(),
+      status: action === 'approve' ? 'approved' : 'rejected',
+      reviewedAt,
+      reviewerId: uid,
+      reviewNote: note ?? null,
+      updatedAt: serverTimestamp(),
+    }, { merge: true });
+
+    return true;
+  } catch (error) {
+    console.warn('Business review error', error);
+    return false;
   }
 };

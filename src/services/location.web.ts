@@ -13,5 +13,6 @@ export const getCurrentLocation = async (): Promise<LocationState> => {
     lat: null,
     lng: null,
     areaLabel: null,
+    timeZone: null,
   };
 };

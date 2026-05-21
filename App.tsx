@@ -20,8 +20,10 @@ import { DeckScreen } from './src/screens/DeckScreen';
 import { PlanScreen } from './src/screens/PlanScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
+import { BusinessHubScreen } from './src/screens/BusinessHubScreen';
 import { HabitFormScreen } from './src/screens/HabitFormScreen';
 import { HabitsScreen } from './src/screens/HabitsScreen';
+import { LibraryScreen } from './src/screens/LibraryScreen';
 import { BadgeDetailScreen } from './src/screens/BadgeDetailScreen';
 import { CompletionScreen } from './src/screens/CompletionScreen';
 import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
@@ -83,8 +85,10 @@ const AppNavigator = () => {
         <Stack.Screen name="Plan" component={PlanScreen} />
         <Stack.Screen name="Settings" component={SettingsScreen} />
         <Stack.Screen name="Profile" component={ProfileScreen} />
+        <Stack.Screen name="BusinessHub" component={BusinessHubScreen} />
         <Stack.Screen name="HabitForm" component={HabitFormScreen} />
         <Stack.Screen name="Habits" component={HabitsScreen} />
+        <Stack.Screen name="Library" component={LibraryScreen} />
         <Stack.Screen name="BadgeDetail" component={BadgeDetailScreen} />
         <Stack.Screen name="Completion" component={CompletionScreen} />
       </Stack.Navigator>

@@ -46,6 +46,16 @@ export const BadgeRing: React.FC<Props> = ({ size = 64, strokeWidth = 6, progres
       </Svg>
       {showLevel && (
         <View style={styles.center}>
+          <Text
+            style={[
+              styles.levelSilhouette,
+              {
+                fontSize: Math.round(size * 0.42),
+              },
+            ]}
+          >
+            {level}
+          </Text>
           <Text style={[styles.levelText, { fontSize: Math.round(size * 0.32), color }]}>{level}</Text>
         </View>
       )}
@@ -67,5 +77,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
     fontSize: 16,
+  },
+  levelSilhouette: {
+    position: 'absolute',
+    fontFamily: theme.fonts.semibold,
+    color: '#FFFFFF',
+    opacity: 0.95,
+    textShadowColor: 'rgba(255,255,255,0.85)',
+    textShadowOffset: { width: 0, height: 0 },
+    textShadowRadius: 4,
   },
 });

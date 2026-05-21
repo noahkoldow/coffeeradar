@@ -18,6 +18,7 @@ import { formatDuration, formatTime } from '../utils/time';
 import { logEvent } from '../services/analytics';
 import { upsertUserData } from '../services/user';
 import { fetchWeather, WeatherCondition } from '../services/weather';
+import { prefetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { loadWeatherCondition, saveWeatherCondition } from '../utils/storage';
 import { detectLocationProfile } from '../services/locationProfile';
 import { recommendedHabits } from '../data/habits';
@@ -41,6 +42,11 @@ const BANNER_PAGE_HEIGHT = 94;
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
 const bitsLogo = require('../../assets/logo.png');
+const lastUpdatedLabel = new Date().toLocaleDateString('en-GB', {
+  day: 'numeric',
+  month: 'short',
+  year: 'numeric',
+});
 
 const hexToRgba = (hex: string, alpha: number): string => {
   const r = parseInt(hex.slice(1, 3), 16);
@@ -148,9 +154,25 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const ACTION_MODES = useMemo(() => [
     { key: 'all', label: 'DO SOMETHING NOW', filter: undefined as string | undefined, bg: theme.colors.accent, text: '#FFFFFF' },
     { key: 'productive', label: 'BE PRODUCTIVE', filter: 'productive', bg: '#A8D8EA', text: '#1A3A4A' },
-    { key: 'go_out', label: 'GO OUT NOW', filter: 'go_out', bg: '#B5EAD7', text: '#1A4A3A' },
-    { key: 'at_home', label: 'DO SOME @ HOME', filter: 'at_home', bg: '#E2B6CF', text: '#3A1A2E' },
+    { key: 'tomorrow', label: 'PLAN AHEAD', filter: undefined as string | undefined, planDate: 'tomorrow' as const, bg: '#B5EAD7', text: '#1A4A3A' },
+    { key: 'at_home', label: 'HOMEBODY IT', filter: 'at_home', bg: '#E2B6CF', text: '#3A1A2E' },
   ], [theme.colors.accent]);
+
+  const weekGraph = useMemo(() => {
+    const days = Array.from({ length: 7 }, (_, offset) => {
+      const date = new Date();
+      date.setHours(0, 0, 0, 0);
+      date.setDate(date.getDate() - (6 - offset));
+      const dayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(date);
+      const key = date.toDateString();
+      const minutes = state.activityLog
+        .filter((entry) => new Date(entry.timestamp).toDateString() === key)
+        .reduce((sum, entry) => sum + entry.durationMin, 0);
+      return { date, dayLabel, minutes };
+    });
+    const maxMinutes = Math.max(1, ...days.map((day) => day.minutes));
+    return days.map((day) => ({ ...day, height: Math.max(8, (day.minutes / maxMinutes) * 100) }));
+  }, [state.activityLog]);
 
   const onActionScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
@@ -186,6 +208,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         durationMin: manualDuration,
         nextEventTitle: null,
       };
+      prefetchGeminiSuggestions(state.location, state.prefs, fakeAvail, null).catch(() => undefined);
       actionsRef.current.preloadDeck(fakeAvail);
     }
   }, [manualDuration, state.permissions.calendarGranted]);
@@ -196,6 +219,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     try {
       let latestAvailability = state.availability;
       let latestLocation = state.location;
+      let latestWeather: Awaited<ReturnType<typeof fetchWeather>> | null = null;
       if (state.permissions.calendarGranted) {
         const availability = await getAvailability(state.enabledCalendars);
         actionsRef.current.setAvailability(availability);
@@ -209,9 +233,9 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       // Fetch weather for banner animation
       if (latestLocation.lat != null && latestLocation.lng != null) {
         try {
-          const w = await fetchWeather(latestLocation.lat, latestLocation.lng);
-          setWeatherCondition(w.condition);
-          saveWeatherCondition(w.condition);
+          latestWeather = await fetchWeather(latestLocation.lat, latestLocation.lng);
+          setWeatherCondition(latestWeather.condition);
+          saveWeatherCondition(latestWeather.condition);
         } catch { /* keep previous */ }
         // Detect location profile (coastal/urban/suburban) for better scoring
         detectLocationProfile(latestLocation.lat, latestLocation.lng, state.userId)
@@ -229,6 +253,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         const preloadAvail = latestAvailability.durationMin < 15
           ? { ...latestAvailability, durationMin: 15 }
           : latestAvailability;
+        prefetchGeminiSuggestions(latestLocation, state.prefs, preloadAvail, latestWeather).catch(() => undefined);
         actionsRef.current.preloadDeck(preloadAvail);
       }
     } catch (error) {
@@ -369,10 +394,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     });
   }, [actions, navigation]);
 
-  const startDeck = (filter?: string) => {
+  const startDeck = (filter?: string, planDate?: 'today' | 'tomorrow') => {
     const params = {
       durationOverride: state.permissions.calendarGranted ? null : manualDuration,
       filter: filter ?? undefined,
+      planDate,
     };
     if (Platform.OS === 'web') {
       navigation.dispatch(StackActions.push('Deck', params));
@@ -382,23 +408,23 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     } else {
       navigation.navigate('Deck', params);
     }
-    logEvent('tap_do_something_now', { filter: filter ?? 'all' });
+    logEvent(planDate === 'tomorrow' ? 'tap_plan_tomorrow' : 'tap_do_something_now', { filter: filter ?? 'all', planDate: planDate ?? 'today' });
   };
 
   const onDoSomethingNow = () => {
-    const currentFilter = ACTION_MODES[actionIndex]?.filter;
+    const currentMode = ACTION_MODES[actionIndex];
     if (isBusyNow) {
       Alert.alert(
         'You are busy right now',
         `Current plan: ${currentEventTitle}. Start something else anyway?`,
         [
           { text: 'Keep plan', style: 'cancel' },
-          { text: 'Proceed', onPress: () => startDeck(currentFilter) },
+          { text: 'Proceed', onPress: () => startDeck(currentMode.filter, currentMode.planDate) },
         ],
       );
       return;
     }
-    startDeck(currentFilter);
+    startDeck(currentMode.filter, currentMode.planDate);
   };
 
   return (
@@ -409,7 +435,20 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           { paddingTop: insets.top + theme.spacing.sm, paddingBottom: insets.bottom + 120 },
         ]}
       >
-        <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+        <View style={styles.topBar}>
+          <View style={styles.logoContainer}>
+            <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+            <Text style={styles.lastUpdated}>Last updated: {lastUpdatedLabel}</Text>
+          </View>
+          <View style={styles.headerRight}>
+            <Pressable onPress={() => navigation.navigate('Profile')}>
+              <Text style={styles.settings}>Profile</Text>
+            </Pressable>
+            <Pressable onPress={() => navigation.navigate('Settings')}>
+              <Text style={styles.settings}>Settings</Text>
+            </Pressable>
+          </View>
+        </View>
         <View style={styles.header}>
           {areaLabel ? (
             <View style={styles.locationRow}>
@@ -419,14 +458,6 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           ) : (
             <View style={styles.locationRow} />
           )}
-          <View style={styles.headerRight}>
-            <Pressable onPress={() => navigation.navigate('Profile')}>
-              <Text style={styles.settings}>Profile</Text>
-            </Pressable>
-            <Pressable onPress={() => navigation.navigate('Settings')}>
-              <Text style={styles.settings}>Settings</Text>
-            </Pressable>
-          </View>
         </View>
         <View style={styles.content}>
         <View style={styles.bannerSwipeContainer}>
@@ -478,9 +509,9 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 <PrimaryButton
                   label={loading ? 'Working...' : item.label}
                   glow={!isBusyNow}
-                  variant={isBusyNow ? 'muted' : 'default'}
-                  bgColor={isBusyNow ? undefined : item.bg}
-                  textColor={isBusyNow ? undefined : item.text}
+                  variant={isBusyNow && item.key !== 'tomorrow' ? 'muted' : 'default'}
+                  bgColor={isBusyNow && item.key !== 'tomorrow' ? undefined : item.bg}
+                  textColor={isBusyNow && item.key !== 'tomorrow' ? undefined : item.text}
                   onPress={onDoSomethingNow}
                 />
               </View>
@@ -488,18 +519,13 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           </ScrollView>
           <View style={styles.dotRow}>
             {ACTION_MODES.map((mode, i) => (
-              <Pressable
+              <View
                 key={mode.key}
-                onPress={() => setActionIndex(i)}
-                hitSlop={8}
-              >
-                <View
-                  style={[
-                    styles.dot,
-                    i === actionIndex && [styles.dotActive, { backgroundColor: mode.bg }],
-                  ]}
-                />
-              </Pressable>
+                style={[
+                  styles.dot,
+                  i === actionIndex && [styles.dotActive, { backgroundColor: mode.bg }],
+                ]}
+              />
             ))}
           </View>
           {isBusyNow && (
@@ -522,11 +548,13 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={styles.busyHint}>Tap to open in calendar</Text>
             </Pressable>
           )}
-          <Text style={styles.subtext}>
-            {state.permissions.calendarGranted
-              ? beforeLabel ? `${availabilityLabel} ${beforeLabel}` : availabilityLabel
-              : availabilityLabel}
-          </Text>
+          <View style={styles.deckMetaRow}>
+            <Text style={styles.subtext}>
+              {state.permissions.calendarGranted
+                ? beforeLabel ? `${availabilityLabel} ${beforeLabel}` : availabilityLabel
+                : availabilityLabel}
+            </Text>
+          </View>
           {/* ── Scheduled activities ── */}
           {state.scheduledActivities.filter((s) => new Date(s.startAt) > new Date()).length > 0 && (
             <View style={styles.scheduledSection}>
@@ -548,7 +576,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.scheduledTitle} numberOfLines={1}>{item.title}</Text>
                         <Text style={styles.scheduledMeta}>
-                          {formatTime(new Date(item.startAt))} · {item.durationMin} min
+                          {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · {formatTime(new Date(item.startAt))} · {item.durationMin} min
                         </Text>
                       </View>
                       <Text style={styles.scheduledArrow}>›</Text>
@@ -570,7 +598,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           )}
         </View>
-        {stats.totalDone < 3 ? (
+          {stats.totalDone < 3 ? (
           <View style={styles.dashboard}>
             <Text style={styles.dashboardTitle}>Unlock your dashboard</Text>
             <Text style={styles.emptyText}>
@@ -590,101 +618,33 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={styles.dashboardTitle}>Your activity</Text>
               <Text style={styles.expandHint}>Tap to expand ↗</Text>
             </View>
+            <View style={styles.dashboardGraph}>
+              {weekGraph.map((day) => (
+                <View key={day.dayLabel} style={styles.dashboardGraphCol}>
+                  <View style={styles.dashboardGraphTrack}>
+                    <View style={[styles.dashboardGraphFill, { height: `${day.height}%` }]} />
+                  </View>
+                  <Text style={styles.dashboardGraphLabel}>{day.dayLabel}</Text>
+                  <Text style={styles.dashboardGraphValue}>{day.minutes}m</Text>
+                </View>
+              ))}
+            </View>
             <View style={styles.statsRow}>
               <View style={styles.statCard}>
                 <Text style={styles.statValue}>{stats.activityCount}</Text>
-                <Text style={styles.statLabel}>Activities done</Text>
+                <Text style={styles.statLabel}>Activities</Text>
               </View>
               <View style={styles.statCard}>
-                <Text style={styles.statValue}>{stats.minutes}</Text>
-                <Text style={styles.statLabel}>Minutes this week</Text>
+                <Text style={styles.statValue}>{stats.minutes}m</Text>
+                <Text style={styles.statLabel}>This week</Text>
               </View>
               {stats.habitTotal > 0 && (
                 <View style={styles.statCard}>
                   <Text style={styles.statValue}>{stats.habitPercent ?? 0}%</Text>
-                  <Text style={styles.statLabel}>Habits done</Text>
+                  <Text style={styles.statLabel}>Habit rate</Text>
                 </View>
               )}
             </View>
-
-            <View style={styles.habitHeader}>
-              <Text style={styles.sectionTitle}>Habits</Text>
-              <Pressable onPress={() => navigation.navigate('Habits')}>
-                <Text style={styles.addLink}>View all</Text>
-              </Pressable>
-            </View>
-            {state.habits.length === 0 && (
-              <Text style={styles.emptyText}>No habits yet. Add one to keep it in your deck.</Text>
-            )}
-            {state.habits.slice(0, 3).map((habit) => {
-              const due = isHabitDue(habit);
-              const dots = weeklyDots(habit);
-              const streak = habit.currentStreak ?? 0;
-              const urgency = getHabitUrgency(habit);
-              return (
-                <View key={habit.id} style={styles.habitCard}>
-                  <Pressable onPress={() => navigation.navigate('Habits', { flippedHabitId: habit.id })}>
-                    <View style={styles.habitCardHeader}>
-                      <View style={{ flex: 1 }}>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                          {(urgency === 'approaching' || urgency === 'overdue') && (
-                            <Text style={{ fontSize: 13 }}>⏳</Text>
-                          )}
-                          <Text style={styles.habitName}>{habit.name}</Text>
-                        </View>
-                        <Text style={styles.habitMeta}>
-                          {formatHabitFrequency(habit.frequency)} · {formatHabitTimeOfDay(habit.timeOfDay)} · {habit.lengthMin}m
-                        </Text>
-                      </View>
-                      {streak > 0 && (
-                        <View style={styles.streakBadge}>
-                          <Text style={styles.streakText}>{streakEmoji(streak)} {streak}</Text>
-                        </View>
-                      )}
-                    </View>
-                  </Pressable>
-                  <View style={styles.habitDotsRow}>
-                    {dots.map((done, i) => (
-                      <View key={`d${i}`} style={[styles.habitDot, done ? styles.habitDotDone : styles.habitDotEmpty]} />
-                    ))}
-                    {due ? (
-                      <Pressable
-                        style={({ pressed }) => [styles.markDoneBtn, pressed && { opacity: 0.7 }]}
-                        onPress={() => markHabitDone(habit)}
-                      >
-                        <Text style={styles.markDoneText}>✓ Done</Text>
-                      </Pressable>
-                    ) : (
-                      <Pressable
-                        style={({ pressed }) => [styles.undoBtn, pressed && { opacity: 0.7 }]}
-                        onPress={() => { Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light); actions.uncompleteHabit(habit.id); actions.removeLatestActivityForHabit(habit.id); }}
-                      >
-                        <Text style={styles.undoText}>↩ Undo</Text>
-                      </Pressable>
-                    )}
-                  </View>
-                </View>
-              );
-            })}
-
-            {suggestedHabits.length > 0 && (
-              <>
-                <Text style={styles.sectionTitle}>Suggested habits</Text>
-                {suggestedHabits.map((habit) => (
-                  <View key={habit.name} style={styles.habitRow}>
-                    <View>
-                      <Text style={styles.habitName}>{habit.name}</Text>
-                      <Text style={styles.habitMeta}>
-                      {formatHabitFrequency(habit.frequency)} - {formatHabitTimeOfDay(habit.timeOfDay)} - {habit.lengthMin}m
-                      </Text>
-                    </View>
-                    <Pressable onPress={() => addSuggestedHabit(habit)}>
-                      <Text style={styles.addLink}>Add</Text>
-                    </Pressable>
-                  </View>
-                ))}
-              </>
-            )}
           </View>
           </Pressable>
           {badgeProgress.length > 0 && (
@@ -721,12 +681,20 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         style={[styles.footer, { paddingBottom: insets.bottom + theme.spacing.lg }]}
         pointerEvents="box-none"
       >
-        <Pressable
-          style={({ pressed }) => [styles.habitsButton, pressed && styles.habitsButtonPressed]}
-          onPress={() => navigation.navigate('Habits')}
-        >
-          <Text style={styles.habitsButtonText}>Habits</Text>
-        </Pressable>
+        <View style={styles.footerRow}>
+          <Pressable
+            style={({ pressed }) => [styles.habitsButton, styles.habitsButtonWide, pressed && styles.habitsButtonPressed]}
+            onPress={() => navigation.navigate('Habits')}
+          >
+            <Text style={styles.habitsButtonText}>Habits</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.habitsButton, styles.libraryButton, pressed && styles.habitsButtonPressed]}
+            onPress={() => navigation.navigate('Library')}
+          >
+            <Text style={styles.libraryButtonIcon}>❤️</Text>
+          </Pressable>
+        </View>
       </LinearGradient>
 
       {/* ── Dashboard Popup Modal ── */}
@@ -755,24 +723,32 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 </Pressable>
               </View>
 
-              {/* Stats overview */}
+              {/* Stats overview - Modern Grid */}
               <View style={styles.popupSection}>
-                <Text style={styles.popupSectionTitle}>This week</Text>
-                <View style={styles.popupStatsRow}>
-                  <View style={styles.popupStatCard}>
-                    <Text style={styles.popupStatValue}>{stats.activityCount}</Text>
+                <Text style={styles.popupSectionTitle}>📈 This week</Text>
+                <View style={styles.popupStatsGrid}>
+                  <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
                     <Text style={styles.popupStatLabel}>Activities</Text>
+                    <Text style={[styles.popupStatValue, { color: theme.colors.accent }]}>{stats.activityCount}</Text>
                   </View>
-                  <View style={styles.popupStatCard}>
-                    <Text style={styles.popupStatValue}>{stats.minutes}m</Text>
+                  <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
                     <Text style={styles.popupStatLabel}>Total time</Text>
+                    <Text style={[styles.popupStatValue, { color: theme.colors.success }]}>{stats.minutes}m</Text>
                   </View>
                   {stats.habitTotal > 0 && (
-                    <View style={styles.popupStatCard}>
-                      <Text style={styles.popupStatValue}>{stats.habitDone}/{stats.habitTotal}</Text>
+                    <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
                       <Text style={styles.popupStatLabel}>Habits done</Text>
+                      <Text style={[styles.popupStatValue, { color: theme.colors.info }]}>
+                        {Math.round((stats.habitDone / stats.habitTotal) * 100)}%
+                      </Text>
                     </View>
                   )}
+                  <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
+                    <Text style={styles.popupStatLabel}>Streaks</Text>
+                    <Text style={[styles.popupStatValue, { color: theme.colors.danger }]}>
+                      {state.habits.reduce((max, h) => Math.max(max, h.currentStreak || 0), 0)}🔥
+                    </Text>
+                  </View>
                 </View>
               </View>
 
@@ -1003,12 +979,28 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     width: LOGO_WIDTH,
     height: LOGO_HEIGHT,
     alignSelf: 'flex-start',
+  },
+  logoContainer: {
+    alignItems: 'flex-start',
+    gap: 2,
+  },
+  topBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     marginBottom: theme.spacing.sm,
+  },
+  lastUpdated: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    marginTop: theme.spacing.xs,
   },
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: theme.spacing.xs,
   },
   headerRight: {
     flexDirection: 'row',
@@ -1040,6 +1032,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'flex-start',
     gap: theme.spacing.md,
     marginTop: theme.spacing.xl,
+  },
+  deckMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.md,
   },
   footer: {
     position: 'absolute',
@@ -1105,7 +1104,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     width: 18,
   },
   habitsButton: {
-    marginHorizontal: 16,
     paddingVertical: theme.spacing.md,
     borderRadius: theme.radius.lg,
     alignItems: 'center',
@@ -1121,11 +1119,35 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: 15,
   },
+  footerRow: {
+    marginHorizontal: 16,
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+  },
+  habitsButtonWide: {
+    flex: 3,
+  },
+  libraryButton: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  libraryButtonIcon: {
+    fontSize: 18,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+  },
   subtext: {
-    marginTop: theme.spacing.md,
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
     fontSize: 16,
+    flex: 1,
+  },
+  headerMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.xs,
   },
   subtextMuted: {
     fontFamily: theme.fonts.body,
@@ -1143,6 +1165,45 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.card,
     gap: theme.spacing.md,
+  },
+  dashboardGraph: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.backgroundAlt,
+  },
+  dashboardGraphCol: {
+    flex: 1,
+    alignItems: 'center',
+    gap: 4,
+  },
+  dashboardGraphTrack: {
+    width: '100%',
+    height: 88,
+    justifyContent: 'flex-end',
+    borderRadius: 999,
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    overflow: 'hidden',
+  },
+  dashboardGraphFill: {
+    width: '100%',
+    borderRadius: 999,
+    backgroundColor: theme.colors.accent,
+  },
+  dashboardGraphLabel: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+  },
+  dashboardGraphValue: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
+    color: theme.colors.textMuted,
   },
   badgeCard: {
     marginTop: theme.spacing.md,
@@ -1498,8 +1559,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexDirection: 'row',
     gap: theme.spacing.sm,
   },
+  popupStatsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.md,
+  },
   popupStatCard: {
-    flex: 1,
     backgroundColor: theme.colors.card,
     borderRadius: theme.radius.md,
     padding: theme.spacing.md,
@@ -1507,16 +1572,21 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
+  popupStatCardLarge: {
+    flex: 1,
+    minWidth: '45%',
+    paddingVertical: theme.spacing.lg,
+    justifyContent: 'center',
+  },
   popupStatValue: {
     fontFamily: theme.fonts.heading,
-    fontSize: 22,
-    color: theme.colors.accent,
+    fontSize: 28,
+    marginTop: theme.spacing.xs,
   },
   popupStatLabel: {
     fontFamily: theme.fonts.body,
-    fontSize: 11,
+    fontSize: 12,
     color: theme.colors.textMuted,
-    marginTop: 2,
   },
 
   /* ── Popup habits ─── */

@@ -8,15 +8,17 @@ export type RootStackParamList = {
   LocationPermission: undefined;
   Preferences: undefined;
   Home: undefined;
-  Deck: { durationOverride?: number | null; filter?: string } | undefined;
+  Deck: { durationOverride?: number | null; filter?: string; planDate?: 'today' | 'tomorrow' } | undefined;
   Plan: {
     commitment: Commitment;
     suggestion: DeckSuggestion;
   };
   Settings: undefined;
   Profile: undefined;
+  BusinessHub: undefined;
   HabitForm: { habit?: Habit } | undefined;
   Habits: { flippedHabitId?: string } | undefined;
+  Library: undefined;
   BadgeDetail: { badgeId: string };
   Completion: {
     title: string;

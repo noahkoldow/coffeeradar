@@ -14,7 +14,7 @@ export const curatedEvents: Suggestion[] = [
     event: {
       startAt: inMinutes(90),
       venue: 'Harbor Hall',
-      ticketUrl: 'https://example.com/tickets/jazz',
+      ticketUrl: 'https://www.ticketmaster.com/search?q=sunset+jazz+set',
       priceRange: '$25-$40',
     },
     place: {
@@ -35,7 +35,7 @@ export const curatedEvents: Suggestion[] = [
     event: {
       startAt: inMinutes(120),
       venue: 'City Screen',
-      ticketUrl: 'https://example.com/tickets/film',
+      ticketUrl: 'https://www.ticketmaster.com/search?q=indie+film+screening',
       priceRange: '$18-$25',
     },
     place: {
@@ -56,7 +56,7 @@ export const curatedEvents: Suggestion[] = [
     event: {
       startAt: inMinutes(150),
       venue: 'Gallery West',
-      ticketUrl: 'https://example.com/tickets/gallery',
+      ticketUrl: 'https://www.ticketmaster.com/search?q=late+gallery+opening',
       priceRange: '$15-$20',
     },
     place: {

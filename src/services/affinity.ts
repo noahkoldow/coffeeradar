@@ -16,6 +16,7 @@ import { TagAffinities } from '../types';
 // ── Weights ────────────────────────────────────────────────────────────
 const ACCEPT_WEIGHT = 1.0;
 const COMPLETE_WEIGHT = 1.5;
+const INTEREST_WEIGHT = 0.45;
 const REJECT_WEIGHT = -0.3;
 
 /**
@@ -71,6 +72,12 @@ export const recordComplete = (
   affinities: TagAffinities,
   tags: string[],
 ): TagAffinities => bumpTags(affinities, tags, COMPLETE_WEIGHT);
+
+/** Call when the user marks a card as generally interesting (arrow-up). */
+export const recordInterested = (
+  affinities: TagAffinities,
+  tags: string[],
+): TagAffinities => bumpTags(affinities, tags, INTEREST_WEIGHT);
 
 /** Call when the user swipes left (rejects) a card. */
 export const recordReject = (

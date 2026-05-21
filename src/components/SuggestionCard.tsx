@@ -1,8 +1,8 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { DeckSuggestion } from '../types';
 import { useTheme } from '../theme/ThemeProvider';
-import { formatDuration, formatTime, fromISO } from '../utils/time';
+import { formatDuration, formatTime, fromISO, minutesBetween } from '../utils/time';
 import { MapThumbnail } from './MapThumbnail';
 import { chooseTravelMode } from '../services/travel';
 
@@ -105,13 +105,26 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [flipped, setFlipped] = useState(false);
+  const [frontCanScroll, setFrontCanScroll] = useState(false);
+  const [backCanScroll, setBackCanScroll] = useState(false);
+  const [frontViewportH, setFrontViewportH] = useState(0);
+  const [backViewportH, setBackViewportH] = useState(0);
   const flipAnim = useRef(new Animated.Value(0)).current;
+  const entranceAnim = useRef(new Animated.Value(0)).current;
 
   // Reset flip state when suggestion changes
   useEffect(() => {
     setFlipped(false);
+    setFrontCanScroll(false);
+    setBackCanScroll(false);
     flipAnim.setValue(0);
-  }, [suggestion.id]);
+    entranceAnim.setValue(0);
+    Animated.timing(entranceAnim, {
+      toValue: 1,
+      duration: 260,
+      useNativeDriver: true,
+    }).start();
+  }, [suggestion.id, flipAnim, entranceAnim]);
 
   const handleFlip = () => {
     if (preview) return; // no flip for preview cards
@@ -152,6 +165,22 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
   const renderFront = () => {
     // Build subheader with timing info
     const subParts: string[] = [];
+    const planStart = fromISO(suggestion.meta?.planStartAt);
+    const planEnd = fromISO(suggestion.meta?.planEndAt);
+    const planBeforeEnd = fromISO(suggestion.meta?.planBeforeEndsAt);
+    const planAfterStart = fromISO(suggestion.meta?.planAfterStartsAt);
+    const hasPlanTimeline = !!(planStart && planEnd);
+    const activityMin = hasPlanTimeline ? Math.max(10, minutesBetween(planStart!, planEnd!)) : suggestion.durationMin;
+    const beforeGapMin = hasPlanTimeline
+      ? Math.max(5, planBeforeEnd ? minutesBetween(planBeforeEnd, planStart!) : Math.round(activityMin * 0.6))
+      : 20;
+    const afterGapMin = hasPlanTimeline
+      ? Math.max(5, planAfterStart ? minutesBetween(planEnd!, planAfterStart) : Math.round(activityMin * 0.6))
+      : 20;
+    const toWeight = (minutes: number): number => Math.max(1, Math.min(4, minutes / 20));
+    const beforeWeight = toWeight(beforeGapMin);
+    const activityWeight = toWeight(activityMin);
+    const afterWeight = toWeight(afterGapMin);
     if (suggestion.type === 'EVENT') {
       const startIn = suggestion.meta?.startInMin;
       if (startIn) {
@@ -164,7 +193,8 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
       const leaveBy = fromISO(suggestion.meta?.leaveBy);
       if (leaveBy) {
         const leaveNow = leaveBy.getTime() - Date.now() <= 5 * 60 * 1000;
-        subParts.push(leaveNow ? 'Leave now' : `Leave by ${formatTime(leaveBy)}`);
+        const minutesUntilLeave = Math.max(0, minutesBetween(new Date(), leaveBy));
+        subParts.push(leaveNow ? 'Leave now' : `Leave in ${formatDuration(minutesUntilLeave)}`);
       }
     }
     if (!subParts.length) {
@@ -175,13 +205,32 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
     const frontSteps = hasMap ? [] : getInstructions(suggestion).slice(0, 3);
 
     return (
-      <View style={styles.frontContent}>
+      <ScrollView
+        style={styles.sideScroll}
+        contentContainerStyle={styles.frontContent}
+        showsVerticalScrollIndicator={frontCanScroll}
+        scrollEnabled={frontCanScroll}
+        nestedScrollEnabled
+        onLayout={(e) => setFrontViewportH(e.nativeEvent.layout.height)}
+        onContentSizeChange={(_, h) => setFrontCanScroll(frontViewportH > 0 && h > frontViewportH + 4)}
+      >
         {/* Source badge */}
+        {suggestion.source === 'gemini' && (
+          <View style={styles.aiBadge}>
+            <Text style={styles.aiBadgeText}>AI</Text>
+          </View>
+        )}
         {suggestion.source === 'ticketmaster' && (
           <View style={styles.badge}><Text style={styles.badgeText}>Ticketmaster</Text></View>
         )}
         {suggestion.source === 'habit' && (
           <View style={[styles.badge, styles.badgeHabit]}><Text style={[styles.badgeText, styles.badgeTextHabit]}>Habit</Text></View>
+        )}
+
+        {suggestion.hook && (
+          <View style={styles.hookBlock}>
+            <Text style={styles.hookText}>{suggestion.hook}</Text>
+          </View>
         )}
 
         {/* CTA / motivational headline */}
@@ -204,6 +253,29 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
             <Text style={styles.ratingChip}>⭐ {suggestion.rating.toFixed(1)}</Text>
           )}
         </View>
+
+        {hasPlanTimeline && (
+          <View style={styles.timelineCard}>
+            <Text style={styles.timelineTitle}>How this fits your day</Text>
+            <View style={styles.timelineRow}>
+              <View style={[styles.timelineBlock, styles.timelineBefore, { flex: beforeWeight }]}> 
+                <Text style={styles.timelineLabel}>Before</Text>
+                <Text style={styles.timelineMain} numberOfLines={1}>{suggestion.meta?.planBeforeTitle ?? 'Open time'}</Text>
+                <Text style={styles.timelineSub} numberOfLines={1}>{planBeforeEnd ? `Until ${formatTime(planBeforeEnd)}` : 'No hard stop'}</Text>
+              </View>
+              <View style={[styles.timelineBlock, styles.timelineActivity, { flex: activityWeight }]}> 
+                <Text style={styles.timelineLabel}>Planned</Text>
+                <Text style={styles.timelineMain} numberOfLines={1}>{suggestion.title}</Text>
+                <Text style={styles.timelineSub} numberOfLines={1}>{`${formatTime(planStart)} - ${formatTime(planEnd)}`}</Text>
+              </View>
+              <View style={[styles.timelineBlock, styles.timelineAfter, { flex: afterWeight }]}> 
+                <Text style={styles.timelineLabel}>After</Text>
+                <Text style={styles.timelineMain} numberOfLines={1}>{suggestion.meta?.planAfterTitle ?? 'Free time'}</Text>
+                <Text style={styles.timelineSub} numberOfLines={1}>{planAfterStart ? `From ${formatTime(planAfterStart)}` : 'Rest of day open'}</Text>
+              </View>
+            </View>
+          </View>
+        )}
 
         {/* Map + ETA for go-out / event */}
         {isGoOut && suggestion.place?.lat && suggestion.place?.lng && (
@@ -232,20 +304,13 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
           </View>
         )}
 
-        {/* Good-for emoji row */}
-        {emojis.length > 0 && (
-          <View style={styles.emojiRow}>
-            {emojis.map((e, i) => (
-              <Text key={`${e}_${i}`} style={styles.emoji}>{e}</Text>
-            ))}
-          </View>
-        )}
+        {/* Decorative emoji row is now part of the crown above (uses the same emojis) */}
 
         {/* Flip hint */}
         {!preview && (
           <Text style={styles.flipHint}>Tap for details →</Text>
         )}
-      </View>
+      </ScrollView>
     );
   };
 
@@ -253,7 +318,15 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
   const renderBack = () => {
     const instructions = getInstructions(suggestion);
     return (
-      <View style={styles.backContent}>
+      <ScrollView
+        style={styles.sideScroll}
+        contentContainerStyle={styles.backContent}
+        showsVerticalScrollIndicator={backCanScroll}
+        scrollEnabled={backCanScroll}
+        nestedScrollEnabled
+        onLayout={(e) => setBackViewportH(e.nativeEvent.layout.height)}
+        onContentSizeChange={(_, h) => setBackCanScroll(backViewportH > 0 && h > backViewportH + 4)}
+      >
         {/* Header row: title on the left, rating badge on the top right */}
         <View style={styles.backHeader}>
           <Text style={[styles.backTitle, { flex: 1 }]}>{suggestion.title}</Text>
@@ -322,12 +395,79 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
         )}
 
         <Text style={styles.flipHint}>← Tap to flip back</Text>
-      </View>
+      </ScrollView>
     );
   };
 
   return (
-    <Pressable onPress={handleFlip} style={styles.cardOuter}>
+    <Animated.View
+      style={[
+        styles.cardOuter,
+        {
+          opacity: entranceAnim,
+          transform: [
+            {
+              translateY: entranceAnim.interpolate({
+                inputRange: [0, 1],
+                outputRange: [16, 0],
+              }),
+            },
+          ],
+        },
+      ]}
+    >
+      {/* Achievement Crown backdrop: circle only (behind card) */}
+      <View style={styles.emojiCrownBack} pointerEvents="none">
+        <View style={styles.emojiPartialCircle} />
+      </View>
+
+      {/* Achievement Crown: floating emojis (in front of card) */}
+      <View style={styles.emojiCrown} pointerEvents="none">
+        {/* Pick emojis from the suggestion (fallbacks maintained) */}
+        {(() => {
+          const left = emojis[0] ?? '📚';
+          const center = emojis[1] ?? emojis[0] ?? '🧭';
+          const right = emojis[2] ?? emojis[0] ?? '✨';
+          // Peripherals should be a bit higher than center; center slightly lower
+          const peripheralOffset = -10; // move peripherals up
+          const centerOffset = 8; // move center down
+          return (
+            <>
+              <Text
+                style={[
+                  styles.emoji,
+                  styles.emojiLeft,
+                  { transform: [{ rotate: '-8deg' }, { translateY: peripheralOffset }] },
+                ]}
+              >
+                {left}
+              </Text>
+
+              <Text
+                style={[
+                  styles.emoji,
+                  styles.emojiCenter,
+                  { transform: [{ rotate: '2deg' }, { translateY: centerOffset }] },
+                ]}
+              >
+                {center}
+              </Text>
+
+              <Text
+                style={[
+                  styles.emoji,
+                  styles.emojiRight,
+                  { transform: [{ rotate: '8deg' }, { translateY: peripheralOffset }] },
+                ]}
+              >
+                {right}
+              </Text>
+            </>
+          );
+        })()}
+      </View>
+
+      <Pressable onPress={handleFlip} style={styles.cardOuterPressable}>
       {/* Front */}
       <Animated.View
         style={[
@@ -350,7 +490,8 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
       >
         {renderBack()}
       </Animated.View>
-    </Pressable>
+      </Pressable>
+    </Animated.View>
   );
 };
 
@@ -360,10 +501,14 @@ export { CARD_HEIGHT };
 
 const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   cardOuter: {
-    height: CARD_HEIGHT,
+    minHeight: CARD_HEIGHT,
+  },
+  cardOuterPressable: {
+    minHeight: CARD_HEIGHT,
+    zIndex: 4,
   },
   card: {
-    height: CARD_HEIGHT,
+    minHeight: CARD_HEIGHT,
     backgroundColor: theme.colors.card,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.lg,
@@ -374,22 +519,27 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     elevation: 8,
     backfaceVisibility: 'hidden',
     overflow: 'hidden',
+    zIndex: 3,
   },
   cardBack: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    height: CARD_HEIGHT,
+    minHeight: CARD_HEIGHT,
   },
   frontContent: {
-    flex: 1,
+    minHeight: '100%',
     gap: theme.spacing.sm,
     justifyContent: 'space-between',
   },
   backContent: {
-    flex: 1,
+    minHeight: '100%',
     gap: theme.spacing.sm,
+    paddingBottom: theme.spacing.sm,
+  },
+  sideScroll: {
+    flex: 1,
   },
   badge: {
     alignSelf: 'flex-start',
@@ -410,6 +560,37 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   badgeTextHabit: {
     color: theme.colors.successText,
+  },
+  aiBadge: {
+    position: 'absolute',
+    top: 14,
+    right: 14,
+    zIndex: 3,
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+  },
+  aiBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: '#FFFFFF',
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  hookBlock: {
+    alignSelf: 'flex-start',
+    backgroundColor: theme.colors.accentSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: theme.radius.md,
+    marginTop: 8,
+  },
+  hookText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: theme.colors.accentDark,
+    lineHeight: 18,
   },
   title: {
     fontFamily: theme.fonts.heading,
@@ -437,6 +618,59 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexWrap: 'wrap',
     gap: 8,
     alignItems: 'center',
+  },
+  timelineCard: {
+    marginTop: theme.spacing.xs,
+    backgroundColor: theme.colors.backgroundAlt,
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    gap: 8,
+  },
+  timelineTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  timelineRow: {
+    flexDirection: 'row',
+    alignItems: 'stretch',
+    gap: 6,
+  },
+  timelineBlock: {
+    flex: 1,
+    borderRadius: theme.radius.sm,
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    gap: 2,
+  },
+  timelineBefore: {
+    backgroundColor: theme.colors.card,
+  },
+  timelineActivity: {
+    backgroundColor: theme.colors.accentSoft,
+  },
+  timelineAfter: {
+    backgroundColor: theme.colors.card,
+  },
+  timelineLabel: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: theme.colors.textMuted,
+    textTransform: 'uppercase',
+    letterSpacing: 0.6,
+  },
+  timelineMain: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.text,
+  },
+  timelineSub: {
+    fontFamily: theme.fonts.body,
+    fontSize: 11,
+    color: theme.colors.textMuted,
   },
   infoChip: {
     fontFamily: theme.fonts.semibold,
@@ -500,13 +734,81 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontSize: 13,
     color: theme.colors.text,
   },
-  emojiRow: {
+  heroEmojiRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: theme.spacing.xs,
+    gap: 14,
+    marginTop: -2,
+    marginBottom: theme.spacing.sm,
+    justifyContent: 'center',
+  },
+  heroEmoji: {
+    fontSize: 32,
+    lineHeight: 36,
+  },
+  /* ── Achievement crown (behind the card) ───────────────── */
+  emojiCrown: {
+    position: 'absolute',
+    top: -64,
+    left: '50%',
+    width: 320,
+    height: 180,
+    marginLeft: -160,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 5,
+  },
+  emojiCrownBack: {
+    position: 'absolute',
+    top: -80,
+    left: '50%',
+    width: 320,
+    height: 180,
+    marginLeft: -160,
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1,
+  },
+  emojiPartialCircle: {
+    position: 'absolute',
+    width: 210,
+    height: 90,
+    backgroundColor: '#EAF3FF',
+    opacity: 0.95,
+    borderTopLeftRadius: 105,
+    borderTopRightRadius: 105,
+    borderBottomLeftRadius: 0,
+    borderBottomRightRadius: 0,
+    top: 20,
+    left: '50%',
+    marginLeft: -105,
+    zIndex: 0,
   },
   emoji: {
-    fontSize: 22,
+    position: 'absolute',
+    fontSize: 44,
+    textShadowColor: 'rgba(0,0,0,0.08)',
+    textShadowOffset: { width: 0, height: 6 },
+    textShadowRadius: 10,
+    zIndex: 2,
+  },
+  emojiLeft: {
+    left: 92,
+    top: 20,
+    fontSize: 38,
+    zIndex: 0,
+  },
+  emojiCenter: {
+    left: '50%',
+    marginLeft: -26,
+    top: 10,
+    fontSize: 52,
+    zIndex: 1,
+  },
+  emojiRight: {
+    right: 92,
+    top: 20,
+    fontSize: 38,
+    zIndex: 0,
   },
   flipHint: {
     fontFamily: theme.fonts.body,

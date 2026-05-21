@@ -325,53 +325,73 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
-        <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
-        </Pressable>
-
-        <View style={styles.headerRow}>
-          <Text style={styles.title}>Habits</Text>
+        {/* ── Header ── */}
+        <View style={styles.headerContainer}>
+          <Pressable onPress={() => navigation.goBack()}>
+            <Text style={styles.back}>← Back</Text>
+          </Pressable>
+          <View style={{ flex: 1 }}>
+            <Text style={styles.title}>Your Habits</Text>
+            <Text style={styles.subtitle}>Build routines that stick 🎯</Text>
+          </View>
           <Pressable onPress={() => navigation.navigate('HabitForm')}>
-            <Text style={styles.addLink}>+ Add habit</Text>
+            <View style={styles.addButtonSmall}>
+              <Text style={styles.addButtonSmallText}>+ New</Text>
+            </View>
           </Pressable>
         </View>
-        <Text style={styles.subtitle}>Build routines that show up in your swipe deck.</Text>
 
-        {/* Your habits */}
+        {/* ── Your Active Habits ── */}
+        {state.habits.length > 0 && (
+          <View>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>📖 Your Habits</Text>
+              <Text style={styles.sectionCount}>{state.habits.length} active</Text>
+            </View>
+            {state.habits.map(renderHabitCard)}
+          </View>
+        )}
+
+        {/* ── Empty State ── */}
         {state.habits.length === 0 && (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyEmoji}>🌱</Text>
-            <Text style={styles.emptyText}>No habits yet. Add one to build a streak!</Text>
+            <Text style={styles.emptyText}>No habits yet</Text>
+            <Text style={styles.emptySubtext}>Start by adding a habit to build streaks!</Text>
+            <Pressable
+              onPress={() => navigation.navigate('HabitForm')}
+              style={({ pressed }) => [styles.emptyButton, pressed && { opacity: 0.85 }]}
+            >
+              <Text style={styles.emptyButtonText}>Create your first habit</Text>
+            </Pressable>
           </View>
         )}
-        {state.habits.map(renderHabitCard)}
 
-        {/* Suggested habits */}
+        {/* ── Suggested Habits ── */}
         {suggestedHabits.length > 0 && (
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Suggested habits</Text>
+          <View style={styles.suggestedSection}>
+            <View style={styles.sectionHeader}>
+              <Text style={styles.sectionTitle}>✨ Suggestions</Text>
+              <Text style={styles.sectionCount}>{suggestedHabits.length} ideas</Text>
+            </View>
             {suggestedHabits.map((habit) => (
-              <View key={habit.name} style={styles.suggestedRow}>
+              <View key={habit.name} style={styles.suggestedCard}>
                 <View style={{ flex: 1 }}>
                   <Text style={styles.suggestedName}>{habit.name}</Text>
-                  <Text style={styles.habitMeta}>
+                  <Text style={styles.suggestedMeta}>
                     {formatHabitFrequency(habit.frequency)} · {formatHabitTimeOfDay(habit.timeOfDay)} · {habit.lengthMin}m
                   </Text>
                 </View>
-                <Pressable onPress={() => addSuggestedHabit(habit)}>
-                  <Text style={styles.addLink}>+ Add</Text>
+                <Pressable
+                  onPress={() => addSuggestedHabit(habit)}
+                  style={({ pressed }) => [styles.suggestedAddBtn, pressed && { opacity: 0.7 }]}
+                >
+                  <Text style={styles.suggestedAddBtnText}>+ Add</Text>
                 </Pressable>
               </View>
             ))}
           </View>
         )}
-
-        <Pressable
-          style={({ pressed }) => [styles.addButton, pressed && styles.btnPressed]}
-          onPress={() => navigation.navigate('HabitForm')}
-        >
-          <Text style={styles.addButtonText}>+ Create custom habit</Text>
-        </Pressable>
       </ScrollView>
     </LinearGradient>
   );
@@ -380,186 +400,236 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
 const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   container: { flex: 1 },
   scroll: { padding: theme.spacing.lg, paddingBottom: theme.spacing.xxl },
-  back: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted },
-  headerRow: {
-    marginTop: theme.spacing.sm,
+  
+  /* ── Header ── */
+  headerContainer: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+    marginBottom: theme.spacing.xl,
+  },
+  back: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted, fontSize: 14 },
+  title: { fontFamily: theme.fonts.heading, fontSize: 28, color: theme.colors.text, marginBottom: 4 },
+  subtitle: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, fontSize: 14 },
+  addButtonSmall: {
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+  },
+  addButtonSmallText: { fontFamily: theme.fonts.semibold, color: '#fff', fontSize: 12 },
+
+  /* ── Section Headers ── */
+  sectionHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  title: { fontFamily: theme.fonts.heading, fontSize: 28, color: theme.colors.text },
-  subtitle: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, marginTop: theme.spacing.xs },
-  addLink: { fontFamily: theme.fonts.semibold, color: theme.colors.accent, fontSize: 14 },
-
-  /* ── Empty state ─── */
-  emptyCard: {
+    alignItems: 'baseline',
     marginTop: theme.spacing.lg,
+    marginBottom: theme.spacing.md,
+  },
+  sectionTitle: { fontFamily: theme.fonts.heading, fontSize: 18, color: theme.colors.text },
+  sectionCount: { fontFamily: theme.fonts.body, fontSize: 13, color: theme.colors.textMuted },
+
+  /* ── Empty State ── */
+  emptyCard: {
+    marginTop: theme.spacing.xl,
     backgroundColor: theme.colors.card,
-    borderRadius: theme.radius.md,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.xl,
     alignItems: 'center',
-    gap: theme.spacing.sm,
+    gap: theme.spacing.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  emptyEmoji: { fontSize: 36 },
-  emptyText: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, textAlign: 'center' },
-
-  /* ── Habit card ─── */
-  habitCard: {
+  emptyEmoji: { fontSize: 48 },
+  emptyText: { fontFamily: theme.fonts.heading, fontSize: 18, color: theme.colors.text },
+  emptySubtext: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, textAlign: 'center' },
+  emptyButton: {
     marginTop: theme.spacing.md,
-    backgroundColor: theme.colors.card,
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
     borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+  },
+  emptyButtonText: { fontFamily: theme.fonts.semibold, color: '#fff', fontSize: 14 },
+
+  /* ── Habit Card ── */
+  habitCard: {
+    marginBottom: theme.spacing.md,
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
-    gap: theme.spacing.sm,
+    gap: theme.spacing.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
   habitHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start' },
   habitNameWrap: { flex: 1 },
-  habitNameRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
-  hourglassIcon: { fontSize: 14 },
+  habitNameRow: { flexDirection: 'row', alignItems: 'center', gap: 6 },
+  hourglassIcon: { fontSize: 16 },
   habitName: { fontFamily: theme.fonts.semibold, fontSize: 16, color: theme.colors.text },
-  habitMeta: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted, marginTop: 2 },
+  habitMeta: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted, marginTop: 4 },
   streakBadge: {
     backgroundColor: theme.colors.accentSoft,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: theme.radius.md,
   },
   streakText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.accentDark },
 
-  /* ── Weekly dots ─── */
-  dotsRow: { flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: 2 },
-  dotCol: { alignItems: 'center', gap: 2 },
-  dot: { width: 20, height: 20, borderRadius: 10 },
+  /* ── Weekly Progress ── */
+  dotsRow: { 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    gap: 8, 
+    marginBottom: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+  },
+  dotCol: { alignItems: 'center', gap: 4, flex: 1 },
+  dot: { width: 24, height: 24, borderRadius: 12 },
   dotDone: { backgroundColor: theme.colors.accent },
-  dotEmpty: { backgroundColor: theme.colors.backgroundAlt, borderWidth: 1, borderColor: theme.colors.border },
-  dotLabel: { fontFamily: theme.fonts.body, fontSize: 9, color: theme.colors.textMuted },
-  dotSummary: { marginLeft: 'auto' },
-  dotSummaryText: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.textMuted },
+  dotEmpty: { backgroundColor: theme.colors.backgroundAlt, borderWidth: 1.5, borderColor: theme.colors.border },
+  dotLabel: { fontFamily: theme.fonts.body, fontSize: 10, color: theme.colors.textMuted, fontWeight: '600' },
+  dotSummary: { flex: 0.8, paddingLeft: theme.spacing.sm },
+  dotSummaryText: { fontFamily: theme.fonts.semibold, fontSize: 11, color: theme.colors.accent, backgroundColor: theme.colors.accentSoft, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999 },
 
-  /* ── Stats ─── */
-  statsRow: { flexDirection: 'row', gap: 16 },
+  /* ── Stats ── */
+  statsRow: { 
+    flexDirection: 'row', 
+    gap: 12,
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.sm,
+    backgroundColor: theme.colors.backgroundAlt,
+    borderRadius: theme.radius.md,
+  },
   statText: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted },
 
-  /* ── Actions ─── */
-  habitActions: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 2 },
-  habitActionsRight: { flexDirection: 'row', gap: theme.spacing.sm },
+  /* ── Actions ── */
+  habitActions: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  habitActionsRight: { flexDirection: 'row', gap: theme.spacing.xs },
   completeBtn: {
+    flex: 1,
     backgroundColor: theme.colors.accent,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: theme.radius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: theme.radius.md,
+    alignItems: 'center',
   },
-  completeBtnText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: '#fff' },
+  completeBtnText: { fontFamily: theme.fonts.semibold, fontSize: 14, color: '#fff' },
   doNowBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1.5,
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: theme.radius.md,
+    borderWidth: 2,
     borderColor: theme.colors.accent,
-    backgroundColor: '#fff',
+    backgroundColor: theme.colors.accentSoft,
+    alignItems: 'center',
   },
-  doNowBtnText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.accent },
+  doNowBtnText: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.accentDark },
   doNowBtnDisabled: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: theme.radius.sm,
-    borderWidth: 1.5,
+    flex: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.backgroundAlt,
+    alignItems: 'center',
     opacity: 0.5,
   },
-  doNowBtnDisabledText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textMuted },
+  doNowBtnDisabledText: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.textMuted },
   doneLabel: {
-    backgroundColor: theme.colors.backgroundAlt,
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: theme.radius.sm,
+    flex: 1,
+    backgroundColor: theme.colors.accentSoft,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: theme.radius.md,
+    alignItems: 'center',
   },
-  doneLabelText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.accent },
+  doneLabelText: { fontFamily: theme.fonts.semibold, fontSize: 14, color: theme.colors.accentDark },
   deleteIconBtn: {
-    paddingHorizontal: 8,
-    paddingVertical: 8,
-    borderRadius: theme.radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  deleteIconText: { fontSize: 15 },
+  deleteIconText: { fontSize: 16 },
   editBtn: {
-    paddingHorizontal: 10,
-    paddingVertical: 8,
-    borderRadius: theme.radius.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: theme.radius.md,
     backgroundColor: theme.colors.backgroundAlt,
   },
   editBtnText: { fontFamily: theme.fonts.semibold, fontSize: 13, color: theme.colors.textMuted },
   btnPressed: { opacity: 0.7, transform: [{ scale: 0.97 }] },
 
-  /* ── Suggested ─── */
-  section: {
+  /* ── Suggested Section ── */
+  suggestedSection: {
     marginTop: theme.spacing.lg,
-    backgroundColor: theme.colors.card,
-    borderRadius: theme.radius.md,
-    padding: theme.spacing.md,
-    gap: theme.spacing.sm,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    marginBottom: theme.spacing.lg,
   },
-  sectionTitle: { fontFamily: theme.fonts.semibold, color: theme.colors.text },
-  suggestedRow: {
+  suggestedCard: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 6,
-  },
-  suggestedName: { fontFamily: theme.fonts.semibold, color: theme.colors.text },
-
-  /* ── Bottom button ─── */
-  addButton: {
-    marginTop: theme.spacing.lg,
     paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    marginBottom: theme.spacing.sm,
     borderRadius: theme.radius.lg,
-    alignItems: 'center',
-    backgroundColor: theme.colors.backgroundAlt,
+    backgroundColor: theme.colors.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
-  addButtonText: { fontFamily: theme.fonts.semibold, color: theme.colors.text },
+  suggestedName: { fontFamily: theme.fonts.semibold, color: theme.colors.text, fontSize: 15 },
+  suggestedMeta: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, fontSize: 12, marginTop: 4 },
+  suggestedAddBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+  },
+  suggestedAddBtnText: { fontFamily: theme.fonts.semibold, color: '#fff', fontSize: 12 },
 
-  /* ── Flip card ─── */
+  /* ── Flip Card ── */
   flipHint: {
     fontFamily: theme.fonts.body,
     fontSize: 10,
     color: theme.colors.textMuted,
     textAlign: 'right',
-    marginTop: 2,
+    marginTop: 4,
   },
   habitCardBack: {
     backgroundColor: theme.colors.backgroundAlt,
-    minHeight: 220,
+    minHeight: 240,
   },
   backHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: theme.spacing.sm,
+    marginBottom: theme.spacing.md,
   },
   historyScroll: {
-    maxHeight: 200,
+    maxHeight: 220,
   },
   weekRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 4,
-    paddingVertical: 3,
+    gap: 6,
+    paddingVertical: 4,
   },
   weekLabel: {
     width: 80,
     fontFamily: theme.fonts.body,
-    fontSize: 10,
+    fontSize: 11,
     color: theme.colors.textMuted,
   },
   historyDotCol: {
@@ -568,13 +638,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   historyDayLabel: {
     fontFamily: theme.fonts.semibold,
-    fontSize: 9,
+    fontSize: 10,
     color: theme.colors.textMuted,
   },
   historyDot: {
-    width: 22,
-    height: 22,
-    borderRadius: 11,
+    width: 24,
+    height: 24,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -583,7 +653,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   historyDotMissed: {
     backgroundColor: theme.colors.card,
-    borderWidth: 1,
+    borderWidth: 1.5,
     borderColor: theme.colors.border,
   },
   historyDotNA: {
@@ -591,7 +661,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     opacity: 0.3,
   },
   historyDotIcon: {
-    fontSize: 11,
+    fontSize: 12,
     fontFamily: theme.fonts.semibold,
   },
   historyDotIconDone: {

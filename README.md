@@ -22,7 +22,15 @@ Add a Ticketmaster API key if you want live EVENT suggestions.
 EXPO_PUBLIC_TICKETMASTER_KEY=your_key_here
 ```
 
-4) Run
+4) Optional Gemini AI activity source
+
+Add a Gemini API key if you want AI-generated, web-researched activity cards.
+
+```
+EXPO_PUBLIC_GEMINI_API_KEY=your_key_here
+```
+
+5) Run
 
 ```
 npm run start

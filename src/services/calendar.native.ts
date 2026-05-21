@@ -1,6 +1,6 @@
 import * as Calendar from 'expo-calendar';
 import { Availability } from '../types';
-import { addMinutes, minutesBetween, toISO } from '../utils/time';
+import { addMinutes, getPreferredTimeZone, minutesBetween, toISO } from '../utils/time';
 
 export const requestCalendarPermission = async (): Promise<boolean> => {
   const { status } = await Calendar.requestCalendarPermissionsAsync();
@@ -18,6 +18,93 @@ export const getCalendars = async (): Promise<Calendar.Calendar[]> => {
 
 const toDate = (value: Date | string): Date => {
   return value instanceof Date ? value : new Date(value);
+};
+
+const startOfLocalDay = (date: Date): Date => {
+  const result = new Date(date);
+  result.setHours(0, 0, 0, 0);
+  return result;
+};
+
+const endOfLocalDay = (date: Date): Date => {
+  const result = new Date(date);
+  result.setHours(23, 59, 59, 999);
+  return result;
+};
+
+const buildAvailabilityFromEvents = (
+  dayStart: Date,
+  dayEnd: Date,
+  events: Calendar.Event[],
+): Availability => {
+  const sorted = events
+    .filter((event) => event.startDate)
+    .map((event) => ({
+      title: event.title ?? null,
+      start: new Date(Math.max(toDate(event.startDate).getTime(), dayStart.getTime())),
+      end: new Date(Math.min((event.endDate ? toDate(event.endDate) : toDate(event.startDate)).getTime(), dayEnd.getTime())),
+    }))
+    .filter((event) => event.end.getTime() > event.start.getTime())
+    .sort((a, b) => a.start.getTime() - b.start.getTime());
+
+  let cursor = dayStart.getTime();
+  let bestStart = dayStart;
+  let bestEnd = dayEnd;
+  let bestNextEventTitle: string | null = sorted[0]?.title ?? null;
+  let bestNextEventStart: Date | null = sorted[0]?.start ?? null;
+  let bestPreviousEventTitle: string | null = null;
+  let bestPreviousEventEnd: Date | null = null;
+  let bestGap = -1;
+  let lastEvent: { title: string | null; start: Date; end: Date } | null = null;
+
+  for (const event of sorted) {
+    const eventStart = event.start.getTime();
+    if (eventStart > cursor) {
+      const gap = eventStart - cursor;
+      if (gap > bestGap) {
+        bestGap = gap;
+        bestStart = new Date(cursor);
+        bestEnd = event.start;
+        bestNextEventTitle = event.title;
+        bestNextEventStart = event.start;
+        bestPreviousEventTitle = lastEvent?.title ?? null;
+        bestPreviousEventEnd = lastEvent?.end ?? null;
+      }
+    }
+    cursor = Math.max(cursor, event.end.getTime());
+    if (!lastEvent || event.end.getTime() >= lastEvent.end.getTime()) {
+      lastEvent = event;
+    }
+  }
+
+  if (cursor < dayEnd.getTime()) {
+    const gap = dayEnd.getTime() - cursor;
+    if (gap > bestGap) {
+      bestGap = gap;
+      bestStart = new Date(cursor);
+      bestEnd = dayEnd;
+      bestNextEventTitle = null;
+      bestNextEventStart = null;
+      bestPreviousEventTitle = lastEvent?.title ?? null;
+      bestPreviousEventEnd = lastEvent?.end ?? null;
+    }
+  }
+
+  const contextEventTitles = sorted
+    .map((event) => event.title)
+    .filter((title): title is string => !!title && title.trim().length > 0)
+    .slice(0, 12);
+
+  return {
+    start: toISO(bestStart),
+    end: toISO(bestEnd),
+    durationMin: Math.max(0, minutesBetween(bestStart, bestEnd)),
+    nextEventTitle: bestNextEventTitle,
+    nextEventStartAt: bestNextEventStart ? toISO(bestNextEventStart) : null,
+    previousEventTitle: bestPreviousEventTitle,
+    previousEventEndAt: bestPreviousEventEnd ? toISO(bestPreviousEventEnd) : null,
+    contextEventTitles,
+  };
 };
 
 const getWritableCalendarId = async (): Promise<string | null> => {
@@ -96,6 +183,30 @@ export const getAvailability = async (enabledCalendarIds?: string[]): Promise<Av
   };
 };
 
+export const getAvailabilityForDate = async (
+  date: Date,
+  enabledCalendarIds?: string[],
+): Promise<Availability> => {
+  const dayStart = startOfLocalDay(date);
+  const dayEnd = endOfLocalDay(date);
+  const calendars = await getCalendars();
+  const calendarIds = enabledCalendarIds && enabledCalendarIds.length
+    ? enabledCalendarIds
+    : calendars.map((cal) => cal.id);
+
+  if (!calendarIds.length) {
+    return {
+      start: toISO(dayStart),
+      end: toISO(dayEnd),
+      durationMin: minutesBetween(dayStart, dayEnd),
+      nextEventTitle: null,
+    };
+  }
+
+  const events = await Calendar.getEventsAsync(calendarIds, dayStart, dayEnd);
+  return buildAvailabilityFromEvents(dayStart, dayEnd, events);
+};
+
 export const createPlanEvent = async (payload: {
   title: string;
   startDate: Date;
@@ -111,7 +222,7 @@ export const createPlanEvent = async (payload: {
     startDate: payload.startDate,
     endDate: payload.endDate,
     notes: payload.notes,
-    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    timeZone: getPreferredTimeZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone,
   });
 };
 
