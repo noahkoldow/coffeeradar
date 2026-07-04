@@ -17,7 +17,7 @@ import {
   TagAffinities,
   UserPrefs,
 } from '../types';
-import { addMinutes, clamp, fromISO, minutesBetween, isSameCalendarDayInTimeZone, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
+import { addMinutes, clamp, dateFromLocalClockTime, extractClockLabelFromText, formatTime, fromISO, minutesBetween, isSameCalendarDayInTimeZone, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
 import { chooseTravelMode, estimateDeparture, estimateEtaMinutes, haversineKm } from './travel';
 import { fetchTicketmasterSuggestions } from './ticketmaster';
 import { habitToSuggestion, isHabitDue, matchesTimeOfDay } from '../utils/habits';
@@ -25,7 +25,9 @@ import { fetchWeather, WeatherInfo } from './weather';
 import { fetchGeminiSuggestions, GeminiLearningContext } from './geminiSuggestions';
 import { generateWhyNow } from './whyNow';
 import { affinityScore, typeAffinityScore } from './affinity';
+import { logEvent } from './analytics';
 import { loadFirebaseBusinesses } from './user';
+import { communityIdeaToSuggestion, loadApprovedCommunityIdeas } from './communityIdeas';
 import {
   filterForHabitRepetition,
   markRepetitionFriendly,
@@ -35,7 +37,10 @@ import { calculateBusinessHabitAlignment, findAlignedBusinesses, businessToSugge
 
 const BUFFER_MIN = 10;
 const GEMINI_SOURCE_BOOST = 0.08;
-const MIN_GEMINI_IN_DECK = 2;
+const MIN_GEMINI_IN_DECK = 5; // More aggressive during permissive phase to force Gemini through
+const EPSILON_MIN = 0.08;
+const EPSILON_MAX = 0.22;
+const EPSILON_NEW_USER_BONUS = 0.06;
 
 const buildLocalBusinessCatalog = (location: LocationState): Business[] => {
   if (!location.lat || !location.lng) return [];
@@ -160,8 +165,10 @@ const isLateNight = (now = new Date(), timeZone?: string | null): boolean => {
 };
 
 /** Strict time-of-day rules for activity types to prevent poor recommendations like "coffee at 6pm" */
-const isAppropriateTimeOfDay = (suggestion: Suggestion, now = new Date()): boolean => {
-  const hour = now.getHours();
+const isAppropriateTimeOfDay = (suggestion: Suggestion, now = new Date(), timeZone?: string | null): boolean => {
+  // Get local hour using proper timezone handling (not UTC)
+  const parts = getTimeZoneParts(now, timeZone);
+  const hour = parts.hour;
   const title = suggestion.title.toLowerCase();
   const tags = suggestion.tags?.map((t) => t.toLowerCase()) ?? [];
   
@@ -218,7 +225,7 @@ const filterByTimeOfDay = (suggestions: Suggestion[], now = new Date(), timeZone
     if (!todMatch) return false;
 
     // Strict activity-type time-of-day rules (e.g., coffee only 9-18)
-    if (!isAppropriateTimeOfDay(s, now)) return false;
+    if (!isAppropriateTimeOfDay(s, now, timeZone)) return false;
 
     // Late-night filtering: exclude outdoor/café activities
     if (lateNight) {
@@ -247,6 +254,44 @@ const filterByTimeOfDay = (suggestions: Suggestion[], now = new Date(), timeZone
 const computeClosingBuffer = (arrivalDelay: number, durationMin: number) => {
   const total = arrivalDelay + durationMin;
   return Math.min(20, Math.max(5, Math.ceil(total * 0.1)));
+};
+
+const parseInstructionDeparture = (
+  instructions: string[] | undefined,
+  referenceDate: Date,
+  timeZone?: string | null,
+): Date | null => {
+  if (!instructions?.length) return null;
+  for (const line of instructions) {
+    if (!/\b(leave|depart|head|go|walk|travel|catch)\b/i.test(line)) continue;
+    const clockLabel = extractClockLabelFromText(line);
+    if (!clockLabel) continue;
+    const candidate = dateFromLocalClockTime(clockLabel, referenceDate, timeZone);
+    if (!candidate) continue;
+    if (candidate.getTime() < referenceDate.getTime() - 6 * 60 * 60 * 1000) {
+      return new Date(candidate.getTime() + 24 * 60 * 60 * 1000);
+    }
+    return candidate;
+  }
+  return null;
+};
+
+const withDepartureInstruction = (
+  suggestion: Suggestion,
+  leaveAt: Date,
+  timeZone?: string | null,
+): Suggestion => {
+  const place = suggestion.place?.name ?? suggestion.event?.venue ?? suggestion.title;
+  const leaveLabel = formatTime(leaveAt, timeZone);
+  const departureLine = `${leaveLabel}: Leave for ${place}.`;
+  const existing = suggestion.instructions ?? [];
+  const withoutOldDeparture = existing.filter((line, index) => (
+    index !== 0 || !/\b(leave|depart|head|go|walk|travel|catch)\b/i.test(line)
+  ));
+  return {
+    ...suggestion,
+    instructions: [departureLine, ...withoutOldDeparture].slice(0, 6),
+  };
 };
 const EMOJI_BY_TAG: Record<string, string[]> = {
   fitness: ['💪', '🏃'],
@@ -391,9 +436,11 @@ const enrichSuggestion = (
   availability: Availability,
   location: LocationState,
 ): DeckSuggestion => {
-  const meta: SuggestionMeta = {};
+  const meta: SuggestionMeta = { timeZone: location.timeZone ?? getPreferredTimeZone() };
   const now = new Date();
+  const availabilityStart = fromISO(availability.start) ?? now;
   const availabilityEnd = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
+  let normalizedSuggestion = suggestion;
 
   if (location.lat && location.lng && suggestion.place?.lat && suggestion.place?.lng) {
     const distanceKm = haversineKm(location.lat, location.lng, suggestion.place.lat, suggestion.place.lng);
@@ -407,17 +454,27 @@ const enrichSuggestion = (
       meta.startInMin = minutesBetween(now, startAt);
       const leaveBy = estimateDeparture(startAt, distanceKm);
       meta.leaveBy = leaveBy.toISOString();
+      normalizedSuggestion = withDepartureInstruction(normalizedSuggestion, leaveBy, location.timeZone);
     }
 
     if (suggestion.type === 'GO_OUT') {
       // For GO_OUT: user needs to arrive, spend time, and get back before availability ends.
-      // Leave by = availability end - activity duration - return travel, clamped to now.
+      // Prefer the AI's concrete departure time if it still fits the window;
+      // otherwise start now/at the availability start instead of showing a stale latest-possible time.
       const latestArrival = addMinutes(availabilityEnd, -(suggestion.durationMin + BUFFER_MIN));
-      let leaveBy = estimateDeparture(latestArrival, distanceKm);
-      if (leaveBy.getTime() < now.getTime()) {
-        leaveBy = now;
+      const latestLeaveBy = estimateDeparture(latestArrival, distanceKm);
+      const earliestLeaveAt = availabilityStart.getTime() > now.getTime() ? availabilityStart : now;
+      const instructionLeaveAt = parseInstructionDeparture(suggestion.instructions, earliestLeaveAt, location.timeZone);
+      let leaveBy = instructionLeaveAt &&
+        instructionLeaveAt.getTime() >= earliestLeaveAt.getTime() - 5 * 60 * 1000 &&
+        instructionLeaveAt.getTime() <= latestLeaveBy.getTime()
+          ? instructionLeaveAt
+          : earliestLeaveAt;
+      if (leaveBy.getTime() > latestLeaveBy.getTime()) {
+        leaveBy = latestLeaveBy;
       }
       meta.leaveBy = leaveBy.toISOString();
+      normalizedSuggestion = withDepartureInstruction(normalizedSuggestion, leaveBy, location.timeZone);
     }
   }
 
@@ -435,7 +492,7 @@ const enrichSuggestion = (
     meta.closesInMin = suggestion.closesInMin;
   }
 
-  return { ...suggestion, meta };
+  return { ...normalizedSuggestion, meta };
 };
 
 const isFeasible = (
@@ -653,6 +710,84 @@ const scoreSuggestion = (
   return weighted;
 };
 
+const countNonTypeAffinities = (tagAff: TagAffinities): number =>
+  Object.entries(tagAff).filter(([tag, score]) => !tag.startsWith('__type_') && Math.abs(score) > 0.25).length;
+
+const computeEpsilon = (prefs: UserPrefs, tagAff: TagAffinities): number => {
+  const learnedTags = countNonTypeAffinities(tagAff);
+  const learnedStrength = Object.values(tagAff)
+    .filter((value) => Number.isFinite(value))
+    .reduce((sum, value) => sum + Math.abs(value), 0);
+
+  let epsilon = 0.18;
+  epsilon -= Math.min(0.05, learnedTags * 0.005);
+  epsilon -= Math.min(0.04, learnedStrength * 0.003);
+  if (prefs.allowSerendipity) epsilon += 0.03;
+  if (!learnedTags) epsilon += EPSILON_NEW_USER_BONUS;
+
+  return clamp(epsilon, EPSILON_MIN, EPSILON_MAX);
+};
+
+const pickExplorationCandidate = (
+  scored: { item: DeckSuggestion; score: number }[],
+  selectedIds: Set<string>,
+  prefs: UserPrefs,
+  history: HistoryState,
+): DeckSuggestion | null => {
+  const pool = scored
+    .filter((entry) => !selectedIds.has(entry.item.id))
+    .filter((entry) => entry.item.tags?.length)
+    .map((entry) => {
+      const seenPenalty = history.lastShownIds.includes(entry.item.id)
+        ? 0.15
+        : history.lastAcceptedIds.includes(entry.item.id)
+          ? 0.08
+          : 0;
+      const noveltyBoost = prefs.allowSerendipity ? 0.12 : 0.08;
+      const affinityPenalty = 1 - affinityScore({}, entry.item.tags);
+      const typeBalance = entry.item.type === 'AT_HOME' ? 0.02 : 0.04;
+      return {
+        item: entry.item,
+        score: entry.score + noveltyBoost + affinityPenalty * 0.2 + typeBalance - seenPenalty,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+
+  if (!pool.length) return null;
+
+  const top = pool.slice(0, Math.min(4, pool.length));
+  const index = Math.floor(Math.random() * top.length);
+  return top[index]?.item ?? null;
+};
+
+const buildEpsilonGreedyDeck = (
+  scored: { item: DeckSuggestion; score: number }[],
+  deckSize: number,
+  prefs: UserPrefs,
+  history: HistoryState,
+  tagAff: TagAffinities,
+): { deck: DeckSuggestion[]; epsilon: number; exploratorySlots: number } => {
+  const epsilon = computeEpsilon(prefs, tagAff);
+  const greedyDeck = buildInterleavedDeck(scored, deckSize);
+  const target = greedyDeck.slice();
+  const selectedIds = new Set(target.map((item) => item.id));
+  let exploratorySlots = 0;
+
+  for (let index = 0; index < target.length; index++) {
+    if (Math.random() >= epsilon) continue;
+    const candidate = pickExplorationCandidate(scored, selectedIds, prefs, history);
+    if (!candidate) continue;
+    const current = target[index];
+    if (current?.id === candidate.id) continue;
+    target[index] = candidate;
+    selectedIds.delete(current.id);
+    selectedIds.add(candidate.id);
+    exploratorySlots++;
+  }
+
+  return { deck: target, epsilon, exploratorySlots };
+};
+
 /** Get the primary interest tag for a suggestion (first tag, or its type as fallback) */
 const primaryTag = (s: DeckSuggestion): string =>
   s.tags?.[0] ?? s.type.toLowerCase();
@@ -743,7 +878,7 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
     new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
   ]);
 
-const API_TIMEOUT_MS = 2500; // keep total deck build under 3s
+const API_TIMEOUT_MS = 5000; // allow enough time for Gemini (was 2500, too tight)
 
 const seedSuggestions = async (
   availability: Availability,
@@ -755,7 +890,7 @@ const seedSuggestions = async (
 ): Promise<Suggestion[]> => {
   const now = nowOverride ?? new Date();
   const habitSuggestions = habits
-    .filter((habit) => isHabitDue(habit, now) && matchesTimeOfDay(habit, now))
+    .filter((habit) => isHabitDue(habit, now) && matchesTimeOfDay(habit, now, location.timeZone))
     .map((habit) => attachEmojis(habitToSuggestion(habit)))
     .map((item) => markRepetitionFriendly(item)); // Mark habits as repetition-friendly
 
@@ -827,7 +962,9 @@ export const buildDeck = async (
   filter?: string,
   savedSuggestions: SavedSuggestion[] = [],
   nowOverride?: Date,
-): Promise<{ deck: DeckSuggestion[]; usedFallback: boolean }> => {
+  geminiOverride?: Suggestion[],
+  maxGeminiCards?: number,
+): Promise<{ deck: DeckSuggestion[]; usedFallback: boolean; allGemini?: Suggestion[] }> => {
   console.log('[buildDeck] START', { durationMin: availability.durationMin, apiTimeoutMs, filter });
   const now = nowOverride ?? new Date();
   // Fetch weather in parallel with suggestions (non-blocking, with timeout)
@@ -837,6 +974,7 @@ export const buildDeck = async (
   const businessCatalogPromise = location.lat && location.lng
     ? withTimeout(loadFirebaseBusinesses(40).catch(() => []), Math.min(apiTimeoutMs, 1800), [] as Business[])
     : Promise.resolve([] as Business[]);
+  const communityIdeasPromise = withTimeout(loadApprovedCommunityIdeas().catch(() => []), Math.min(apiTimeoutMs, 1800), []);
 
   const baseCandidatesPromise = seedSuggestions(availability, location, prefs, habits, apiTimeoutMs, now);
   const topPositiveTags = Object.entries(tagAff)
@@ -854,19 +992,31 @@ export const buildDeck = async (
     topSavedTitles,
   };
 
-  const geminiCandidatesPromise = weatherPromise.then((weather) => withTimeout(
-    fetchGeminiSuggestions(location, prefs, availability, weather, learning).catch(() => []),
-    apiTimeoutMs,
-    [],
-  ));
+  // If a pre-fetched pool is supplied, skip the Gemini API call entirely.
+  let allFetchedGemini: Suggestion[] | undefined;
+  const geminiCandidatesPromise: Promise<Suggestion[]> = geminiOverride !== undefined
+    ? Promise.resolve(geminiOverride)
+    : weatherPromise.then((weather) => withTimeout(
+        fetchGeminiSuggestions(location, prefs, availability, weather, learning).catch(() => []),
+        apiTimeoutMs,
+        [],
+      ));
 
-  const [baseCandidates, weather, geminiCandidates, firebaseBusinesses] = await Promise.all([
+  const [baseCandidates, weather, geminiCandidates, firebaseBusinesses, approvedCommunityIdeas] = await Promise.all([
     baseCandidatesPromise,
     weatherPromise,
     geminiCandidatesPromise,
     businessCatalogPromise,
+    communityIdeasPromise,
   ]);
-  const candidates = [...baseCandidates, ...geminiCandidates];
+
+  // Capture all Gemini returned by the API so the caller can cache them for later decks
+  if (geminiOverride === undefined) {
+    allFetchedGemini = geminiCandidates;
+  }
+  console.log('[buildDeck] gemini candidates:', geminiCandidates.length, '| override?', geminiOverride !== undefined);
+  const communityCandidates = approvedCommunityIdeas.map((idea) => communityIdeaToSuggestion(idea));
+  const candidates = [...baseCandidates, ...geminiCandidates, ...communityCandidates];
   console.log('[buildDeck] candidates:', candidates.length, 'weather:', weather ? 'yes' : 'no');
 
   const enriched = candidates.map((item) => enrichSuggestion(item, availability, location));
@@ -905,13 +1055,16 @@ export const buildDeck = async (
   // Build deck with category interleaving: groups by primary tag,
   // sorts nearest→farthest within each group, then round-robins
   // across categories for maximum variety.
-  const deck: DeckSuggestion[] = buildInterleavedDeck(scored, DECK_SIZE);
+  const { deck, epsilon, exploratorySlots } = buildEpsilonGreedyDeck(scored, DECK_SIZE, prefs, history, tagAff);
 
+  const geminiTarget = maxGeminiCards ?? MIN_GEMINI_IN_DECK;
   const ensureMinGemini = (target: DeckSuggestion[], allScored: { item: DeckSuggestion; score: number }[]) => {
+    if (geminiTarget <= 0) return;
     const currentGemini = target.filter((item) => item.source === 'gemini').length;
-    if (currentGemini >= MIN_GEMINI_IN_DECK) return;
+    console.log(`[ensureMinGemini] current=${currentGemini}, target=${geminiTarget}`);
+    if (currentGemini >= geminiTarget) return;
 
-    const missing = MIN_GEMINI_IN_DECK - currentGemini;
+    const missing = geminiTarget - currentGemini;
     const targetIds = new Set(target.map((x) => x.id));
     const geminiPool = allScored
       .filter((entry) => entry.item.source === 'gemini' && !targetIds.has(entry.item.id))
@@ -941,6 +1094,15 @@ export const buildDeck = async (
   ensureMinGemini(deck, scored);
   let usedFallback = false;
   console.log('[buildDeck] after interleaved build:', deck.length);
+
+  void logEvent('deck_generated', {
+    filter: filter ?? 'none',
+    deckSize: deck.length,
+    epsilon: Number(epsilon.toFixed(3)),
+    exploratorySlots,
+    geminiCount: deck.filter((item) => item.source === 'gemini').length,
+    fallbackUsed: false,
+  }).catch(() => undefined);
 
   // Pass 3: pull from fallback pool (also excluding originally-seen IDs)
   if (deck.length < DECK_SIZE) {
@@ -1046,14 +1208,14 @@ export const buildDeck = async (
   }
 
   // Apply dynamic whyNow and auto-generate CTA for every card in the final deck
-  const whyNowCtx = { availability, weather, now, habits };
+  const whyNowCtx = { availability, weather, now, habits, timeZone: location.timeZone };
   const finalDeck = deck.slice(0, DECK_SIZE).map((item) => ({
     ...item,
     cta: item.cta ?? generateCta(item),
-    whyNow: item.whyNow ?? generateWhyNow(item, whyNowCtx),
+    whyNow: item.source === 'gemini' ? generateWhyNow(item, whyNowCtx) : item.whyNow ?? generateWhyNow(item, whyNowCtx),
   }));
 
-  return { deck: finalDeck, usedFallback };
+  return { deck: finalDeck, usedFallback, ...(allFetchedGemini !== undefined && { allGemini: allFetchedGemini }) };
 };
 
 /**
@@ -1102,6 +1264,6 @@ export const buildFilteredFallbacks = (
   return filtered.slice(0, DECK_SIZE).map((item) => ({
     ...item,
     cta: generateCta(item),
-    whyNow: generateWhyNow(item, { availability, weather: null, now, habits: [] }),
+    whyNow: generateWhyNow(item, { availability, weather: null, now, habits: [], timeZone: location.timeZone }),
   }));
 };

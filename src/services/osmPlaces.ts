@@ -1,5 +1,5 @@
 import { Availability, LocationState, Suggestion, UserPrefs } from '../types';
-import { fromISO } from '../utils/time';
+import { fromISO, getTimeZoneParts } from '../utils/time';
 import { addDebugMessage } from './debug';
 
 const OVERPASS_ENDPOINTS = [
@@ -227,17 +227,28 @@ const extractTags = (rawTags: Record<string, string> | undefined): string[] => {
 
 // ── Opening hours parser ───────────────────────────────────────────────
 const DAY_NAMES = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+const WEEKDAY_INDEX: Record<string, number> = {
+  Monday: 0,
+  Tuesday: 1,
+  Wednesday: 2,
+  Thursday: 3,
+  Friday: 4,
+  Saturday: 5,
+  Sunday: 6,
+};
 
 const parseOpeningStatus = (
   ohString: string | undefined,
   now: Date,
+  timeZone?: string | null,
 ): { openStatus: 'open_now' | 'opens_soon' | 'unknown'; opensInMin?: number; closesInMin?: number } => {
   if (!ohString) return { openStatus: 'unknown' };
   if (ohString === '24/7') return { openStatus: 'open_now' };
 
   try {
-    const dayIndex = (now.getDay() + 6) % 7; // Mon=0
-    const nowMinutes = now.getHours() * 60 + now.getMinutes();
+    const nowParts = getTimeZoneParts(now, timeZone);
+    const dayIndex = WEEKDAY_INDEX[nowParts.weekday] ?? 0;
+    const nowMinutes = nowParts.hour * 60 + nowParts.minute;
     const rules = ohString.split(';').map((r) => r.trim());
     let bestOpen: number | null = null;
     let bestClose: number | null = null;
@@ -480,7 +491,7 @@ export const fetchOsmSuggestions = async (
         seen.set(dedupKey, { lat, lng: lon });
 
         const durationMin = estimateDuration(tags);
-        const ohStatus = parseOpeningStatus(rawTags.opening_hours, now);
+        const ohStatus = parseOpeningStatus(rawTags.opening_hours, now, location.timeZone);
         const cuisine = rawTags.cuisine
           ? rawTags.cuisine.split(';')[0].replace(/_/g, ' ')
           : undefined;

@@ -1,12 +1,11 @@
-import React, { useMemo, useState } from 'react';
-import { Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
-import { CommonActions } from '@react-navigation/native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import Slider from '@react-native-community/slider';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { Chip } from '../components/Chip';
+import WakeWindowRange from '../components/WakeWindowRange';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
@@ -17,6 +16,7 @@ const LOGO_WIDTH = LOGO_HEIGHT * 3;
 const bitsLogo = require('../../assets/logo.png');
 
 type Props = StackScreenProps<RootStackParamList, 'Preferences'>;
+
 const interestGroups = [
   {
     title: 'Active',
@@ -69,7 +69,7 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
-  const [radiusKm, setRadiusKm] = useState(state.prefs.radiusKm);
+  const [step, setStep] = useState(0);
   const [interestTags, setInterestTags] = useState<string[]>(state.prefs.interestTags || []);
   const [customInterests, setCustomInterests] = useState<string[]>(state.prefs.customInterests ?? []);
   const [interestInput, setInterestInput] = useState('');
@@ -77,11 +77,19 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
   const [lifestyle, setLifestyle] = useState(state.prefs.lifestyle ?? 'mixed');
   const [wakeStartTime, setWakeStartTime] = useState(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
   const [wakeEndTime, setWakeEndTime] = useState(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
+  const transition = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    transition.setValue(0);
+    Animated.timing(transition, {
+      toValue: 1,
+      duration: 220,
+      useNativeDriver: true,
+    }).start();
+  }, [step, transition]);
 
   const toggleInterest = (tag: string) => {
-    setInterestTags((prev) => (
-      prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag]
-    ));
+    setInterestTags((prev) => (prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag]));
   };
 
   const normalizeInterest = (value: string): string => value
@@ -98,11 +106,11 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
     setInterestInput('');
   };
 
-  const onContinue = () => {
+  const onFinish = () => {
     actions.setPrefs({
       openToGoingOut: state.prefs.openToGoingOut,
       allowSerendipity: state.prefs.allowSerendipity,
-      radiusKm,
+      radiusKm: state.prefs.radiusKm,
       interestTags,
       customInterests,
       lifestyle,
@@ -111,147 +119,140 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
       wakeEndTime: normalizeClockTime(wakeEndTime, '23:00'),
       themeMode: state.prefs.themeMode,
     });
-    actions.completeOnboarding();
-    // Reset the nav stack so the user lands on Home with a clean history
-    // (no back-arrow to onboarding screens).
-    navigation.dispatch(
-      CommonActions.reset({ index: 0, routes: [{ name: 'Home' }] }),
-    );
+    navigation.navigate('OnboardingComplete');
   };
+
+  const contentOpacity = transition;
+  const contentTranslate = transition.interpolate({
+    inputRange: [0, 1],
+    outputRange: [18, 0],
+  });
 
   return (
     <LinearGradient
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        <View style={styles.content}>
+      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+        <Animated.View style={[styles.content, { opacity: contentOpacity, transform: [{ translateY: contentTranslate }] }]}>
           <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
-          <Text style={styles.title}>Quick preferences</Text>
-          <Text style={styles.subtitle}>One tap each. You can change later.</Text>
-          <Text style={styles.sectionTitle}>Pick a few interests</Text>
-          {interestGroups.map((group) => (
-            <View key={group.title}>
-              <Text style={styles.groupLabel}>{group.title}</Text>
+          <Text style={styles.stepLabel}>Step {step + 1} of 2</Text>
+          <Text style={styles.title}>{step === 0 ? 'Pick your interests' : 'Shape the rest'}</Text>
+          <Text style={styles.subtitle}>
+            {step === 0
+              ? 'Keep this quick. We use these to tailor the first ideas you see.'
+              : 'Set your rhythm so suggestions fit the way you actually live.'}
+          </Text>
+
+          {step === 0 ? (
+            <>
+              <Text style={styles.sectionTitle}>Choose a few that fit you</Text>
+              {interestGroups.map((group) => (
+                <View key={group.title}>
+                  <Text style={styles.groupLabel}>{group.title}</Text>
+                  <View style={styles.chipsWrap}>
+                    {group.options.map((interest) => (
+                      <Chip
+                        key={interest.id}
+                        label={interest.label}
+                        selected={interestTags.includes(interest.id)}
+                        onPress={() => toggleInterest(interest.id)}
+                      />
+                    ))}
+                  </View>
+                </View>
+              ))}
+
+              <Text style={styles.sectionTitle}>Add your own interests</Text>
+              <View style={styles.inlineRow}>
+                <TextInput
+                  style={styles.textInput}
+                  value={interestInput}
+                  onChangeText={setInterestInput}
+                  placeholder="e.g. pottery, climbing, stand-up comedy"
+                  placeholderTextColor={theme.colors.textMuted}
+                  returnKeyType="done"
+                  onSubmitEditing={addCustomInterest}
+                />
+                <Pressable onPress={addCustomInterest} style={styles.addPill}>
+                  <Text style={styles.addPillText}>Add</Text>
+                </Pressable>
+              </View>
+              {customInterests.length > 0 && (
+                <View style={styles.chipsWrap}>
+                  {customInterests.map((item) => (
+                    <Chip
+                      key={item}
+                      label={`#${item.replace(/_/g, ' ')}`}
+                      selected
+                      onPress={() => {
+                        setCustomInterests((prev) => prev.filter((x) => x !== item));
+                        setInterestTags((prev) => prev.filter((x) => x !== item));
+                      }}
+                    />
+                  ))}
+                </View>
+              )}
+            </>
+          ) : (
+            <>
+              <Text style={styles.sectionTitle}>Your lifestyle</Text>
               <View style={styles.chipsWrap}>
-                {group.options.map((interest) => (
+                {[
+                  { id: 'active', label: 'Active' },
+                  { id: 'moderate', label: 'Moderate' },
+                  { id: 'chill', label: 'Chill' },
+                  { id: 'mixed', label: 'Mixed' },
+                ].map((item) => (
                   <Chip
-                    key={interest.id}
-                    label={interest.label}
-                    selected={interestTags.includes(interest.id)}
-                    onPress={() => toggleInterest(interest.id)}
+                    key={item.id}
+                    label={item.label}
+                    selected={lifestyle === item.id}
+                    onPress={() => setLifestyle(item.id as 'active' | 'moderate' | 'chill' | 'mixed')}
                   />
                 ))}
               </View>
-            </View>
-          ))}
-          <Text style={styles.sectionTitle}>Radius — {radiusKm} km</Text>
-          <Slider
-            style={styles.slider}
-            minimumValue={1}
-            maximumValue={25}
-            step={1}
-            value={radiusKm}
-            onValueChange={setRadiusKm}
-            minimumTrackTintColor={theme.colors.accent}
-            maximumTrackTintColor={theme.colors.border}
-            thumbTintColor={theme.colors.accent}
-          />
-          <View style={styles.sliderLabels}>
-            <Text style={styles.sliderLabel}>1 km</Text>
-            <Text style={styles.sliderLabel}>25 km</Text>
-          </View>
 
-          <Text style={styles.sectionTitle}>Add your own interests</Text>
-          <View style={styles.inlineRow}>
-            <TextInput
-              style={styles.textInput}
-              value={interestInput}
-              onChangeText={setInterestInput}
-              placeholder="e.g. pottery, climbing, stand-up comedy"
-              placeholderTextColor={theme.colors.textMuted}
-              returnKeyType="done"
-              onSubmitEditing={addCustomInterest}
-            />
-            <Pressable onPress={addCustomInterest} style={styles.addPill}>
-              <Text style={styles.addPillText}>Add</Text>
-            </Pressable>
-          </View>
-          {customInterests.length > 0 && (
-            <View style={styles.chipsWrap}>
-              {customInterests.map((item) => (
-                <Chip
-                  key={item}
-                  label={`#${item.replace(/_/g, ' ')}`}
-                  selected
-                  onPress={() => {
-                    setCustomInterests((prev) => prev.filter((x) => x !== item));
-                    setInterestTags((prev) => prev.filter((x) => x !== item));
+              <Text style={styles.sectionTitle}>Tell us about your daily life</Text>
+              <TextInput
+                style={styles.textArea}
+                value={selfDescription}
+                onChangeText={setSelfDescription}
+                placeholder="What do your days look like? What energizes you? What do you usually avoid?"
+                placeholderTextColor={theme.colors.textMuted}
+                multiline
+                textAlignVertical="top"
+                maxLength={420}
+              />
+
+              <Text style={styles.sectionTitle}>Wake window</Text>
+              <Text style={styles.helperText}>This can wrap around midnight, so early mornings and late nights both work.</Text>
+              <View style={styles.wakeWindowContainer}>
+                <WakeWindowRange
+                  start={wakeStartTime}
+                  end={wakeEndTime}
+                  onChange={(start, end) => {
+                    setWakeStartTime(start);
+                    setWakeEndTime(end);
                   }}
                 />
-              ))}
-            </View>
+              </View>
+            </>
           )}
+        </Animated.View>
 
-          <Text style={styles.sectionTitle}>Your lifestyle</Text>
-          <View style={styles.chipsWrap}>
-            {[
-              { id: 'active', label: 'Active' },
-              { id: 'moderate', label: 'Moderate' },
-              { id: 'chill', label: 'Chill' },
-              { id: 'mixed', label: 'Mixed' },
-            ].map((item) => (
-              <Chip
-                key={item.id}
-                label={item.label}
-                selected={lifestyle === item.id}
-                onPress={() => setLifestyle(item.id as 'active' | 'moderate' | 'chill' | 'mixed')}
-              />
-            ))}
-          </View>
-
-          <Text style={styles.sectionTitle}>Tell us about your daily life</Text>
-          <TextInput
-            style={styles.textArea}
-            value={selfDescription}
-            onChangeText={setSelfDescription}
-            placeholder="What do your days look like? What energizes you? What do you usually avoid?"
-            placeholderTextColor={theme.colors.textMuted}
-            multiline
-            textAlignVertical="top"
-            maxLength={420}
-          />
-
-          <Text style={styles.sectionTitle}>Wake window</Text>
-          <Text style={styles.helperText}>Used to keep suggestions away from sleep time unless you are already awake irregularly.</Text>
-          <View style={styles.inlineRow}>
-            <TextInput
-              style={styles.timeInput}
-              value={wakeStartTime}
-              onChangeText={setWakeStartTime}
-              placeholder="07:00"
-              placeholderTextColor={theme.colors.textMuted}
-              keyboardType="number-pad"
-              maxLength={5}
-            />
-            <Text style={styles.timeDash}>to</Text>
-            <TextInput
-              style={styles.timeInput}
-              value={wakeEndTime}
-              onChangeText={setWakeEndTime}
-              placeholder="23:00"
-              placeholderTextColor={theme.colors.textMuted}
-              keyboardType="number-pad"
-              maxLength={5}
-            />
-          </View>
+        <View style={styles.buttonRow}>
+          {step === 1 ? (
+            <PrimaryButton label="Back" onPress={() => setStep(0)} variant="muted" style={styles.secondaryButton} />
+          ) : (
+            <View style={styles.secondaryButton} />
+          )}
+          {step === 0 ? (
+            <PrimaryButton label="Next" onPress={() => setStep(1)} style={styles.primaryButton} />
+          ) : (
+            <PrimaryButton label="Finish setup" onPress={onFinish} style={styles.primaryButton} />
+          )}
         </View>
-        <View style={styles.buttonSpacer} />
-        <PrimaryButton label="Continue" onPress={onContinue} style={styles.button} />
       </ScrollView>
     </LinearGradient>
   );
@@ -274,6 +275,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     height: LOGO_HEIGHT,
     marginBottom: theme.spacing.lg,
   },
+  stepLabel: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.accentDark,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
   title: {
     fontFamily: theme.fonts.heading,
     fontSize: 30,
@@ -285,21 +293,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     marginTop: theme.spacing.sm,
   },
-  section: {
-    marginTop: theme.spacing.lg,
-    padding: theme.spacing.md,
-    borderRadius: theme.radius.md,
-    backgroundColor: theme.colors.card,
-  },
   sectionTitle: {
     fontFamily: theme.fonts.semibold,
     fontSize: 14,
     marginTop: theme.spacing.lg,
     color: theme.colors.textMuted,
-  },
-  chips: {
-    flexDirection: 'row',
-    marginTop: theme.spacing.sm,
   },
   chipsWrap: {
     flexDirection: 'row',
@@ -314,26 +312,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: theme.spacing.md,
     marginBottom: 2,
     opacity: 0.7,
-  },
-  button: {
-    marginBottom: theme.spacing.xl,
-  },
-  buttonSpacer: {
-    height: theme.spacing.lg,
-  },
-  slider: {
-    width: '100%',
-    height: 40,
-    marginTop: theme.spacing.sm,
-  },
-  sliderLabels: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-  },
-  sliderLabel: {
-    fontFamily: theme.fonts.body,
-    fontSize: 11,
-    color: theme.colors.textMuted,
   },
   inlineRow: {
     flexDirection: 'row',
@@ -380,20 +358,20 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: 12,
   },
-  timeInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: theme.colors.text,
-    fontFamily: theme.fonts.body,
-    backgroundColor: theme.colors.card,
-    textAlign: 'center',
+  wakeWindowContainer: {
+    marginVertical: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
   },
-  timeDash: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.textMuted,
+  buttonRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.xl,
+    marginBottom: theme.spacing.xl,
+  },
+  primaryButton: {
+    flex: 1,
+  },
+  secondaryButton: {
+    flex: 1,
   },
 });

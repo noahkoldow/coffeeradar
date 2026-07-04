@@ -12,6 +12,7 @@ import {
 } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 import { BusinessProfile, BusinessCategory } from '../types/business';
+import { BusinessHeader } from '../components/BusinessHeader';
 
 interface BusinessAccountCreationProps {
   onComplete: (profile: Partial<BusinessProfile>) => void;
@@ -100,7 +101,9 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
   };
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
+    <View style={styles.outerContainer}>
+      <BusinessHeader showSettingsIcon={false} />
+      <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
       {/* Header */}
       <View style={styles.headerSection}>
         <Text style={styles.headerTitle}>Create Your Business Account</Text>
@@ -317,6 +320,7 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
         </Text>
       </View>
     </ScrollView>
+    </View>
   );
 };
 
@@ -324,6 +328,10 @@ export default BusinessAccountCreationScreen;
 
 const createStyles = (theme: ReturnType<typeof useTheme>) =>
   StyleSheet.create({
+    outerContainer: {
+      flex: 1,
+      backgroundColor: theme.colors.background,
+    },
     container: {
       flex: 1,
       backgroundColor: theme.colors.background,

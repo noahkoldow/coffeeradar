@@ -117,12 +117,12 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Monthly Spending</Text>
           <View style={styles.sparklineContainer}>
-            <View style={styles.sparklineBar} style={[{ height: '40%' }]} />
-            <View style={styles.sparklineBar} style={[{ height: '55%' }]} />
-            <View style={styles.sparklineBar} style={[{ height: '50%' }]} />
-            <View style={styles.sparklineBar} style={[{ height: '70%' }]} />
-            <View style={styles.sparklineBar} style={[{ height: '65%' }]} />
-            <View style={styles.sparklineBar} style={[{ height: '80%' }]} />
+            <View style={[styles.sparklineBar, { height: '40%' }]} />
+            <View style={[styles.sparklineBar, { height: '55%' }]} />
+            <View style={[styles.sparklineBar, { height: '50%' }]} />
+            <View style={[styles.sparklineBar, { height: '70%' }]} />
+            <View style={[styles.sparklineBar, { height: '65%' }]} />
+            <View style={[styles.sparklineBar, { height: '80%' }]} />
           </View>
           <View style={styles.spendingStats}>
             <View style={styles.statItem}>

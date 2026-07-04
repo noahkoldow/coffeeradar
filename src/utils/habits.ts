@@ -1,4 +1,5 @@
 import { Habit, HabitFrequency, HabitTimeOfDay, Suggestion } from '../types';
+import { getTimeZoneParts } from './time';
 
 const frequencyDays: Record<HabitFrequency, number> = {
   daily: 1,
@@ -104,9 +105,11 @@ export const weeklyDots = (habit: Habit, now = new Date()): boolean[] => {
   return result;
 };
 
-export const matchesTimeOfDay = (habit: Habit, now = new Date()): boolean => {
+export const matchesTimeOfDay = (habit: Habit, now = new Date(), timeZone?: string | null): boolean => {
   if (habit.timeOfDay === 'any') return true;
-  const hour = now.getHours();
+  // Get local hour using proper timezone handling (not UTC)
+  const parts = getTimeZoneParts(now, timeZone);
+  const hour = parts.hour;
   if (habit.timeOfDay === 'morning') return hour >= 5 && hour < 12;
   if (habit.timeOfDay === 'afternoon') return hour >= 12 && hour < 17;
   if (habit.timeOfDay === 'evening') return hour >= 17 && hour < 23;
@@ -138,12 +141,14 @@ const getScheduledHour = (habit: Habit): number | null => {
  */
 export type HabitUrgency = 'approaching' | 'overdue' | 'normal';
 
-export const getHabitUrgency = (habit: Habit, now = new Date()): HabitUrgency => {
+export const getHabitUrgency = (habit: Habit, now = new Date(), timeZone?: string | null): HabitUrgency => {
   if (!isHabitDue(habit, now)) return 'normal';
   const scheduledHour = getScheduledHour(habit);
   if (scheduledHour === null) return 'normal';
 
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
+  // Get local time using proper timezone handling (not UTC)
+  const parts = getTimeZoneParts(now, timeZone);
+  const currentMinutes = parts.hour * 60 + parts.minute;
   const scheduledMinutes = scheduledHour * 60;
 
   if (currentMinutes >= scheduledMinutes) {

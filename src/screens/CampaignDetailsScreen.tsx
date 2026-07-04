@@ -6,12 +6,14 @@ import {
   Text,
   View,
   Pressable,
+  Image,
 } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
+import { useAppState } from '../state/AppState';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { getCampaign, pauseCampaign, resumeCampaign, endCampaign } from '../services/campaigns';
 import { Campaign, CampaignStatus } from '../types/business';
@@ -43,6 +45,9 @@ export const CampaignDetailsScreen: React.FC<DetailScreenProps> = ({
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(true);
   const [updating, setUpdating] = useState(false);
+  const { state } = useAppState();
+  const [imgNaturalSize, setImgNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [mediaLayout, setMediaLayout] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
 
   useEffect(() => {
     const loadCampaign = async () => {
@@ -58,6 +63,12 @@ export const CampaignDetailsScreen: React.FC<DetailScreenProps> = ({
 
     loadCampaign();
   }, [campaignId]);
+
+  useEffect(() => {
+    if (!campaign?.media?.[0]?.url) return;
+    const uri = campaign.media[0].url;
+    Image.getSize(uri, (w, h) => setImgNaturalSize({ width: w, height: h }), () => {});
+  }, [campaign?.media?.[0]?.url]);
 
   const handlePause = async () => {
     if (!campaign) return;
@@ -150,6 +161,48 @@ export const CampaignDetailsScreen: React.FC<DetailScreenProps> = ({
           </Pressable>
           <View style={styles.headerSpacer} />
         </View>
+
+        {/* Media Preview */}
+        {campaign.media?.[0]?.url ? (
+          <View
+            style={styles.mediaPreview}
+            onLayout={(e) => setMediaLayout({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+          >
+            {(() => {
+              const media = campaign.media![0];
+              const focalX = media.focalX ?? 0.5;
+              const focalY = media.focalY ?? 0.5;
+              if (!imgNaturalSize || mediaLayout.width === 0) {
+                return <Image source={{ uri: media.url }} style={styles.mediaFull} />;
+              }
+
+              const iw = imgNaturalSize.width;
+              const ih = imgNaturalSize.height;
+              const cw = mediaLayout.width;
+              const ch = mediaLayout.height;
+              const scale = Math.max(cw / iw, ch / ih);
+              const sw = iw * scale;
+              const sh = ih * scale;
+
+              const desiredCenterX = focalX * sw;
+              const desiredCenterY = focalY * sh;
+              let translateX = Math.round(cw / 2 - desiredCenterX);
+              let translateY = Math.round(ch / 2 - desiredCenterY);
+
+              const maxOffsetX = Math.max(0, sw - cw);
+              const maxOffsetY = Math.max(0, sh - ch);
+              translateX = Math.max(-maxOffsetX, Math.min(0, translateX));
+              translateY = Math.max(-maxOffsetY, Math.min(0, translateY));
+
+              return (
+                <Image
+                  source={{ uri: media.url }}
+                  style={{ position: 'absolute', width: sw, height: sh, left: translateX, top: translateY }}
+                />
+              );
+            })()}
+          </View>
+        ) : null}
 
         {/* Title & Status */}
         <View style={styles.titleSection}>
@@ -389,6 +442,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       fontSize: 16,
       color: theme.colors.text,
       marginBottom: theme.spacing.md,
+    },
+    mediaPreview: {
+      width: '100%',
+      height: 220,
+      borderRadius: theme.radius.md,
+      overflow: 'hidden',
+      marginBottom: theme.spacing.lg,
+      backgroundColor: theme.colors.backgroundAlt,
+    },
+    mediaFull: {
+      width: '100%',
+      height: '100%',
+      resizeMode: 'cover',
     },
     metricsGrid: {
       flexDirection: 'row',

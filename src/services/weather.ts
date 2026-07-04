@@ -5,7 +5,7 @@
 
 import { addDebugMessage } from './debug';
 
-export type WeatherCondition = 'clear' | 'cloudy' | 'rain' | 'snow' | 'unknown';
+export type WeatherCondition = 'clear' | 'cloudy' | 'drizzle' | 'rain' | 'snow' | 'unknown';
 
 export type WeatherInfo = {
   temperatureC: number;
@@ -40,10 +40,10 @@ const WMO_CONDITIONS: Record<number, { condition: WeatherCondition; label: strin
   3: { condition: 'cloudy', label: 'Overcast' },
   45: { condition: 'cloudy', label: 'Foggy' },
   48: { condition: 'cloudy', label: 'Icy fog' },
-  51: { condition: 'rain', label: 'Light drizzle' },
-  53: { condition: 'rain', label: 'Drizzle' },
+  51: { condition: 'drizzle', label: 'Light drizzle' },
+  53: { condition: 'drizzle', label: 'Drizzle' },
   55: { condition: 'rain', label: 'Heavy drizzle' },
-  56: { condition: 'rain', label: 'Freezing drizzle' },
+  56: { condition: 'drizzle', label: 'Freezing drizzle' },
   57: { condition: 'rain', label: 'Heavy freezing drizzle' },
   61: { condition: 'rain', label: 'Light rain' },
   63: { condition: 'rain', label: 'Rain' },
@@ -68,7 +68,8 @@ const computeIndoorBias = (condition: WeatherCondition, temperatureC: number): n
   let bias = 0;
 
   // Weather condition factor
-  if (condition === 'rain') bias += 0.6;
+  if (condition === 'drizzle') bias += 0.28;
+  else if (condition === 'rain') bias += 0.6;
   else if (condition === 'snow') bias += 0.7;
   else if (condition === 'cloudy') bias += 0.15;
   // clear = 0
@@ -97,7 +98,7 @@ export const fetchWeather = async (lat: number, lng: number): Promise<WeatherInf
   try {
     const url =
       `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lng}` +
-      `&current=temperature_2m,weather_code&timezone=auto`;
+      `&current=temperature_2m,weather_code,precipitation&timezone=auto`;
 
     const response = await fetch(url);
     if (!response.ok) {
@@ -114,7 +115,11 @@ export const fetchWeather = async (lat: number, lng: number): Promise<WeatherInf
 
     const temperatureC = current.temperature_2m ?? 20;
     const weatherCode: number = current.weather_code ?? 0;
-    const wmo = WMO_CONDITIONS[weatherCode] ?? { condition: 'unknown' as WeatherCondition, label: 'Unknown' };
+    const precipitationMm = typeof current.precipitation === 'number' ? current.precipitation : 0;
+    const mapped = WMO_CONDITIONS[weatherCode] ?? { condition: 'unknown' as WeatherCondition, label: 'Unknown' };
+    const wmo = mapped.condition === 'rain' && precipitationMm > 0 && precipitationMm < 1
+      ? { condition: 'drizzle' as WeatherCondition, label: 'Light drizzle' }
+      : mapped;
     const indoorBias = computeIndoorBias(wmo.condition, temperatureC);
 
     const result: WeatherInfo = {

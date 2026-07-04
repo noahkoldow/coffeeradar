@@ -3,6 +3,7 @@ import {
   ActivityLog,
   Availability,
   DeckSuggestion,
+  Suggestion,
   Habit,
   HistoryState,
   LocationProfile,
@@ -10,6 +11,7 @@ import {
   PermissionsState,
   SavedSuggestion,
   ScheduledActivity,
+  SmartTodoItem,
   TagAffinities,
   UserPrefs,
 } from '../types';
@@ -34,6 +36,12 @@ import {
   loadSavedSuggestions,
   saveScheduledActivities,
   saveSavedSuggestions,
+  loadIsBusinessOnly,
+  loadSmartTodos,
+  saveIsBusinessOnly,
+  saveSmartTodos,
+  loadSwipeBank,
+  saveSwipeBank,
 } from '../utils/storage';
 import { getCalendarPermissionStatus, getUpcomingEvents } from '../services/calendar';
 import { getLocationPermissionStatus } from '../services/location';
@@ -46,6 +54,7 @@ import { rescheduleHabitReminders } from '../services/notifications';
 import {
   loadFirebaseAffinities,
   loadFirebaseLocationProfile,
+  loadFirebaseOnboardingComplete,
   syncTagAffinities,
   syncLocationProfile,
   syncHabits,
@@ -54,8 +63,16 @@ import {
   loadFirebaseProfileContext,
   syncSavedSuggestions,
   syncUserProfileContext,
+  persistOnboardingComplete,
 } from '../services/user';
-import { setPreferredTimeZone } from '../utils/time';
+import { setPreferredTimeZone, initializeDeviceTimeZone } from '../utils/time';
+
+// Swipe bank config
+const SWIPE_BANK_DEFAULT = 20;
+const RECHARGE_INTERVAL_MIN = 10; // minutes per credit
+const RECHARGE_PER_INTERVAL = 1; // credits per interval
+const OVERFLOW_DECAY_PER_HOUR = 0.5; // unchanged decay behaviour
+const BONUS_PER_MIN = 1 / 30; // y swipes per minute of completed task (1 swipe per 30m)
 
 const defaultPrefs: UserPrefs = {
   openToGoingOut: true,
@@ -101,13 +118,19 @@ type AppState = {
   enabledCalendars: string[];
   preloadedDeck: { deck: DeckSuggestion[]; usedFallback: boolean } | null;
   deckLoading: boolean;
+  geminiPool: Suggestion[];
+  deckIndex: number;
   tagAffinities: TagAffinities;
   locationProfile: LocationProfile | null;
   scheduledActivities: ScheduledActivity[];
   savedSuggestions: SavedSuggestion[];
+  smartTodos: SmartTodoItem[];
+  swipeBank: { current: number; max: number };
+  bankTimerRef: React.MutableRefObject<ReturnType<typeof setInterval> | null>;
   accountType: 'consumer' | 'business';
   businessProfile: BusinessProfile | null;
   businessMode: boolean;
+  isBusinessOnly: boolean;
 };
 
 type AppActions = {
@@ -128,16 +151,25 @@ type AppActions = {
   completeOnboarding: () => void;
   preloadDeck: (availability: Availability, durationOverride?: number | null) => void;
   consumeDeck: () => { deck: DeckSuggestion[]; usedFallback: boolean } | null;
+  consumeGeminiForDeck: () => { suggestions: Suggestion[]; max: number; isFirstDeck: boolean };
+  initGeminiPool: (allGemini: Suggestion[], usedIds: Set<string>) => void;
   setTagAffinities: (value: TagAffinities) => void;
   setLocationProfile: (value: LocationProfile | null) => void;
   addScheduledActivity: (item: ScheduledActivity) => void;
   removeScheduledActivity: (id: string) => void;
   saveSuggestion: (item: SavedSuggestion) => void;
   removeSavedSuggestion: (id: string) => void;
+  addSmartTodo: (item: SmartTodoItem) => void;
+  updateSmartTodo: (item: SmartTodoItem) => void;
+  removeSmartTodo: (id: string) => void;
+  toggleSmartTodoDone: (id: string) => void;
+  spendSwipe: () => boolean;
+  addSwipes: (n: number) => void;
   resetData: () => Promise<void>;
   switchToBusinessMode: (profile: BusinessProfile) => void;
   switchToConsumerMode: () => void;
   setBusinessProfile: (profile: BusinessProfile | null) => void;
+  setIsBusinessOnly: (value: boolean) => void;
 };
 
 const AppStateContext = createContext<{ state: AppState; actions: AppActions } | undefined>(undefined);
@@ -162,9 +194,15 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [locationProfile, setLocationProfileState] = useState<LocationProfile | null>(null);
   const [scheduledActivities, setScheduledActivitiesState] = useState<ScheduledActivity[]>([]);
   const [savedSuggestions, setSavedSuggestionsState] = useState<SavedSuggestion[]>([]);
+  const [smartTodos, setSmartTodosState] = useState<SmartTodoItem[]>([]);
+  const [swipeBank, setSwipeBank] = useState<{ current: number; max: number }>({ current: 20, max: 20 });
+  const [swipeBankLastUpdated, setSwipeBankLastUpdated] = useState<number>(Date.now());
+  const [geminiPool, setGeminiPool] = useState<Suggestion[]>([]);
+  const [deckIndex, setDeckIndex] = useState(0);
   const [accountType, setAccountType] = useState<'consumer' | 'business'>('consumer');
   const [businessProfile, setBusinessProfileState] = useState<BusinessProfile | null>(null);
   const [businessMode, setBusinessMode] = useState(false);
+  const [isBusinessOnly, setIsBusinessOnlyState] = useState(false);
 
   // Refs for preloadDeck so it always reads the latest values without
   // being a useMemo dependency (which would cause infinite re-renders).
@@ -174,7 +212,51 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions]);
   const preloadedDeckRef = useRef(preloadedDeck);
   useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
+  const geminiPoolRef = useRef<Suggestion[]>([]);
+  const deckIndexRef = useRef(0);
+  useEffect(() => { geminiPoolRef.current = geminiPool; }, [geminiPool]);
+  useEffect(() => { deckIndexRef.current = deckIndex; }, [deckIndex]);
   const deckBuildId = useRef(0);
+
+  /**
+   * Consume Gemini budget for the current deck.
+   * Deck 0 (first ever): signal caller to use the API; subsequent decks draw from cached pool.
+   * Distribution: deck1 ≈ 2/3 of pool, deck2 = rest, deck3+ = none (e.g. 5 total → 2,2,1,0).
+   */
+  const computeGeminiForDeck = useCallback((): { suggestions: Suggestion[]; max: number; isFirstDeck: boolean } => {
+    const idx = deckIndexRef.current;
+    if (idx === 0) {
+      deckIndexRef.current = 1;
+      setDeckIndex(1);
+      return { suggestions: [], max: 2, isFirstDeck: true };
+    }
+    const pool = geminiPoolRef.current;
+    const n = idx === 1
+      ? Math.ceil(pool.length * 2 / 3)
+      : (idx === 2 ? pool.length : 0);
+    const toUse = pool.slice(0, n);
+    const remaining = pool.slice(n);
+    geminiPoolRef.current = remaining;
+    deckIndexRef.current = idx + 1;
+    setGeminiPool(remaining);
+    setDeckIndex(idx + 1);
+    return { suggestions: toUse, max: n, isFirstDeck: false };
+  }, []);
+
+  /** Store unused Gemini suggestions after deck 0 for distribution across later decks. */
+  const storeGeminiPool = useCallback((allGemini: Suggestion[], usedIds: Set<string>) => {
+    const unused = allGemini.filter((g) => !usedIds.has(g.id));
+    geminiPoolRef.current = unused;
+    setGeminiPool(unused);
+  }, []);
+  // Swipe bank timing refs
+  const lastUpdatedRef = useRef<number>(Date.now());
+  const bankTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Initialize device timezone on app startup
+  useEffect(() => {
+    initializeDeviceTimeZone();
+  }, []);
 
   useEffect(() => {
     if (!firebaseEnabled) {
@@ -213,6 +295,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setHabitsState([]);
           setActivityLogState([]);
           setEnabledCalendarsState([]);
+          setSmartTodosState([]);
           setOnboardingComplete(false);
           setAvailabilityState(null);
           setLocationState(defaultLocation);
@@ -229,15 +312,18 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           storedAffinities,
           storedScheduled,
           storedSaved,
+          storedSmartTodos,
+          storedIsBusinessOnly,
           guestPrefs,
           guestHistory,
           guestCalendars,
-          guestOnboarding,
           guestHabits,
           guestActivity,
           guestAffinities,
           guestScheduled,
           guestSaved,
+          guestSmartTodos,
+          guestIsBusinessOnly,
         ] = await Promise.all([
           loadPrefs(userId),
           loadHistory(userId),
@@ -248,6 +334,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadTagAffinities(userId),
           loadScheduledActivities(userId),
           loadSavedSuggestions(userId),
+          loadSmartTodos(userId),
+          loadIsBusinessOnly(userId),
           loadPrefs(null),
           loadHistory(null),
           loadEnabledCalendars(null),
@@ -257,6 +345,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadTagAffinities(null),
           loadScheduledActivities(null),
           loadSavedSuggestions(null),
+          loadSmartTodos(null),
+          loadIsBusinessOnly(null),
         ]);
         // Try loading from Firestore (cloud-first for cross-device sync)
         const [fbAffinities, fbLocProfile, fbSaved, fbProfileContext] = await Promise.all([
@@ -265,6 +355,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadFirebaseSavedSuggestions().catch(() => null),
           loadFirebaseProfileContext().catch(() => null),
         ]);
+        const firebaseOnboardingComplete = await loadFirebaseOnboardingComplete().catch(() => null);
         if (!active) return;
 
         const hasStoredProfile = !!(
@@ -273,17 +364,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           (storedActivity && storedActivity.length) ||
           (storedAffinities && Object.keys(storedAffinities).length) ||
           (storedScheduled && storedScheduled.length) ||
-          (storedSaved && storedSaved.length)
+          (storedSaved && storedSaved.length) ||
+          (storedSmartTodos && storedSmartTodos.length)
         );
-        const hasGuestProfile = !!(
-          guestPrefs || guestHistory || guestCalendars || guestOnboarding ||
-          (guestHabits && guestHabits.length) ||
-          (guestActivity && guestActivity.length) ||
-          (guestAffinities && Object.keys(guestAffinities).length) ||
-          (guestScheduled && guestScheduled.length) ||
-          (guestSaved && guestSaved.length)
-        );
-
         if (storedPrefs) {
           setPrefsState({
             ...defaultPrefs,
@@ -313,7 +396,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         else setEnabledCalendarsState(guestCalendars ?? []);
         // Merge: prefer Firebase habits, fall back to local, migrate legacy fields
         const fbHabits = await loadFirebaseHabits().catch(() => null);
-        const rawHabits = fbHabits ?? storedHabits ?? guestHabits ?? [];
+        const rawHabits = (fbHabits ?? storedHabits ?? guestHabits ?? []) as Habit[];
         const migratedHabits = rawHabits.map(migrateHabit);
         setHabitsState(migratedHabits);
         // Sync migrated back to local cache
@@ -333,33 +416,62 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setScheduledActivitiesState(storedScheduled ?? guestScheduled ?? []);
         const mergedSaved = fbSaved ?? storedSaved ?? guestSaved ?? [];
         setSavedSuggestionsState(mergedSaved);
+        setSmartTodosState(storedSmartTodos ?? guestSmartTodos ?? []);
         if (fbSaved && !storedSaved) {
           saveSavedSuggestions(fbSaved, userId).catch(() => undefined);
         }
 
+        // Load business only mode preference
+        const isBusinessOnly = storedIsBusinessOnly ?? guestIsBusinessOnly ?? false;
+        setIsBusinessOnlyState(isBusinessOnly);
+
         const hasCloudProfile = !!(fbAffinities || fbLocProfile || fbSaved || fbProfileContext || (fbHabits && fbHabits.length));
+        const hasFirebaseOnboardingComplete = firebaseOnboardingComplete === true;
         // For authenticated users logging in: if they have NO local data but have cloud profile,
         // they're a returning user and should skip onboarding. If they're brand-new, they'll have neither.
         const isReturningUserWithCloudData = userId && !hasStoredProfile && hasCloudProfile;
-        const shouldSkipOnboarding = storedOnboarding || guestOnboarding || hasStoredProfile || hasGuestProfile || hasCloudProfile || isReturningUserWithCloudData;
+        
+        // SKIP ONBOARDING if:
+        // 1. User has local onboarding flag OR
+        // 2. User has any local profile data OR  
+        // 3. User has any cloud/Firestore data (returning user)
+        // This ensures users who login with existing Discord/Firebase accounts skip onboarding
+        const shouldSkipOnboarding = 
+          storedOnboarding || 
+          hasStoredProfile || 
+          hasCloudProfile ||
+          hasFirebaseOnboardingComplete ||
+          isReturningUserWithCloudData ||
+          !!(userId && (fbAffinities || fbLocProfile || fbSaved || fbHabits?.length));
+          
         setOnboardingComplete(shouldSkipOnboarding);
 
         // If we detected a returning user via cloud data, cache the onboarding flag locally so future logins are faster
-        if (isReturningUserWithCloudData && !storedOnboarding) {
+        if ((isReturningUserWithCloudData || hasFirebaseOnboardingComplete) && !storedOnboarding) {
           saveOnboardingComplete(true, userId).catch(() => undefined);
         }
+
+        const hasGuestProfile = !!(
+          guestPrefs || guestHistory || guestCalendars ||
+          (guestHabits && guestHabits.length) ||
+          (guestActivity && guestActivity.length) ||
+          (guestAffinities && Object.keys(guestAffinities).length) ||
+          (guestScheduled && guestScheduled.length) ||
+          (guestSaved && guestSaved.length) ||
+          (guestSmartTodos && guestSmartTodos.length)
+        );
 
         if (userId && !hasStoredProfile && hasGuestProfile) {
           await Promise.all([
             savePrefs(guestPrefs ?? defaultPrefs, userId),
             saveHistory(guestHistory ?? defaultHistory, userId),
             saveEnabledCalendars(guestCalendars ?? [], userId),
-            saveOnboardingComplete(true, userId),
             saveHabits(migratedHabits, userId),
             saveActivityLog(guestActivity ?? [], userId),
             saveTagAffinities(mergedAffinities, userId),
             saveScheduledActivities(guestScheduled ?? [], userId),
             saveSavedSuggestions(mergedSaved, userId),
+            saveSmartTodos(guestSmartTodos ?? [], userId),
           ]).catch(() => undefined);
         }
       } catch (error) {
@@ -373,6 +485,76 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => {
       active = false;
     };
+  }, [authChecked, userId]);
+
+  // Load swipe bank from storage when auth state is ready
+  useEffect(() => {
+    if (!authChecked) return;
+    (async () => {
+      try {
+        const stored = await loadSwipeBank(userId).catch(() => null);
+        const now = Date.now();
+        if (stored) {
+          const last = stored.lastUpdated ? new Date(stored.lastUpdated).getTime() : now;
+          const elapsedMin = Math.max(0, Math.floor((now - last) / 60000));
+          let current = stored.current;
+          const max = stored.max ?? SWIPE_BANK_DEFAULT;
+          if (current <= max) {
+            const toAdd = Math.floor(elapsedMin / RECHARGE_INTERVAL_MIN) * RECHARGE_PER_INTERVAL;
+            current = Math.min(max, current + toAdd);
+          } else {
+            const elapsedHours = Math.max(0, (now - last) / 3600000);
+            current = current - elapsedHours * OVERFLOW_DECAY_PER_HOUR;
+            current = Math.max(max, current);
+          }
+          const bank = { current: Math.round(current), max };
+          setSwipeBank(bank);
+          lastUpdatedRef.current = last + Math.floor(elapsedMin / RECHARGE_INTERVAL_MIN) * RECHARGE_INTERVAL_MIN * 60000;
+          setSwipeBankLastUpdated(lastUpdatedRef.current);
+          saveSwipeBank({ ...bank, lastUpdated: new Date(lastUpdatedRef.current).toISOString() }, userId).catch(() => undefined);
+        } else {
+          const bank = { current: SWIPE_BANK_DEFAULT, max: SWIPE_BANK_DEFAULT };
+          setSwipeBank(bank);
+          lastUpdatedRef.current = now;
+          setSwipeBankLastUpdated(now);
+          saveSwipeBank({ ...bank, lastUpdated: new Date(now).toISOString() }, userId).catch(() => undefined);
+        }
+      } catch {
+        const bank = { current: SWIPE_BANK_DEFAULT, max: SWIPE_BANK_DEFAULT };
+        setSwipeBank(bank);
+        lastUpdatedRef.current = Date.now();
+        setSwipeBankLastUpdated(lastUpdatedRef.current);
+      }
+    })();
+  }, [authChecked, userId]);
+
+  // Periodic tick: recharge or decay overflow gradually
+  useEffect(() => {
+    if (!authChecked) return;
+    if (bankTimerRef.current) clearInterval(bankTimerRef.current);
+    bankTimerRef.current = setInterval(() => {
+      const now = Date.now();
+      const elapsedMin = Math.max(0, Math.floor((now - lastUpdatedRef.current) / 60000));
+      if (elapsedMin < RECHARGE_INTERVAL_MIN) return;
+      const intervals = Math.floor(elapsedMin / RECHARGE_INTERVAL_MIN);
+      setSwipeBank((prev) => {
+        let current = prev.current;
+        const max = prev.max;
+        if (current <= max) {
+          current = Math.min(max, current + intervals * RECHARGE_PER_INTERVAL);
+        } else {
+          const elapsedHours = Math.max(0, (now - lastUpdatedRef.current) / 3600000);
+          current = Math.max(max, current - elapsedHours * OVERFLOW_DECAY_PER_HOUR);
+        }
+        const updated = { current: Math.round(current), max };
+        // advance lastUpdated by applied intervals
+        lastUpdatedRef.current = lastUpdatedRef.current + intervals * RECHARGE_INTERVAL_MIN * 60000;
+        setSwipeBankLastUpdated(lastUpdatedRef.current);
+        saveSwipeBank({ ...updated, lastUpdated: new Date(lastUpdatedRef.current).toISOString() }, userId).catch(() => undefined);
+        return updated;
+      });
+    }, 60 * 1000);
+    return () => { if (bankTimerRef.current) clearInterval(bankTimerRef.current); };
   }, [authChecked, userId]);
 
   const actions = useMemo<AppActions>(() => ({
@@ -482,7 +664,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     },
     completeOnboarding: () => {
       setOnboardingComplete(true);
-      saveOnboardingComplete(true, userId).catch(() => undefined);
+      persistOnboardingComplete(true).catch(() => undefined);
     },
     preloadDeck: (avail, durationOverride) => {
       const finalAvail = durationOverride
@@ -530,6 +712,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setPreloadedDeck(null);
       return result;
     },
+    consumeGeminiForDeck: computeGeminiForDeck,
+    initGeminiPool: (allGemini, usedIds) => storeGeminiPool(allGemini, usedIds),
     setTagAffinities: (value) => {
       setTagAffinitiesState(value);
       saveTagAffinities(value, userId).catch(() => undefined);
@@ -763,6 +947,58 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return updated;
       });
     },
+    addSmartTodo: (item) => {
+      setSmartTodosState((prev) => {
+        const updated = [item, ...prev].slice(0, 500);
+        saveSmartTodos(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
+    updateSmartTodo: (item) => {
+      setSmartTodosState((prev) => {
+        const updated = prev.map((todo) => (todo.id === item.id ? item : todo));
+        saveSmartTodos(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
+    removeSmartTodo: (id) => {
+      setSmartTodosState((prev) => {
+        const updated = prev.filter((todo) => todo.id !== id);
+        saveSmartTodos(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
+    toggleSmartTodoDone: (id) => {
+      setSmartTodosState((prev) => {
+        const updated = prev.map((todo) => (
+          todo.id === id ? { ...todo, done: !todo.done } : todo
+        ));
+        saveSmartTodos(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
+    spendSwipe: () => {
+      let consumed = false;
+      setSwipeBank((prev) => {
+        if (prev.current <= 0) return prev;
+        const updated = { ...prev, current: Math.max(0, prev.current - 1) };
+        lastUpdatedRef.current = Date.now();
+        setSwipeBankLastUpdated(lastUpdatedRef.current);
+        saveSwipeBank({ ...updated, lastUpdated: new Date(lastUpdatedRef.current).toISOString() }, userId).catch(() => undefined);
+        consumed = true;
+        return updated;
+      });
+      return consumed;
+    },
+    addSwipes: (n: number) => {
+      setSwipeBank((prev) => {
+        const updated = { ...prev, current: prev.current + n };
+        lastUpdatedRef.current = Date.now();
+        setSwipeBankLastUpdated(lastUpdatedRef.current);
+        saveSwipeBank({ ...updated, lastUpdated: new Date(lastUpdatedRef.current).toISOString() }, userId).catch(() => undefined);
+        return updated;
+      });
+    },
     resetData: async () => {
       await clearStorage(userId);
       setPrefsState(defaultPrefs);
@@ -778,6 +1014,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setLocationProfileState(null);
       setScheduledActivitiesState([]);
       setSavedSuggestionsState([]);
+      setSmartTodosState([]);
     },
     switchToBusinessMode: (profile) => {
       setBusinessProfileState(profile);
@@ -794,6 +1031,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       if (profile) {
         setAccountType('business');
       }
+    },
+    setIsBusinessOnly: (value) => {
+      setIsBusinessOnlyState(value);
+      saveIsBusinessOnly(value, userId).catch(() => undefined);
     },
   }), [userId]);
 
@@ -813,13 +1054,20 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     enabledCalendars,
     preloadedDeck,
     deckLoading,
+    geminiPool,
+    deckIndex,
     tagAffinities,
     locationProfile,
     scheduledActivities,
     savedSuggestions,
+    smartTodos,
+    bankTimerRef,
+    swipeBank,
+    swipeBankLastUpdated,
     accountType,
     businessProfile,
     businessMode,
+    isBusinessOnly,
   };
 
   return (

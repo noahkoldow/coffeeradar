@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,12 +7,18 @@ import {
   Pressable,
   FlatList,
   Dimensions,
+  Alert,
+  Animated,
+  Easing,
 } from 'react-native';
+import { StackScreenProps } from '@react-navigation/stack';
+import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { Campaign, CampaignStatus } from '../types/business';
+import { BusinessHeader } from '../components/BusinessHeader';
 
-interface BusinessDashboardProps {
+interface BusinessDashboardProps extends StackScreenProps<RootStackParamList, 'BusinessHub'> {
   businessName?: string;
   activeCampaigns?: number;
   totalImpressions?: number;
@@ -41,20 +47,58 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
   onCreateCampaign,
   onViewCampaigns,
   onViewAnalytics,
+  navigation,
 }) => {
   const theme = useTheme();
   const { state } = useAppState();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const businessProfile = state.businessProfile;
-  const resolvedBusinessName = businessName ?? businessProfile?.businessName ?? 'Your Business';
-  const resolvedActiveCampaigns = activeCampaigns ?? businessProfile?.metrics?.campaignsCount ?? 0;
-  const resolvedImpressions = totalImpressions ?? businessProfile?.metrics?.totalImpressions ?? 0;
-  const resolvedClicks = totalClicks ?? businessProfile?.metrics?.totalClicks ?? 0;
-  const resolvedConversions = totalConversions ?? businessProfile?.metrics?.totalConversions ?? 0;
   const resolvedCampaigns = recentCampaigns ?? [];
-  const handleCreateCampaign = onCreateCampaign ?? (() => {});
-  const handleViewCampaigns = onViewCampaigns ?? (() => {});
-  const handleViewAnalytics = onViewAnalytics ?? (() => {});
+  const resolvedBusinessName = businessName ?? businessProfile?.businessName ?? 'Your Business';
+  const resolvedActiveCampaigns = activeCampaigns ?? resolvedCampaigns.filter((campaign) => campaign.status === 'active').length;
+  const resolvedImpressions = totalImpressions ?? resolvedCampaigns.reduce((sum, campaign) => sum + (campaign.metrics?.impressions ?? 0), 0);
+  const resolvedClicks = totalClicks ?? resolvedCampaigns.reduce((sum, campaign) => sum + (campaign.metrics?.clicks ?? 0), 0);
+  const resolvedConversions = totalConversions ?? resolvedCampaigns.reduce((sum, campaign) => sum + (campaign.metrics?.conversions ?? 0), 0);
+  const pulseAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const pulse = Animated.loop(
+      Animated.sequence([
+        Animated.timing(pulseAnim, {
+          toValue: 1,
+          duration: 1100,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.timing(pulseAnim, {
+          toValue: 0,
+          duration: 1100,
+          easing: Easing.inOut(Easing.quad),
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    pulse.start();
+    return () => pulse.stop();
+  }, [pulseAnim]);
+
+  const pulseOpacity = pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [0.22, 0.72] });
+  const pulseScale = pulseAnim.interpolate({ inputRange: [0, 1], outputRange: [1, 1.02] });
+  const handleCreateCampaign = onCreateCampaign ?? (() => {
+    navigation.navigate('BusinessCampaignForm', undefined);
+  });
+  const handleViewCampaigns = onViewCampaigns ?? (() => {
+    navigation.navigate('BusinessCampaignsList', undefined);
+  });
+  const handleViewAnalytics = onViewAnalytics ?? (() => {
+    navigation.navigate('BusinessAnalytics', undefined);
+  });
+  const handleReviewIdeas = () => {
+    navigation.navigate('ApprovalQueue');
+  };
+  const handleOpenBusinessSettings = () => {
+    navigation.navigate('BusinessSettings');
+  };
 
   const kpiData = [
     { ...KPI_CARDS[0], value: resolvedActiveCampaigns.toString() },
@@ -92,7 +136,18 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
   };
 
   const renderCampaignItem = ({ item }: { item: Campaign }) => (
-    <View style={styles.campaignCard}>
+    <View style={styles.campaignCardWrap}>
+      <Animated.View
+        pointerEvents="none"
+        style={[
+          styles.campaignPulseBorder,
+          {
+            opacity: pulseOpacity,
+            transform: [{ scale: pulseScale }],
+          },
+        ]}
+      />
+      <View style={styles.campaignCard}>
       <View style={styles.campaignHeader}>
         <View style={styles.campaignTitleSection}>
           <Text style={styles.campaignTitle} numberOfLines={2}>
@@ -131,11 +186,17 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
           </View>
         </View>
       )}
+      </View>
     </View>
   );
 
   return (
-    <ScrollView style={styles.container} contentContainerStyle={styles.contentContainer}>
+    <View style={styles.container}>
+      <BusinessHeader 
+        onSettingsPress={handleOpenBusinessSettings}
+        showSettingsIcon={true}
+      />
+      <ScrollView style={styles.scroll} contentContainerStyle={styles.contentContainer}>
       {/* Welcome Header */}
       <View style={styles.headerSection}>
         <Text style={styles.greeting}>Welcome back,</Text>
@@ -178,11 +239,15 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
             <Text style={styles.quickActionIcon}>📊</Text>
             <Text style={styles.quickActionText}>Analytics</Text>
           </Pressable>
-          <Pressable onPress={() => {}} style={styles.quickAction}>
+          <Pressable onPress={() => navigation.navigate('BusinessAudience', undefined)} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>🎯</Text>
             <Text style={styles.quickActionText}>Audience</Text>
           </Pressable>
-          <Pressable onPress={() => {}} style={styles.quickAction}>
+          <Pressable onPress={handleReviewIdeas} style={styles.quickAction}>
+            <Text style={styles.quickActionIcon}>✍️</Text>
+            <Text style={styles.quickActionText}>Review Ideas</Text>
+          </Pressable>
+          <Pressable onPress={handleOpenBusinessSettings} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>⚙️</Text>
             <Text style={styles.quickActionText}>Settings</Text>
           </Pressable>
@@ -233,7 +298,8 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
           </Text>
         </View>
       </View>
-    </ScrollView>
+      </ScrollView>
+    </View>
   );
 };
 
@@ -244,6 +310,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     container: {
       flex: 1,
       backgroundColor: theme.colors.background,
+    },
+    scroll: {
+      flex: 1,
     },
     contentContainer: {
       paddingHorizontal: 16,
@@ -389,6 +458,25 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     recentCampaignsSection: {
       marginBottom: 28,
     },
+    campaignCardWrap: {
+      position: 'relative',
+      marginBottom: 10,
+    },
+    campaignPulseBorder: {
+      position: 'absolute',
+      top: -1,
+      right: -1,
+      bottom: -1,
+      left: -1,
+      borderRadius: 14,
+      borderWidth: 2,
+      borderColor: '#3B82F6',
+      shadowColor: '#3B82F6',
+      shadowOffset: { width: 0, height: 0 },
+      shadowOpacity: 0.45,
+      shadowRadius: 10,
+      elevation: 6,
+    },
     campaignCard: {
       paddingVertical: 12,
       paddingHorizontal: 14,
@@ -396,7 +484,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       borderRadius: 12,
       borderWidth: 1,
       borderColor: theme.colors.border,
-      marginBottom: 10,
+      marginBottom: 0,
     },
     campaignHeader: {
       flexDirection: 'row',

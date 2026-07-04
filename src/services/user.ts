@@ -2,6 +2,7 @@ import { collection, deleteDoc, doc, getDoc, getDocs, increment, limit, query, s
 import { Availability, Business, BusinessSubmission, BusinessSubmissionStatus, Habit, LocationProfile, SavedSuggestion, TagAffinities, UserPrefs } from '../types';
 import { auth, db, ensureAuth, firebaseEnabled } from './firebase';
 import { validateBusinessSubmission } from './businessService';
+import { saveOnboardingComplete } from '../utils/storage';
 
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
 
@@ -20,7 +21,7 @@ export const upsertUserData = async (payload: {
   if (!canSync()) return;
   try {
     const uid = await ensureAuth();
-    if (!uid) return;
+    if (!uid || !db) return;
     await setDoc(
       doc(db, 'users', uid),
       {
@@ -41,11 +42,47 @@ export const upsertUserData = async (payload: {
   }
 };
 
-export const deleteUserData = async (): Promise<void> => {
+export const persistOnboardingComplete = async (value: boolean): Promise<void> => {
   if (!canSync()) return;
   try {
     const uid = await ensureAuth();
     if (!uid) return;
+    await Promise.all([
+      saveOnboardingComplete(value, uid),
+      setDoc(
+        doc(db, 'users', uid),
+        {
+          onboardingComplete: value,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      ),
+    ]);
+  } catch (error) {
+    console.warn('Onboarding sync error', error);
+  }
+};
+
+export const loadFirebaseOnboardingComplete = async (): Promise<boolean | null> => {
+  if (!canSync()) return null;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return null;
+    const snap = await getDoc(doc(db, 'users', uid));
+    if (!snap.exists()) return null;
+    const value = snap.data()?.onboardingComplete;
+    return typeof value === 'boolean' ? value : null;
+  } catch (error) {
+    console.warn('Onboarding load error', error);
+    return null;
+  }
+};
+
+export const deleteUserData = async (): Promise<void> => {
+  if (!canSync()) return;
+  try {
+    const uid = await ensureAuth();
+    if (!uid || !db) return;
     await deleteDoc(doc(db, 'users', uid));
   } catch (error) {
     console.warn('User delete error', error);
@@ -371,10 +408,24 @@ const getAdminEmails = (): string[] => {
     .filter((item) => item.length > 0);
 };
 
+const getPremiumEmails = (): string[] => {
+  const raw = String(env.EXPO_PUBLIC_BUSINESS_PREMIUM_EMAILS ?? '');
+  return raw
+    .split(',')
+    .map((item) => item.trim().toLowerCase())
+    .filter((item) => item.length > 0);
+};
+
 export const isBusinessAdmin = (email?: string | null): boolean => {
   if (!email) return false;
   const normalized = email.trim().toLowerCase();
   return getAdminEmails().includes(normalized);
+};
+
+export const isBusinessPremium = (email?: string | null): boolean => {
+  if (!email) return false;
+  const normalized = email.trim().toLowerCase();
+  return getPremiumEmails().includes(normalized);
 };
 
 const toBusinessSubmission = (id: string, data: any): BusinessSubmission | null => {

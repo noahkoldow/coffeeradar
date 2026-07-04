@@ -71,6 +71,8 @@ export type TargetingType = 'mood' | 'weather' | 'location' | 'interest' | 'time
 export interface CampaignTargeting {
   moods?: string[]; // e.g., ['relaxed', 'energetic', 'social']
   weatherConditions?: string[]; // e.g., ['sunny', 'rainy', 'cloudy']
+  locationRadius?: number;
+  locationName?: string;
   locations?: {
     lat: number;
     lng: number;
@@ -91,14 +93,21 @@ export interface CampaignMedia {
   aspectRatio: '9:16' | '16:9' | '1:1';
   uploadedAt: string;
   validated: boolean;
+  // optional focal point for adjustable image positioning (0..1, normalized)
+  focalX?: number;
+  focalY?: number;
 }
 
 export interface Campaign {
   id: string;
   businessId: string;
+  createdBy?: string;
   title: string;
   hook: string;
   description: string;
+  mediaUrl?: string;
+  // optional campaign-specific logo (overrides business logo in previews)
+  logoUrl?: string;
   cta: {
     text: string; // e.g., "Book Now", "Download", "Visit"
     action: 'url' | 'phone' | 'qr' | 'calendar';

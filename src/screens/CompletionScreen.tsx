@@ -41,7 +41,7 @@ const MOTIVATIONAL_LINES = [
 const pickRandom = <T,>(arr: T[]): T => arr[Math.floor(Math.random() * arr.length)];
 
 export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
-  const { title, durationMin, emojis, tags, suggestionType, suggestionId, habitId, description } = route.params;
+  const { title, durationMin, emojis, tags, suggestionType, suggestionId, habitId, description, movementKm } = route.params;
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
@@ -144,6 +144,22 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
     return () => clearTimeout(confettiTimer);
   }, []);
 
+  // Award swipe bonus for completing the activity
+  useEffect(() => {
+    if (!actions || !durationMin) return;
+    const bonus = Math.floor(durationMin * (1 / 30)); // 1 swipe per 30 minutes
+    if (bonus > 0) {
+      actions.addSwipes(bonus);
+      logEvent('swipe_bonus_awarded', { title, durationMin, bonus });
+    }
+    logEvent('suggestion_reward', {
+      suggestion_id: suggestionId ?? null,
+      type: suggestionType,
+      reward: 'complete',
+      durationMin,
+    });
+  }, [actions, durationMin, title]);
+
   const goHome = useCallback(() => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
     navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
@@ -222,6 +238,12 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
             <Text style={styles.statNumber}>{formatDuration(weekStats.minutes)}</Text>
             <Text style={styles.statLabel}>total time</Text>
           </View>
+          {typeof movementKm === 'number' && movementKm > 0 && (
+            <View style={styles.statCard}>
+              <Text style={styles.statNumber}>{movementKm.toFixed(1)} km</Text>
+              <Text style={styles.statLabel}>movement</Text>
+            </View>
+          )}
         </View>
 
         {/* Badge level-up callout */}

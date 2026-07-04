@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, Pressable, StyleSheet, Text, ViewStyle } from 'react-native';
+import { Animated, Platform, Pressable, StyleSheet, Text, ViewStyle } from 'react-native';
+import * as Haptics from 'expo-haptics';
 import { useTheme } from '../theme/ThemeProvider';
 
 type Props = {
@@ -16,6 +17,14 @@ type Props = {
 export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style, glow, variant = 'default', bgColor, textColor }) => {
   const theme = useTheme();
   const pulse = useRef(new Animated.Value(0)).current;
+
+  const handlePress = () => {
+    if (disabled) return;
+    if (Platform.OS !== 'web') {
+      void Haptics.selectionAsync().catch(() => undefined);
+    }
+    onPress();
+  };
 
   useEffect(() => {
     if (!glow) {
@@ -57,7 +66,7 @@ export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style
   return (
     <Animated.View style={[glowStyle, style]}>
       <Pressable
-        onPress={onPress}
+        onPress={handlePress}
         disabled={disabled}
         style={({ pressed }) => [
           styles.button,

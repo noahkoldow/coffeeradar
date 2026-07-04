@@ -16,6 +16,8 @@ type Props = {
   onSwipeLeft: () => void;
   onSwipeRight: () => void;
   disabled?: boolean;
+  deckColors?: { bg: string; text: string };
+  showSourceDebug?: boolean;
 };
 
 /**
@@ -29,7 +31,8 @@ const DepartingCard: React.FC<{
   toX: number;
   width: number;
   onDone: () => void;
-}> = React.memo(({ suggestion, startX, startY, toX, width, onDone }) => {
+  deckColors?: { bg: string; text: string };
+}> = React.memo(({ suggestion, startX, startY, toX, width, onDone, deckColors }) => {
   const pos = useRef(new Animated.ValueXY({ x: startX, y: startY })).current;
 
   useEffect(() => {
@@ -57,13 +60,13 @@ const DepartingCard: React.FC<{
         { transform: [...pos.getTranslateTransform(), { rotate }] },
       ]}
     >
-      <SuggestionCard suggestion={suggestion} preview />
+      <SuggestionCard suggestion={suggestion} preview deckColors={deckColors} />
     </Animated.View>
   );
 });
 
 export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
-  ({ current, next, onSwipeLeft, onSwipeRight, disabled }, ref) => {
+  ({ current, next, onSwipeLeft, onSwipeRight, disabled, deckColors, showSourceDebug }, ref) => {
     const theme = useTheme();
     const styles = useMemo(() => createStyles(theme), [theme]);
     const { width } = useWindowDimensions();
@@ -274,7 +277,7 @@ export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
             ]}
             pointerEvents="none"
           >
-            <SuggestionCard suggestion={next} preview />
+            <SuggestionCard suggestion={next} preview deckColors={deckColors} />
             <Animated.View style={[styles.blurOverlay, { opacity: blurOpacity }]}>
               <BlurView intensity={14} tint={blurTint} style={StyleSheet.absoluteFillObject} />
             </Animated.View>
@@ -286,7 +289,7 @@ export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
           style={[styles.card, cardStyle, webTouch]}
           {...panResponder.panHandlers}
         >
-          <SuggestionCard suggestion={current} />
+          <SuggestionCard suggestion={current} deckColors={deckColors} showSourceDebug={showSourceDebug} />
         </Animated.View>
         {/* Layer 3: departing card snapshot (top, non-interactive) */}
         {departing && (
@@ -298,6 +301,7 @@ export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
             toX={departing.toX}
             width={width}
             onDone={handleDepartDone}
+            deckColors={deckColors}
           />
         )}
       </View>

@@ -26,6 +26,10 @@
         "READ_CALENDAR",
         "WRITE_CALENDAR",
         "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "READ_CALENDAR",
+        "WRITE_CALENDAR",
+        "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION"
       ],
       "adaptiveIcon": {
@@ -42,6 +46,17 @@
       "expo-web-browser",
       "expo-apple-authentication"
     ],
-    "scheme": "bits"
+    "scheme": "bits",
+    "extra": {
+      "eas": {
+        "projectId": "b6030b0e-c5f3-4025-9f3d-23a06de167b9"
+      }
+    },
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/b6030b0e-c5f3-4025-9f3d-23a06de167b9"
+    }
   }
 }

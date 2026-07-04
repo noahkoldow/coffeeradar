@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
+import { findOrGenerateActivity } from '../services/activityGeneration';
 
 type DeckType = 'do_now' | 'productive' | 'plan_tomorrow' | 'homebody';
 type LoaderConfig = { messages: Array<{ text: string; emoji: string }>; emojis: string[]; color?: string };
@@ -59,9 +60,18 @@ const LOADER_CONFIG: Record<DeckType | 'default', LoaderConfig> = {
 
 type Props = {
   deckType?: DeckType;
+  request?: {
+    attributes?: string[];
+    latLonBucket?: string;
+    timeHints?: string[];
+    minScore?: number;
+    onlyVerified?: boolean;
+    intentText?: string;
+  };
+  onResult?: (res: any) => void;
 };
 
-export const DeckLoader: React.FC<Props> = ({ deckType }) => {
+export const DeckLoader: React.FC<Props> = ({ deckType, request, onResult }) => {
   const theme = useTheme();
   const [msgIndex, setMsgIndex] = useState(0);
   const [randomEmojis, setRandomEmojis] = useState<string[]>([]);
@@ -76,6 +86,27 @@ export const DeckLoader: React.FC<Props> = ({ deckType }) => {
   const spin = useRef(new Animated.Value(0)).current;
   // Floating emojis
   const floatY = useRef(new Animated.Value(0)).current;
+
+  // derive accent color per deck type so loading UI reflects selected mode
+  const getDeckColors = () => {
+    if (deckType === 'productive') {
+      return theme.isDark
+        ? { bg: '#2A4A5E', text: '#D8F0FF' }
+        : { bg: '#A8D8EA', text: '#1A3A4A' };
+    }
+    if (deckType === 'homebody') {
+      return theme.isDark
+        ? { bg: '#54374A', text: '#F5DDED' }
+        : { bg: '#E2B6CF', text: '#3A1A2E' };
+    }
+    if (deckType === 'plan_tomorrow') {
+      return theme.isDark
+        ? { bg: '#2E4F45', text: '#D9F6EA' }
+        : { bg: '#B5EAD7', text: '#1A4A3A' };
+    }
+    return { bg: theme.colors.accent, text: theme.colors.accentText };
+  };
+  const deckColors = getDeckColors();
 
   useEffect(() => {
     // Pick exactly 3 unique emojis from the type pool
@@ -121,6 +152,27 @@ export const DeckLoader: React.FC<Props> = ({ deckType }) => {
     return () => clearInterval(interval);
   }, [pulse, spin, fade, config.messages.length, floatY]);
 
+  useEffect(() => {
+    let mounted = true;
+
+    async function runRequest() {
+      if (!request) return;
+      try {
+        const result = await findOrGenerateActivity(request);
+        if (!mounted) return;
+        onResult?.(result);
+      } catch (error) {
+        if (!mounted) return;
+        onResult?.({ source: 'error', error: String(error) });
+      }
+    }
+
+    runRequest();
+    return () => {
+      mounted = false;
+    };
+  }, [request, onResult]);
+
   const rotation = spin.interpolate({
     inputRange: [0, 1],
     outputRange: ['0deg', '360deg'],
@@ -152,8 +204,8 @@ export const DeckLoader: React.FC<Props> = ({ deckType }) => {
       </View>
 
       <Animated.View style={[styles.spinnerWrap, { transform: [{ rotate: rotation }] }]}>
-        <View style={[styles.spinnerDot, { backgroundColor: theme.colors.accent }]} />
-        <View style={[styles.spinnerDot, styles.spinnerDot2, { backgroundColor: theme.colors.accentDark ?? theme.colors.accent }]} />
+        <View style={[styles.spinnerDot, { backgroundColor: deckColors.bg }]} />
+        <View style={[styles.spinnerDot, styles.spinnerDot2, { backgroundColor: deckColors.bg }]} />
       </Animated.View>
 
       <Animated.Text style={[styles.emoji, { opacity: pulse }]}>{msg.emoji}</Animated.Text>
@@ -168,9 +220,9 @@ export const DeckLoader: React.FC<Props> = ({ deckType }) => {
       </Animated.Text>
 
       <Animated.View style={[styles.dots, { opacity: pulse }]}>
-        <View style={[styles.dot, { backgroundColor: theme.colors.accent }]} />
-        <View style={[styles.dot, { backgroundColor: theme.colors.accent, opacity: 0.6 }]} />
-        <View style={[styles.dot, { backgroundColor: theme.colors.accent, opacity: 0.3 }]} />
+        <View style={[styles.dot, { backgroundColor: deckColors.bg }]} />
+        <View style={[styles.dot, { backgroundColor: deckColors.bg, opacity: 0.6 }]} />
+        <View style={[styles.dot, { backgroundColor: deckColors.bg, opacity: 0.3 }]} />
       </Animated.View>
     </View>
   );

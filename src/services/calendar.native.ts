@@ -37,7 +37,11 @@ const buildAvailabilityFromEvents = (
   dayEnd: Date,
   events: Calendar.Event[],
 ): Availability => {
-  const sorted = events
+  // All-day events are treated as reminders/markers and do not block time.
+  const timedEvents = events.filter((event) => !event.allDay);
+  const allDayEvents = events.filter((event) => !!event.allDay);
+
+  const sorted = timedEvents
     .filter((event) => event.startDate)
     .map((event) => ({
       title: event.title ?? null,
@@ -90,10 +94,19 @@ const buildAvailabilityFromEvents = (
     }
   }
 
-  const contextEventTitles = sorted
-    .map((event) => event.title)
-    .filter((title): title is string => !!title && title.trim().length > 0)
-    .slice(0, 12);
+  // Include all-day event titles in context so the AI is aware of them,
+  // prefixed so the model knows they don't occupy a specific time slot.
+  const allDayTitles = allDayEvents
+    .map((e) => e.title)
+    .filter((t): t is string => !!t && t.trim().length > 0)
+    .map((t) => `[all-day] ${t}`);
+
+  const contextEventTitles = [
+    ...allDayTitles,
+    ...sorted
+      .map((event) => event.title)
+      .filter((title): title is string => !!title && title.trim().length > 0),
+  ].slice(0, 12);
 
   return {
     start: toISO(bestStart),
@@ -135,8 +148,9 @@ export const getAvailability = async (enabledCalendarIds?: string[]): Promise<Av
   }
 
   const events = await Calendar.getEventsAsync(calendarIds, now, windowEnd);
+  // All-day events are reminders/markers and should not block the user's time.
   const sorted = events
-    .filter((event) => event.startDate)
+    .filter((event) => event.startDate && !event.allDay)
     .sort((a, b) => toDate(a.startDate).getTime() - toDate(b.startDate).getTime());
 
   const ongoing = sorted.find(
@@ -242,16 +256,31 @@ export const getUpcomingEvents = async (
   startDate: Date,
   endDate: Date,
   enabledCalendarIds?: string[],
-): Promise<{ title: string; startDate: Date; endDate: Date }[]> => {
+): Promise<Array<{ title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
   const calendars = await getCalendars();
   const calendarIds = enabledCalendarIds && enabledCalendarIds.length
     ? enabledCalendarIds
     : calendars.map((cal) => cal.id);
   if (!calendarIds.length) return [];
   const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
-  return events.map((e) => ({
-    title: e.title ?? 'Untitled',
-    startDate: toDate(e.startDate),
-    endDate: e.endDate ? toDate(e.endDate) : toDate(e.startDate),
-  }));
+  return events.map((e) => {
+    const start = toDate(e.startDate);
+    let end = e.endDate ? toDate(e.endDate) : toDate(e.startDate);
+    const allDay = !!e.allDay;
+
+    // Some providers can return all-day events with equal/invalid end timestamps.
+    // Ensure they block at least one full day in local time.
+    if (allDay && end.getTime() <= start.getTime()) {
+      end = new Date(start);
+      end.setDate(end.getDate() + 1);
+    }
+
+    return {
+      title: e.title ?? 'Untitled',
+      startDate: start,
+      endDate: end,
+      allDay,
+      location: e.location ?? null,
+    };
+  });
 };

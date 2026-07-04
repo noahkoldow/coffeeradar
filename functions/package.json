@@ -1,0 +1,22 @@
+
+{
+	"name": "coffee-radar-functions",
+	"version": "0.1.0",
+	"private": true,
+	"engines": { "node": "18" },
+	"main": "lib/index.js",
+	"scripts": {
+		"build": "tsc -p tsconfig.json",
+		"watch": "tsc -w -p tsconfig.json"
+	},
+	"dependencies": {
+		"firebase-admin": "^11.10.0",
+		"firebase-functions": "^4.3.0",
+		"node-fetch": "^3.3.2",
+		"jsonwebtoken": "^9.0.0"
+	},
+	"devDependencies": {
+		"typescript": "^5.1.3"
+	}
+}
+

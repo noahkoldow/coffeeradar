@@ -182,7 +182,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
     const longest = habit.longestStreak ?? 0;
     const isFlipped = flippedCards.has(habit.id);
     const weeklyHistory = buildWeeklyHistory(habit);
-    const urgency = getHabitUrgency(habit);
+      const urgency = getHabitUrgency(habit, new Date(), state.location.timeZone);
 
     const front = (
       <View style={styles.habitCard}>
@@ -214,9 +214,6 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
               <Text style={styles.dotLabel}>{DOT_LABELS_SHORT[i]}</Text>
             </View>
           ))}
-          <View style={styles.dotSummary}>
-            <Text style={styles.dotSummaryText}>{weekCount}× this week</Text>
-          </View>
         </View>
 
         {/* Stats row */}
@@ -258,18 +255,18 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
             </>
           )}
           <View style={styles.habitActionsRight}>
-            <Pressable
-              style={({ pressed }) => [styles.editBtn, pressed && styles.btnPressed]}
-              onPress={() => navigation.navigate('HabitForm', { habit })}
-            >
-              <Text style={styles.editBtnText}>Edit</Text>
-            </Pressable>
-            <Pressable
-              style={({ pressed }) => [styles.deleteIconBtn, pressed && styles.btnPressed]}
-              onPress={() => confirmDelete(habit)}
-            >
-              <Text style={styles.deleteIconText}>🗑</Text>
-            </Pressable>
+              <Pressable
+                style={({ pressed }) => [styles.editBtn, pressed && styles.btnPressed]}
+                onPress={() => {
+                  Alert.alert('Habit options', habit.name, [
+                    { text: 'Cancel', style: 'cancel' },
+                    { text: 'Edit', onPress: () => navigation.navigate('HabitForm', { habit }) },
+                    { text: 'Delete', style: 'destructive', onPress: () => confirmDelete(habit) },
+                  ]);
+                }}
+              >
+                <Text style={styles.editBtnText}>Edit</Text>
+              </Pressable>
           </View>
         </View>
 
@@ -327,18 +324,20 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
         {/* ── Header ── */}
         <View style={styles.headerContainer}>
-          <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>← Back</Text>
-          </Pressable>
-          <View style={{ flex: 1 }}>
+          <View style={styles.headerTopRow}>
+            <Pressable onPress={() => navigation.goBack()}>
+              <Text style={styles.back}>← Back</Text>
+            </Pressable>
+            <Pressable onPress={() => navigation.navigate('HabitForm')}>
+              <View style={styles.addButtonSmall}>
+                <Text style={styles.addButtonSmallText}>+ New</Text>
+              </View>
+            </Pressable>
+          </View>
+          <View style={styles.headerTitleBlock}>
             <Text style={styles.title}>Your Habits</Text>
             <Text style={styles.subtitle}>Build routines that stick 🎯</Text>
           </View>
-          <Pressable onPress={() => navigation.navigate('HabitForm')}>
-            <View style={styles.addButtonSmall}>
-              <Text style={styles.addButtonSmallText}>+ New</Text>
-            </View>
-          </Pressable>
         </View>
 
         {/* ── Your Active Habits ── */}
@@ -403,10 +402,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   
   /* ── Header ── */
   headerContainer: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
-    gap: theme.spacing.md,
+    gap: theme.spacing.sm,
     marginBottom: theme.spacing.xl,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  headerTitleBlock: {
+    gap: 4,
   },
   back: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted, fontSize: 14 },
   title: { fontFamily: theme.fonts.heading, fontSize: 28, color: theme.colors.text, marginBottom: 4 },

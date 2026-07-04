@@ -15,11 +15,12 @@ const MAX_CHARACTERS = 3;
  *  Character type pools per weather
  * ================================================================ */
 
-type CharacterType = 'cyclist' | 'runner' | 'hiker' | 'umbrella' | 'cozy' | 'snowman';
+type CharacterType = 'cyclist' | 'runner' | 'hiker' | 'umbrella' | 'cozy' | 'snowman' | 'car';
 
 const WEATHER_CHARACTERS: Record<WeatherCondition, CharacterType[]> = {
   clear: ['cyclist', 'runner', 'hiker'],
-  cloudy: ['hiker', 'runner', 'cyclist'],
+  cloudy: ['hiker', 'runner', 'car'],
+  drizzle: ['car', 'umbrella', 'cozy'],
   rain: ['umbrella', 'cozy', 'umbrella'],
   snow: ['snowman', 'cozy', 'hiker'],
   unknown: ['runner', 'hiker', 'cyclist'],
@@ -68,25 +69,25 @@ const CloudySky = ({ width, height }: SkyProps) => (
     {/* Dense cloud layer */}
     {[0.08, 0.28, 0.52, 0.78].map((p) => (
       <G key={p}>
-        <Ellipse cx={width * p} cy={height * 0.3} rx={width * 0.1} ry={height * 0.22} fill="#C0C0C0" opacity={0.38} stroke="#A8B0B8" strokeWidth={0.8} />
-        <Ellipse cx={width * p + width * 0.06} cy={height * 0.22} rx={width * 0.06} ry={height * 0.16} fill="#C8C8C8" opacity={0.32} stroke="#A8B0B8" strokeWidth={0.7} />
-        <Ellipse cx={width * p - width * 0.04} cy={height * 0.38} rx={width * 0.05} ry={height * 0.14} fill="#C4C4C4" opacity={0.26} stroke="#A8B0B8" strokeWidth={0.7} />
-        <Ellipse cx={width * p + width * 0.02} cy={height * 0.16} rx={width * 0.04} ry={height * 0.1} fill="#D0D0D0" opacity={0.2} stroke="#A8B0B8" strokeWidth={0.6} />
+        <Ellipse cx={width * p} cy={height * 0.3} rx={width * 0.1} ry={height * 0.22} fill="#E6EBF0" opacity={0.46} stroke="#D3DAE2" strokeWidth={0.8} />
+        <Ellipse cx={width * p + width * 0.06} cy={height * 0.22} rx={width * 0.06} ry={height * 0.16} fill="#EEF2F6" opacity={0.42} stroke="#D3DAE2" strokeWidth={0.7} />
+        <Ellipse cx={width * p - width * 0.04} cy={height * 0.38} rx={width * 0.05} ry={height * 0.14} fill="#E9EEF3" opacity={0.34} stroke="#D3DAE2" strokeWidth={0.7} />
+        <Ellipse cx={width * p + width * 0.02} cy={height * 0.16} rx={width * 0.04} ry={height * 0.1} fill="#F3F6F9" opacity={0.3} stroke="#D3DAE2" strokeWidth={0.6} />
       </G>
     ))}
     {/* Wispy high clouds */}
     {[0.18, 0.42, 0.68, 0.92].map((p) => (
-      <Ellipse key={`w${p}`} cx={width * p} cy={height * 0.1} rx={width * 0.06} ry={height * 0.07} fill="#D4D4D4" opacity={0.22} stroke="#B8C0C8" strokeWidth={0.6} />
+      <Ellipse key={`w${p}`} cx={width * p} cy={height * 0.1} rx={width * 0.06} ry={height * 0.07} fill="#F0F4F8" opacity={0.24} stroke="#D7DEE5" strokeWidth={0.6} />
     ))}
     {/* Lower heavy bases */}
     {[0.2, 0.55, 0.85].map((p) => (
       <G key={`b${p}`}>
-        <Ellipse cx={width * p} cy={height * 0.65} rx={width * 0.1} ry={height * 0.16} fill="#B8B8B8" opacity={0.24} stroke="#A0A8B0" strokeWidth={0.7} />
-        <Ellipse cx={width * p + width * 0.05} cy={height * 0.6} rx={width * 0.05} ry={height * 0.1} fill="#C0C0C0" opacity={0.18} stroke="#A0A8B0" strokeWidth={0.6} />
+        <Ellipse cx={width * p} cy={height * 0.65} rx={width * 0.1} ry={height * 0.16} fill="#D9E0E6" opacity={0.34} stroke="#C4CDD6" strokeWidth={0.7} />
+        <Ellipse cx={width * p + width * 0.05} cy={height * 0.6} rx={width * 0.05} ry={height * 0.1} fill="#E4EAF0" opacity={0.28} stroke="#C4CDD6" strokeWidth={0.6} />
       </G>
     ))}
     {/* Dim sun peeking through */}
-    <Circle cx={width * 0.85} cy={height * 0.35} r={height * 0.14} fill="#FFD93D" opacity={0.15} />
+    <Circle cx={width * 0.85} cy={height * 0.35} r={height * 0.14} fill="#FFE07A" opacity={0.2} />
   </Svg>
 );
 
@@ -112,6 +113,50 @@ const RainSky = ({ width, height }: SkyProps) => {
       {/* Rain streaks */}
       {drops.map(({ x, yOff }, i) => (
         <Line key={i} x1={x} y1={height * 0.48 + yOff} x2={x - 3} y2={height * 0.68 + yOff} stroke="#6BA4D9" strokeWidth={1.2} opacity={0.4} strokeLinecap="round" />
+      ))}
+    </Svg>
+  );
+};
+
+const DrizzleSky = ({ width, height }: SkyProps) => {
+  // Generate randomized clouds/drops per mount (recompute when size changes)
+  const clouds = useMemo(() => {
+    const base = [0.1, 0.36, 0.62, 0.86];
+    return base.map((p) => {
+      const cx = Math.min(0.95, Math.max(0.05, p + (Math.random() - 0.5) * 0.12));
+      const cy = 0.22 + (Math.random() - 0.5) * 0.14;
+      const rx = 0.05 + Math.random() * 0.08;
+      const ry = 0.09 + Math.random() * 0.12;
+      const o = 0.22 + Math.random() * 0.12;
+      return { cx, cy, rx, ry, o };
+    });
+  }, [width, height]);
+
+  const drops = useMemo(() =>
+    Array.from({ length: 13 }, (_, i) => {
+      const baseX = (i + 0.5) / 13;
+      const jitter = (Math.random() - 0.5) * 0.08;
+      const x = width * Math.min(0.98, Math.max(0.02, baseX + jitter));
+      const yOff = (Math.random() - 0.5) * height * 0.12 + (i % 4) * (height * 0.05);
+      return { x, yOff };
+    }),
+    [width, height],
+  );
+
+  return (
+    <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+      {clouds.map((c, idx) => (
+        <G key={`dcl${idx}`}>
+          <Ellipse cx={width * c.cx} cy={height * c.cy} rx={width * c.rx} ry={height * c.ry} fill="#AEB8C4" opacity={c.o} stroke="#94A3B8" strokeWidth={0.7} />
+          <Ellipse cx={width * (c.cx + 0.03)} cy={height * (c.cy - 0.04)} rx={width * (c.rx * 0.6)} ry={height * (c.ry * 0.7)} fill="#C4CBD5" opacity={c.o * 0.95} stroke="#A3ADBA" strokeWidth={0.6} />
+          <Ellipse cx={width * (c.cx - 0.025)} cy={height * (c.cy + 0.05)} rx={width * (c.rx * 0.5)} ry={height * (c.ry * 0.6)} fill="#C8D0DA" opacity={c.o * 0.8} stroke="#A3ADBA" strokeWidth={0.6} />
+        </G>
+      ))}
+
+      <Circle cx={width * 0.8} cy={height * 0.22} r={14} fill="#FFD93D" opacity={0.08} />
+
+      {drops.map(({ x, yOff }, i) => (
+        <Line key={i} x1={x} y1={height * (0.48 + (i % 3) * 0.02) + yOff} x2={x - 2 - (i % 2)} y2={height * (0.62 + (i % 3) * 0.01) + yOff} stroke="#6BA4D9" strokeWidth={0.9} opacity={0.28} strokeLinecap="round" />
       ))}
     </Svg>
   );
@@ -149,6 +194,7 @@ const SnowSky = ({ width, height }: SkyProps) => {
 const SKY_MAP: Record<WeatherCondition, React.FC<SkyProps>> = {
   clear: ClearSky,
   cloudy: CloudySky,
+  drizzle: DrizzleSky,
   rain: RainSky,
   snow: SnowSky,
   unknown: CloudySky,
@@ -394,6 +440,47 @@ const SnowmanPose = ({ color }: { color: string; pose: 0 | 1 }) => (
   </Svg>
 );
 
+/* ── Stylised car — line-art commuter passing through ───────── */
+const CarPose = ({ color, pose }: { color: string; pose: 0 | 1 }) => (
+  <Svg width={48} height={36} viewBox="0 0 48 36">
+    <Ellipse cx={24} cy={30} rx={16} ry={2.3} fill={color} opacity={0.1} />
+    <Path
+      d="M7 23.5 L10 16.5 Q12 12.5 18 12.5 L29 12.5 Q34 12.5 37 17 L42 18 Q45 19 45 23.5 L45 26.5 L4 26.5 L4 24.5 Q4 23.5 7 23.5"
+      stroke={color}
+      strokeWidth={1.4}
+      fill={color}
+      fillOpacity={0.14}
+      strokeLinejoin="round"
+    />
+    <Path d="M14.5 17 L18 13.8 L28 13.8 L32.8 17.2" stroke={color} strokeWidth={1.1} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    <Circle cx={13.2} cy={27} r={4.3} stroke={color} strokeWidth={1.3} fill={color} fillOpacity={0.18} />
+    <Circle cx={34.8} cy={27} r={4.3} stroke={color} strokeWidth={1.3} fill={color} fillOpacity={0.18} />
+    <Circle cx={13.2} cy={27} r={1.5} fill={color} opacity={0.7} />
+    <Circle cx={34.8} cy={27} r={1.5} fill={color} opacity={0.7} />
+    {pose === 0 ? (
+      <>
+        <Line x1={13.2} y1={23.8} x2={13.2} y2={30.2} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={10.8} y1={27} x2={15.6} y2={27} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={12.2} y1={25} x2={14.2} y2={29} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={34.8} y1={23.8} x2={34.8} y2={30.2} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={32.4} y1={27} x2={37.2} y2={27} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={33.8} y1={25} x2={35.8} y2={29} stroke={color} strokeWidth={0.85} opacity={0.55} />
+      </>
+    ) : (
+      <>
+        <Line x1={11.8} y1={24.6} x2={15.2} y2={29.4} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={11.8} y1={29.4} x2={15.2} y2={24.6} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={32.4} y1={24.6} x2={35.8} y2={29.4} stroke={color} strokeWidth={0.85} opacity={0.55} />
+        <Line x1={32.4} y1={29.4} x2={35.8} y2={24.6} stroke={color} strokeWidth={0.85} opacity={0.55} />
+      </>
+    )}
+    <Circle cx={40.8} cy={21.5} r={1.5} fill="#FFF" fillOpacity={0.85} />
+    <Circle cx={5.8} cy={21.5} r={1.1} fill="#FFF" fillOpacity={0.35} />
+    <Line x1={46} y1={21} x2={48} y2={21} stroke={color} strokeWidth={1.2} strokeLinecap="round" opacity={0.45} />
+    <Line x1={6} y1={20} x2={3} y2={20} stroke={color} strokeWidth={1.2} strokeLinecap="round" opacity={0.45} />
+  </Svg>
+);
+
 /* ================================================================
  *  Terrain segments — adjusted per weather
  * ================================================================ */
@@ -463,6 +550,21 @@ const RainTerrain = ({ color, muted }: TerrainProps) => (
   </Svg>
 );
 
+const DrizzleTerrain = ({ color, muted }: TerrainProps) => (
+  <Svg width={GROUND_W} height={28} viewBox={`0 0 ${GROUND_W} 28`}>
+    <Line x1={0} y1={22} x2={GROUND_W} y2={22} stroke={color} strokeWidth={1.4} />
+    {[40, 100, 160, 220, 280, 340].map((x) => (
+      <Line key={x} x1={x} y1={18} x2={x + 20} y2={18} stroke={muted} strokeWidth={1} strokeDasharray="4 4" opacity={0.75} />
+    ))}
+    {[70, 180, 300].map((x) => (
+      <Ellipse key={x} cx={x} cy={24} rx={9} ry={2} fill="#6BA4D9" opacity={0.1} />
+    ))}
+    {[125, 245, 360].map((x) => (
+      <Ellipse key={`r${x}`} cx={x} cy={23} rx={4} ry={1} stroke={muted} strokeWidth={0.6} fill="none" opacity={0.22} />
+    ))}
+  </Svg>
+);
+
 /* ── Snowy terrain — snow mounds ──────────────────────────── */
 const SnowTerrain = ({ color, muted }: TerrainProps) => (
   <Svg width={GROUND_W} height={28} viewBox={`0 0 ${GROUND_W} 28`}>
@@ -505,6 +607,7 @@ const TERRAIN_FOR_CHARACTER: Record<CharacterType, React.FC<TerrainProps>> = {
   umbrella: RainTerrain,
   cozy: CozyTerrain,
   snowman: SnowTerrain,
+  car: DrizzleTerrain,
 };
 
 /* ================================================================
@@ -518,6 +621,7 @@ const CHARACTER_COMPONENTS: Record<CharacterType, React.FC<{ color: string; pose
   umbrella: UmbrellaPose,
   cozy: CozyPose,
   snowman: SnowmanPose,
+  car: CarPose,
 };
 
 /* ================================================================

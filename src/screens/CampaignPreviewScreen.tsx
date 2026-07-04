@@ -7,12 +7,14 @@ import {
   View,
   Pressable,
   Dimensions,
+  Image,
 } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
+import { useAppState } from '../state/AppState';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { getCampaign } from '../services/campaigns';
 import { Campaign } from '../types/business';
@@ -33,9 +35,15 @@ export const CampaignPreviewScreen: React.FC<PreviewScreenProps> = ({
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
+  const { state } = useAppState();
 
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [loading, setLoading] = useState(true);
+  const [imgNaturalSize, setImgNaturalSize] = useState<{ width: number; height: number } | null>(null);
+  const [mediaLayout, setMediaLayout] = useState<{ width: number; height: number }>({ width: 0, height: 0 });
+  const businessLogoUrl = state.businessProfile?.id === campaign?.businessId ? state.businessProfile?.logo?.url : undefined;
+  const logoToShow = campaign?.logoUrl ?? businessLogoUrl;
+  const isCardFormat = campaign?.media?.[0]?.aspectRatio === '16:9';
 
   useEffect(() => {
     const loadCampaign = async () => {
@@ -51,6 +59,19 @@ export const CampaignPreviewScreen: React.FC<PreviewScreenProps> = ({
 
     loadCampaign();
   }, [campaignId]);
+
+  useEffect(() => {
+    // load natural image size for first media
+    if (!campaign?.media?.[0]?.url) return;
+    const uri = campaign.media[0].url;
+    Image.getSize(
+      uri,
+      (w, h) => setImgNaturalSize({ width: w, height: h }),
+      (err) => {
+        // ignore
+      }
+    );
+  }, [campaign?.media?.[0]?.url]);
 
   if (loading) {
     return (
@@ -106,46 +127,144 @@ export const CampaignPreviewScreen: React.FC<PreviewScreenProps> = ({
           <View
             style={[
               styles.campaignCardPreview,
-              { height: CARD_HEIGHT },
+              isCardFormat ? styles.campaignCardPreviewCard : { height: CARD_HEIGHT },
             ]}
           >
-            {/* Header */}
-            <View style={styles.cardHeader}>
-              <View style={styles.cardBadge}>
-                <Text style={styles.cardBadgeText}>💼 Promoted</Text>
-              </View>
-            </View>
+            {isCardFormat ? (
+              <>
+                <View
+                  style={styles.cardMediaWrap}
+                  onLayout={(e) => setMediaLayout({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })}
+                >
+                  {campaign.media && campaign.media.length > 0 ? (
+                    (() => {
+                      const media = campaign.media![0];
+                      const focalX = media.focalX ?? 0.5;
+                      const focalY = media.focalY ?? 0.5;
+                      if (!imgNaturalSize || mediaLayout.width === 0) {
+                        return <Image source={{ uri: media.url }} style={styles.mediaContainerCard} />;
+                      }
 
-            {/* Media Placeholder */}
-            {campaign.media && campaign.media.length > 0 ? (
-              <View style={styles.mediaContainer}>
-                <Text style={styles.mediaText}>📸 Media will display here</Text>
-              </View>
+                      const iw = imgNaturalSize.width;
+                      const ih = imgNaturalSize.height;
+                      const cw = mediaLayout.width;
+                      const ch = mediaLayout.height;
+                      const scale = Math.max(cw / iw, ch / ih);
+                      const sw = iw * scale;
+                      const sh = ih * scale;
+
+                      const desiredCenterX = focalX * sw;
+                      const desiredCenterY = focalY * sh;
+                      let translateX = Math.round(cw / 2 - desiredCenterX);
+                      let translateY = Math.round(ch / 2 - desiredCenterY);
+
+                      const maxOffsetX = Math.max(0, sw - cw);
+                      const maxOffsetY = Math.max(0, sh - ch);
+                      translateX = Math.max(-maxOffsetX, Math.min(0, translateX));
+                      translateY = Math.max(-maxOffsetY, Math.min(0, translateY));
+
+                      return (
+                        <Image
+                          source={{ uri: media.url }}
+                          style={{ position: 'absolute', width: sw, height: sh, left: translateX, top: translateY }}
+                        />
+                      );
+                    })()
+                  ) : (
+                    <View style={styles.placeholderMediaCard}>
+                      <Text style={styles.placeholderText}>📸</Text>
+                      <Text style={styles.placeholderSmallText}>No media uploaded</Text>
+                    </View>
+                  )}
+                  <View style={styles.cardOverlayRow}>
+                    <View style={styles.cardAdBadge}>
+                      <Text style={styles.cardAdBadgeText}>Ad</Text>
+                    </View>
+                    {logoToShow ? <Image source={{ uri: logoToShow }} style={styles.cardLogo} /> : null}
+                  </View>
+                </View>
+
+                <View style={styles.cardContentCard}>
+                  <Text style={styles.cardHook}>{campaign.hook}</Text>
+                  <Text style={styles.cardTitle}>{campaign.title}</Text>
+                  <Text style={styles.cardDescription} numberOfLines={2}>
+                    {campaign.description}
+                  </Text>
+
+                  <Pressable style={styles.ctaButton}>
+                    <Text style={styles.ctaButtonText}>{campaign.cta.text}</Text>
+                  </Pressable>
+
+                  <View style={styles.categoryBadge}>
+                    <Text style={styles.categoryText}>{campaign.category}</Text>
+                  </View>
+                </View>
+              </>
             ) : (
-              <View style={styles.placeholderMedia}>
-                <Text style={styles.placeholderText}>📸</Text>
-                <Text style={styles.placeholderSmallText}>No media uploaded</Text>
-              </View>
+              <>
+                <View style={styles.storyHeader}>
+                  <View style={styles.cardBadge}>
+                    <Text style={styles.cardBadgeText}>Ad</Text>
+                  </View>
+                  {logoToShow ? <Image source={{ uri: logoToShow }} style={styles.storyLogo} /> : null}
+                </View>
+
+                {campaign.media && campaign.media.length > 0 ? (
+                  (() => {
+                    const media = campaign.media![0];
+                    const focalX = media.focalX ?? 0.5;
+                    const focalY = media.focalY ?? 0.5;
+                    return (
+                      <View onLayout={(e) => setMediaLayout({ width: e.nativeEvent.layout.width, height: e.nativeEvent.layout.height })} style={{ width: '100%', height: 300, overflow: 'hidden' }}>
+                        {(!imgNaturalSize || mediaLayout.width === 0) ? (
+                          <Image source={{ uri: media.url }} style={styles.mediaContainer} />
+                        ) : (
+                          (() => {
+                            const iw = imgNaturalSize!.width;
+                            const ih = imgNaturalSize!.height;
+                            const cw = mediaLayout.width;
+                            const ch = mediaLayout.height;
+                            const scale = Math.max(cw / iw, ch / ih);
+                            const sw = iw * scale;
+                            const sh = ih * scale;
+                            const desiredCenterX = focalX * sw;
+                            const desiredCenterY = focalY * sh;
+                            let translateX = Math.round(cw / 2 - desiredCenterX);
+                            let translateY = Math.round(ch / 2 - desiredCenterY);
+                            const maxOffsetX = Math.max(0, sw - cw);
+                            const maxOffsetY = Math.max(0, sh - ch);
+                            translateX = Math.max(-maxOffsetX, Math.min(0, translateX));
+                            translateY = Math.max(-maxOffsetY, Math.min(0, translateY));
+                            return <Image source={{ uri: media.url }} style={{ position: 'absolute', width: sw, height: sh, left: translateX, top: translateY }} />;
+                          })()
+                        )}
+                      </View>
+                    );
+                  })()
+                ) : (
+                  <View style={styles.placeholderMedia}>
+                    <Text style={styles.placeholderText}>📸</Text>
+                    <Text style={styles.placeholderSmallText}>No media uploaded</Text>
+                  </View>
+                )}
+
+                <View style={styles.cardContent}>
+                  <Text style={styles.cardHook}>{campaign.hook}</Text>
+                  <Text style={styles.cardTitle}>{campaign.title}</Text>
+                  <Text style={styles.cardDescription} numberOfLines={2}>
+                    {campaign.description}
+                  </Text>
+
+                  <Pressable style={styles.ctaButton}>
+                    <Text style={styles.ctaButtonText}>{campaign.cta.text}</Text>
+                  </Pressable>
+
+                  <View style={styles.categoryBadge}>
+                    <Text style={styles.categoryText}>{campaign.category}</Text>
+                  </View>
+                </View>
+              </>
             )}
-
-            {/* Content */}
-            <View style={styles.cardContent}>
-              <Text style={styles.cardHook}>{campaign.hook}</Text>
-              <Text style={styles.cardTitle}>{campaign.title}</Text>
-              <Text style={styles.cardDescription} numberOfLines={2}>
-                {campaign.description}
-              </Text>
-
-              {/* CTA Button */}
-              <Pressable style={styles.ctaButton}>
-                <Text style={styles.ctaButtonText}>{campaign.cta.text}</Text>
-              </Pressable>
-
-              {/* Category Badge */}
-              <View style={styles.categoryBadge}>
-                <Text style={styles.categoryText}>{campaign.category}</Text>
-              </View>
-            </View>
           </View>
 
           {/* Preview Info */}
@@ -292,6 +411,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       borderColor: theme.colors.border,
       marginBottom: theme.spacing.md,
     },
+    campaignCardPreviewCard: {
+      minHeight: 0,
+    },
+    storyHeader: {
+      paddingHorizontal: theme.spacing.md,
+      paddingTop: theme.spacing.md,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
     cardHeader: {
       paddingHorizontal: theme.spacing.md,
       paddingVertical: theme.spacing.sm,
@@ -310,8 +439,46 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       fontSize: 10,
       color: theme.colors.accentText,
     },
+    cardAdBadge: {
+      backgroundColor: 'rgba(0,0,0,0.72)',
+      borderRadius: theme.radius.full,
+      paddingHorizontal: theme.spacing.sm,
+      paddingVertical: 2,
+    },
+    cardAdBadgeText: {
+      color: '#fff',
+      fontFamily: theme.fonts.semibold,
+      fontSize: 10,
+      letterSpacing: 0.4,
+    },
+    cardLogo: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: 'rgba(255,255,255,0.92)',
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.9)',
+    },
+    cardMediaWrap: {
+      position: 'relative',
+    },
+    cardOverlayRow: {
+      position: 'absolute',
+      top: theme.spacing.sm,
+      left: theme.spacing.sm,
+      right: theme.spacing.sm,
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+    },
     mediaContainer: {
       height: 200,
+      backgroundColor: theme.colors.backgroundAlt,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    mediaContainerCard: {
+      height: 124,
       backgroundColor: theme.colors.backgroundAlt,
       justifyContent: 'center',
       alignItems: 'center',
@@ -323,6 +490,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     },
     placeholderMedia: {
       height: 200,
+      backgroundColor: theme.colors.backgroundAlt,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    placeholderMediaCard: {
+      height: 124,
       backgroundColor: theme.colors.backgroundAlt,
       justifyContent: 'center',
       alignItems: 'center',
@@ -341,6 +514,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       gap: theme.spacing.sm,
       flex: 1,
       justifyContent: 'flex-end',
+    },
+    cardContentCard: {
+      padding: theme.spacing.md,
+      gap: theme.spacing.sm,
     },
     cardHook: {
       fontFamily: theme.fonts.semibold,

@@ -1,5 +1,6 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { useTheme } from '../theme/ThemeProvider';
 import BusinessDashboardScreen from '../screens/BusinessDashboardScreen';
 import BusinessOnboardingScreen from '../screens/BusinessOnboardingScreen';
 import BusinessAccountCreationScreen from '../screens/BusinessAccountCreationScreen';
@@ -31,6 +32,8 @@ export type BusinessStackParamList = {
 const Stack = createNativeStackNavigator<BusinessStackParamList>();
 
 export const BusinessNavigator: React.FC = () => {
+  const theme = useTheme();
+
   return (
     <Stack.Navigator
       screenOptions={{
@@ -41,13 +44,13 @@ export const BusinessNavigator: React.FC = () => {
       <Stack.Screen
         name="BusinessDashboard"
         component={BusinessDashboardScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="BusinessOnboarding"
         component={BusinessOnboardingScreen}
         options={{
-          cardStyle: { backgroundColor: '#fff' },
+          cardStyle: { backgroundColor: theme.colors.background },
           gestureEnabled: false,
         }}
       />
@@ -55,54 +58,54 @@ export const BusinessNavigator: React.FC = () => {
         name="BusinessAccountCreation"
         component={BusinessAccountCreationScreen}
         options={{
-          cardStyle: { backgroundColor: '#fff' },
+          cardStyle: { backgroundColor: theme.colors.background },
           gestureEnabled: false,
         }}
       />
       <Stack.Screen
         name="CampaignList"
         component={CampaignListScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="CampaignDetails"
         component={CampaignDetailsScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="CampaignCreate"
         component={CampaignCreationScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="CampaignPreview"
         component={CampaignPreviewScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="AudienceInsights"
         component={AudienceInsightsScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="Billing"
         component={BillingScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="BusinessSettings"
         component={BusinessSettingsScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="ApprovalQueue"
         component={ApprovalQueueScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="BusinessProfileEditor"
         component={BusinessProfileEditorScreen}
-        options={{ cardStyle: { backgroundColor: '#fff' } }}
+        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
       />
     </Stack.Navigator>
   );

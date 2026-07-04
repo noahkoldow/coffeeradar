@@ -1,0 +1,29 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in [
+          'bitsapp.admin@gmail.com'
+        ];
+    }
+
+    match /community_ideas/{userId}/{ideaId}/{fileName} {
+      allow read: if true;
+      allow create: if isSignedIn()
+        && request.auth.uid == userId
+        && request.resource.contentType.matches('image/.*');
+      allow update, delete: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
+    }
+
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

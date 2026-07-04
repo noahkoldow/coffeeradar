@@ -11,6 +11,7 @@ import {
   signInWithApple,
   isAppleSignInAvailable,
 } from '../services/auth';
+import { persistOnboardingComplete } from '../services/user';
 import { firebaseEnabled } from '../services/firebase';
 
 const LOGO_HEIGHT = 30;
@@ -49,8 +50,10 @@ export const AuthScreen: React.FC = () => {
       } else {
         await signInWithEmail(email, password);
       }
+      // Mark onboarding as complete so user goes directly to Home
+      await persistOnboardingComplete(true);
     } catch (error: any) {
-      Alert.alert(mode === 'signup' ? 'Sign up failed' : 'Log in failed', error?.message ?? 'Try again.');
+        Alert.alert(mode === 'signup' ? 'Sign up failed' : 'Log in failed', error?.message ?? 'Try again.');
     } finally {
       setLoading(false);
     }
@@ -60,6 +63,7 @@ export const AuthScreen: React.FC = () => {
     setLoading(true);
     try {
       await signInWithGoogle();
+      await persistOnboardingComplete(true);
     } catch (error: any) {
       if (!error?.message?.includes('cancelled')) {
         Alert.alert('Google sign-in failed', error?.message ?? 'Try again.');
@@ -73,6 +77,7 @@ export const AuthScreen: React.FC = () => {
     setLoading(true);
     try {
       await signInWithApple();
+      await persistOnboardingComplete(true);
     } catch (error: any) {
       if ((error as any)?.code !== 'ERR_REQUEST_CANCELED') {
         Alert.alert('Apple sign-in failed', error?.message ?? 'Try again.');

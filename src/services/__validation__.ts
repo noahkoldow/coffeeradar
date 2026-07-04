@@ -25,7 +25,7 @@ function validateEligibilityWindow() {
   
   const now = new Date('2026-05-18T10:00:00Z');
   const yesterday = new Date('2026-05-17T10:00:00Z'); // 24 hours ago
-  const threeD aysAgo = new Date('2026-05-15T10:00:00Z'); // 72 hours ago
+  const threeDaysAgo = new Date('2026-05-15T10:00:00Z'); // 72 hours ago
   
   const lastShownDates = {
     'morning-walk': yesterday.toISOString(), // 24 hours ago
@@ -37,7 +37,7 @@ function validateEligibilityWindow() {
   console.log('✓ After 24 hours: Hidden ');
   
   // 72 hours: eligible
-  const eligible = isEligibleForRepetition('morning-walk', { 'morning-walk': threeD aysAgo.toISOString() }, now);
+  const eligible = isEligibleForRepetition('morning-walk', { 'morning-walk': threeDaysAgo.toISOString() }, now);
   console.assert(eligible, 'Activity should be eligible at 72 hours');
   console.log('✓ After 72+ hours: Shown');
   

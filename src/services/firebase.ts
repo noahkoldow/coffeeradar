@@ -1,6 +1,7 @@
 import { FirebaseApp, getApps, initializeApp } from 'firebase/app';
 import { Auth, getAuth } from 'firebase/auth';
 import { Firestore, getFirestore } from 'firebase/firestore';
+import { FirebaseStorage, getStorage } from 'firebase/storage';
 
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
 
@@ -22,15 +23,18 @@ export const firebaseEnabled =
 let firebaseApp: FirebaseApp | null = null;
 let firebaseAuth: Auth | null = null;
 let firestoreDb: Firestore | null = null;
+let firebaseStorage: FirebaseStorage | null = null;
 
 if (firebaseEnabled) {
   firebaseApp = getApps().length ? getApps()[0] : initializeApp(firebaseConfig);
   firebaseAuth = getAuth(firebaseApp);
   firestoreDb = getFirestore(firebaseApp);
+  firebaseStorage = getStorage(firebaseApp);
 }
 
 export const auth = firebaseAuth;
 export const db = firestoreDb;
+export const storage = firebaseStorage;
 
 export const ensureAuth = async (): Promise<string | null> => {
   if (!firebaseEnabled || !auth) return null;

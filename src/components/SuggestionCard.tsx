@@ -2,13 +2,27 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { DeckSuggestion } from '../types';
 import { useTheme } from '../theme/ThemeProvider';
-import { formatDuration, formatTime, fromISO, minutesBetween } from '../utils/time';
+import { dateFromLocalClockTime, extractClockLabelFromText, formatDuration, formatTime, fromISO, minutesBetween } from '../utils/time';
 import { MapThumbnail } from './MapThumbnail';
 import { chooseTravelMode } from '../services/travel';
 
 type Props = {
   suggestion: DeckSuggestion;
   preview?: boolean;
+  deckColors?: { bg: string; text: string };
+  showSourceDebug?: boolean;
+};
+
+const SOURCE_DEBUG_CONFIG: Record<string, { bg: string; text: string; emoji: string }> = {
+  gemini:       { bg: 'rgba(123,79,191,0.92)',  text: '#fff', emoji: '🤖' },
+  curated:      { bg: 'rgba(41,128,185,0.92)',  text: '#fff', emoji: '✍️' },
+  ticketmaster: { bg: 'rgba(26,74,138,0.92)',   text: '#fff', emoji: '🎟️' },
+  habit:        { bg: 'rgba(39,174,96,0.92)',   text: '#fff', emoji: '🔁' },
+  library:      { bg: 'rgba(230,126,34,0.92)',  text: '#fff', emoji: '📚' },
+  todo:         { bg: 'rgba(22,160,133,0.92)',  text: '#fff', emoji: '✅' },
+  fallback:     { bg: 'rgba(192,57,43,0.92)',   text: '#fff', emoji: '⚠️' },
+  business:     { bg: 'rgba(233,30,140,0.92)',  text: '#fff', emoji: '🏪' },
+  community:    { bg: 'rgba(0,188,212,0.92)',   text: '#fff', emoji: '👥' },
 };
 
 /* ── Helpers ──────────────────────────────────────────────── */
@@ -42,6 +56,22 @@ const getInstructions = (suggestion: DeckSuggestion): string[] => {
     'Catch the next bus/train.',
     'Arrive a bit early.',
   ];
+};
+
+const getInstructionDepartureAt = (suggestion: DeckSuggestion, now: Date): Date | null => {
+  const instructions = suggestion.instructions ?? [];
+  for (const line of instructions) {
+    if (!/\b(leave|depart|head|go|walk|travel|catch)\b/i.test(line)) continue;
+    const clockLabel = extractClockLabelFromText(line);
+    if (!clockLabel) continue;
+    const candidate = dateFromLocalClockTime(clockLabel, now, suggestion.meta?.timeZone);
+    if (!candidate) continue;
+    if (candidate.getTime() < now.getTime() - 6 * 60 * 60 * 1000) {
+      return new Date(candidate.getTime() + 24 * 60 * 60 * 1000);
+    }
+    return candidate;
+  }
+  return null;
 };
 
 /** Map tags to emoji shorthand for the "good for" row */
@@ -88,27 +118,175 @@ const buildEmojiRow = (suggestion: DeckSuggestion): string[] => {
   return result;
 };
 
+const isChallengeSuggestion = (suggestion: DeckSuggestion): boolean => {
+  const haystack = [suggestion.title, suggestion.cta, suggestion.hook, suggestion.description].join(' ').toLowerCase();
+  return /challenge|quest|mission|race|sprint|try this/.test(haystack);
+};
+
+const isSocialActivitySuggestion = (suggestion: DeckSuggestion): boolean => {
+  if (suggestion.type !== 'GO_OUT' && suggestion.type !== 'EVENT') return false;
+  const hasFixedPlace = suggestion.type === 'EVENT'
+    ? !!suggestion.event?.venue?.trim() || !!suggestion.place?.name?.trim()
+    : !!suggestion.place?.name?.trim();
+  const hasFixedTime = suggestion.type === 'EVENT' ? !!suggestion.event?.startAt : !!suggestion.meta?.planStartAt;
+  return hasFixedPlace && hasFixedTime;
+};
+
+const getConfirmedSocialProofCount = (suggestion: DeckSuggestion): number => {
+  const count = suggestion.meta?.socialProofCount;
+  if (!Number.isFinite(count)) return 0;
+  return Math.max(0, Math.floor(count as number));
+};
+
 const getWeatherEmoji = (condition?: string): string => {
   if (!condition) return '🌤️';
   if (condition === 'clear') return '☀️';
   if (condition === 'cloudy') return '☁️';
+  if (condition === 'drizzle') return '🌦️';
   if (condition === 'rain') return '🌧️';
   if (condition === 'snow') return '❄️';
   return '🌤️';
+};
+
+type BadgeTone = {
+  backgroundColor: string;
+  borderColor: string;
+  textColor: string;
+};
+
+const getSourceBadge = (source?: DeckSuggestion['source']): { label: string; tone: BadgeTone } | null => {
+  switch (source) {
+    case 'ticketmaster':
+      return {
+        label: 'Ticketmaster',
+        tone: {
+          backgroundColor: 'rgba(102, 147, 255, 0.16)',
+          borderColor: 'rgba(102, 147, 255, 0.32)',
+          textColor: '#3559B8',
+        },
+      };
+    case 'habit':
+      return {
+        label: 'Habit',
+        tone: {
+          backgroundColor: 'rgba(89, 188, 138, 0.16)',
+          borderColor: 'rgba(89, 188, 138, 0.32)',
+          textColor: '#2E8055',
+        },
+      };
+    case 'library':
+      return {
+        label: 'Library',
+        tone: {
+          backgroundColor: 'rgba(249, 189, 95, 0.18)',
+          borderColor: 'rgba(249, 189, 95, 0.34)',
+          textColor: '#9A6A12',
+        },
+      };
+    case 'todo':
+      return {
+        label: 'To-do',
+        tone: {
+          backgroundColor: 'rgba(91, 187, 206, 0.16)',
+          borderColor: 'rgba(91, 187, 206, 0.32)',
+          textColor: '#2D7080',
+        },
+      };
+    default:
+      return null;
+  }
+};
+
+const hashString = (value: string): number => {
+  let hash = 0;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 31 + value.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+};
+
+type TagFamily = {
+  hue: number;
+  saturation: number;
+  textColor: string;
+};
+
+const getTagFamily = (tag: string): TagFamily => {
+  const t = tag.toLowerCase();
+  if (/(nature|outdoor|park|walk|hike|garden|forest|tree|green|trail|fresh air|sunset|view)/.test(t)) {
+    return { hue: 132, saturation: 40, textColor: '#3C7D50' };
+  }
+  if (/(fitness|workout|exercise|run|jog|bike|cycle|sport|movement|active)/.test(t)) {
+    return { hue: 150, saturation: 42, textColor: '#2E8055' };
+  }
+  if (/(social|friends|date|meet|party|group|community|hangout)/.test(t)) {
+    return { hue: 335, saturation: 44, textColor: '#9B4D72' };
+  }
+  if (/(coffee|cafe|food|cook|eat|drink|restaurant|market|snack|brunch|lunch|dinner)/.test(t)) {
+    return { hue: 38, saturation: 46, textColor: '#9A6A12' };
+  }
+  if (/(learn|read|study|focus|work|project|planning|organize|library|cowork|brain|research)/.test(t)) {
+    return { hue: 216, saturation: 42, textColor: '#3559B8' };
+  }
+  if (/(creative|art|music|draw|paint|write|craft|design|photo|film)/.test(t)) {
+    return { hue: 24, saturation: 45, textColor: '#A05A2D' };
+  }
+  if (/(relax|calm|rest|self care|sleep|stretch|yoga|meditat|breathe|mindful)/.test(t)) {
+    return { hue: 262, saturation: 40, textColor: '#6A56A8' };
+  }
+  if (/(clean|tidy|declutter|laundry|home|repair|prep|routine|organise|organize)/.test(t)) {
+    return { hue: 198, saturation: 26, textColor: '#4F6472' };
+  }
+  if (/(shopping|market|store|browse|gift|fashion|style)/.test(t)) {
+    return { hue: 305, saturation: 32, textColor: '#955A8D' };
+  }
+  if (/(explore|adventure|trip|travel|discover|wander|city|museum|gallery|daytrip)/.test(t)) {
+    return { hue: 174, saturation: 30, textColor: '#3D7880' };
+  }
+  return { hue: 224, saturation: 22, textColor: '#5C6775' };
+};
+
+const pastelFromHue = (hue: number, saturation: number, variant: number): BadgeTone => {
+  const bgLightness = 90 + (variant % 4);
+  const borderLightness = 76 + (variant % 3);
+  return {
+    backgroundColor: `hsl(${hue} ${saturation}% ${bgLightness}%)`,
+    borderColor: `hsl(${hue} ${Math.min(60, saturation + 12)}% ${borderLightness}%)`,
+    textColor: '#274050',
+  };
+};
+
+const getTagPalette = (tag: string): BadgeTone => {
+  const normalized = tag.trim().toLowerCase();
+  const family = getTagFamily(normalized);
+  const offset = hashString(normalized) % 5;
+  const palette = pastelFromHue((family.hue + offset * 7) % 360, family.saturation, offset);
+  return {
+    ...palette,
+    textColor: family.textColor,
+  };
+};
+
+const buildSocialAvatarLabels = (count: number): string[] => {
+  if (count <= 0) return [];
+  const labels = ['A', 'B', 'C'];
+  if (count <= labels.length) return labels.slice(0, count);
+  return ['A', 'B', `+${count - 2}`];
 };
 
 /* ================================================================
  *  Card component (flip)
  * ================================================================ */
 
-export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
+export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColors, showSourceDebug }) => {
   const theme = useTheme();
-  const styles = useMemo(() => createStyles(theme), [theme]);
+  const styles = useMemo(() => createStyles(theme, deckColors), [theme, deckColors]);
   const [flipped, setFlipped] = useState(false);
   const [frontCanScroll, setFrontCanScroll] = useState(false);
   const [backCanScroll, setBackCanScroll] = useState(false);
   const [frontViewportH, setFrontViewportH] = useState(0);
   const [backViewportH, setBackViewportH] = useState(0);
+  const [nowMs, setNowMs] = useState(Date.now());
   const flipAnim = useRef(new Animated.Value(0)).current;
   const entranceAnim = useRef(new Animated.Value(0)).current;
 
@@ -125,6 +303,12 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
       useNativeDriver: true,
     }).start();
   }, [suggestion.id, flipAnim, entranceAnim]);
+
+  useEffect(() => {
+    if (preview) return undefined;
+    const timer = setInterval(() => setNowMs(Date.now()), 60_000);
+    return () => clearInterval(timer);
+  }, [preview]);
 
   const handleFlip = () => {
     if (preview) return; // no flip for preview cards
@@ -160,6 +344,10 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
 
   const eta = formatEta(suggestion);
   const isGoOut = suggestion.type === 'GO_OUT' || suggestion.type === 'EVENT';
+  const isChallenge = isChallengeSuggestion(suggestion);
+  const isSocialActivity = useMemo(() => isSocialActivitySuggestion(suggestion), [suggestion]);
+  const socialProofCount = useMemo(() => getConfirmedSocialProofCount(suggestion), [suggestion]);
+  const now = new Date(nowMs);
 
   /* ── Front side ────────────────────────────────── */
   const renderFront = () => {
@@ -182,27 +370,39 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
     const activityWeight = toWeight(activityMin);
     const afterWeight = toWeight(afterGapMin);
     if (suggestion.type === 'EVENT') {
-      const startIn = suggestion.meta?.startInMin;
-      if (startIn) {
-        subParts.push(`Starts in ${startIn}m`);
-      } else {
-        const startAt = fromISO(suggestion.event?.startAt);
-        if (startAt) subParts.push(`Starts at ${formatTime(startAt)}`);
+      const startAt = fromISO(suggestion.event?.startAt);
+      if (startAt) {
+        const startIn = Math.max(0, minutesBetween(now, startAt));
+        if (startIn <= 180) {
+          subParts.push(startIn <= 0 ? 'Starting now' : `Starts in ${formatDuration(startIn)}`);
+        } else {
+          subParts.push(`Starts at ${formatTime(startAt)}`);
+        }
+      } else if (typeof suggestion.meta?.startInMin === 'number') {
+        const startIn = Math.max(0, suggestion.meta.startInMin);
+        if (startIn <= 180) {
+          subParts.push(startIn <= 0 ? 'Starting now' : `Starts in ${formatDuration(startIn)}`);
+        } else {
+          subParts.push(`Starts in ${formatDuration(startIn)}`);
+        }
       }
     } else if (isGoOut) {
-      const leaveBy = fromISO(suggestion.meta?.leaveBy);
+      const instructionLeaveAt = getInstructionDepartureAt(suggestion, now);
+      const leaveBy = instructionLeaveAt ?? fromISO(suggestion.meta?.leaveBy);
       if (leaveBy) {
-        const leaveNow = leaveBy.getTime() - Date.now() <= 5 * 60 * 1000;
-        const minutesUntilLeave = Math.max(0, minutesBetween(new Date(), leaveBy));
+        const leaveNow = leaveBy.getTime() - now.getTime() <= 5 * 60 * 1000;
+        const minutesUntilLeave = Math.max(0, minutesBetween(now, leaveBy));
         subParts.push(leaveNow ? 'Leave now' : `Leave in ${formatDuration(minutesUntilLeave)}`);
       }
     }
     if (!subParts.length) {
-      subParts.push(`Fits in ${formatDuration(suggestion.durationMin)}`);
+      subParts.push(`⏱ ${formatDuration(suggestion.durationMin)}`);
     }
 
     const hasMap = isGoOut && !!suggestion.place?.lat && !!suggestion.place?.lng;
     const frontSteps = hasMap ? [] : getInstructions(suggestion).slice(0, 3);
+    const sourceBadge = getSourceBadge(suggestion.source);
+    const socialAvatarLabels = buildSocialAvatarLabels(socialProofCount);
 
     return (
       <ScrollView
@@ -214,18 +414,58 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
         onLayout={(e) => setFrontViewportH(e.nativeEvent.layout.height)}
         onContentSizeChange={(_, h) => setFrontCanScroll(frontViewportH > 0 && h > frontViewportH + 4)}
       >
-        {/* Source badge */}
-        {suggestion.source === 'gemini' && (
-          <View style={styles.aiBadge}>
-            <Text style={styles.aiBadgeText}>AI</Text>
+        <View style={styles.frontTopRow}>
+          <View style={styles.badgeCluster}>
+            {sourceBadge && (
+              <View style={styles.badgePillWrap}>
+                <View
+                  style={[
+                    styles.badgePill,
+                    {
+                      backgroundColor: sourceBadge.tone.backgroundColor,
+                      borderColor: sourceBadge.tone.borderColor,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.badgeText, { color: sourceBadge.tone.textColor }]}>{sourceBadge.label}</Text>
+                </View>
+              </View>
+            )}
+            {isChallenge && (
+              <View style={styles.badgePillWrap}>
+                <View style={[styles.badgePill, styles.challengeBadge]}>
+                  <Text style={styles.challengeBadgeText}>Challenge</Text>
+                </View>
+              </View>
+            )}
+            {isSocialActivity && (
+              <View style={styles.badgePillWrap}>
+                <View style={[styles.badgePill, styles.socialBadge]}>
+                  <Text style={styles.socialBadgeText}>
+                    {socialProofCount > 0 ? `${socialProofCount} going` : 'Social'}
+                  </Text>
+                </View>
+              </View>
+            )}
           </View>
-        )}
-        {suggestion.source === 'ticketmaster' && (
-          <View style={styles.badge}><Text style={styles.badgeText}>Ticketmaster</Text></View>
-        )}
-        {suggestion.source === 'habit' && (
-          <View style={[styles.badge, styles.badgeHabit]}><Text style={[styles.badgeText, styles.badgeTextHabit]}>Habit</Text></View>
-        )}
+
+          {socialAvatarLabels.length > 0 && (
+            <View style={styles.socialStack}>
+              {socialAvatarLabels.map((label, index) => (
+                <View
+                  key={`${label}_${index}`}
+                  style={[
+                    styles.socialAvatar,
+                    index > 0 && styles.socialAvatarOverlap,
+                    index === socialAvatarLabels.length - 1 && socialProofCount > 3 && styles.socialAvatarCount,
+                  ]}
+                >
+                  <Text style={styles.socialAvatarText}>{label}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
 
         {suggestion.hook && (
           <View style={styles.hookBlock}>
@@ -245,12 +485,9 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
 
         {/* Weather + timing line */}
         <View style={styles.infoRow}>
-          {isGoOut && (
-            <Text style={styles.infoChip}>🌤️ Go outside</Text>
-          )}
           <Text style={styles.infoChip}>{subParts.join(' · ')}</Text>
-          {typeof suggestion.rating === 'number' && (
-            <Text style={styles.ratingChip}>⭐ {suggestion.rating.toFixed(1)}</Text>
+          {eta && (
+            <Text style={styles.infoChipRight}>📍 {eta}</Text>
           )}
         </View>
 
@@ -317,6 +554,9 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
   /* ── Back side ─────────────────────────────────── */
   const renderBack = () => {
     const instructions = getInstructions(suggestion);
+    const backRatingLabel = typeof suggestion.rating === 'number'
+      ? `⭐ ${suggestion.rating.toFixed(1)}${typeof suggestion.ratingCount === 'number' ? ` · ${suggestion.ratingCount}` : ''}`
+      : null;
     return (
       <ScrollView
         style={styles.sideScroll}
@@ -327,25 +567,21 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
         onLayout={(e) => setBackViewportH(e.nativeEvent.layout.height)}
         onContentSizeChange={(_, h) => setBackCanScroll(backViewportH > 0 && h > backViewportH + 4)}
       >
-        {/* Header row: title on the left, rating badge on the top right */}
+        {/* Header row: title on the left, time badge on the top right */}
         <View style={styles.backHeader}>
           <Text style={[styles.backTitle, { flex: 1 }]}>{suggestion.title}</Text>
-          {typeof suggestion.rating === 'number' && (
-            <View style={styles.ratingBadge}>
-              <Text style={styles.ratingBadgeText}>⭐ {suggestion.rating.toFixed(1)}</Text>
-              {typeof suggestion.ratingCount === 'number' && (
-                <Text style={styles.ratingBadgeCount}>{suggestion.ratingCount} reviews</Text>
-              )}
+          <View style={styles.backHeaderRight}>
+            <View style={styles.backTimeBadge}>
+              <Text style={styles.backTimeBadgeText}>⏱ {formatDuration(suggestion.durationMin)}</Text>
             </View>
-          )}
+            {backRatingLabel && (
+              <Text style={styles.backTimeBadgeSub}>{backRatingLabel}</Text>
+            )}
+          </View>
         </View>
 
         {/* Activity description */}
-        <Text style={styles.eyebrow}>
-          {isGoOut && suggestion.place
-            ? (suggestion.source === 'curated' ? 'The plan' : 'About this place')
-            : 'Why this is cool'}
-        </Text>
+        <View style={styles.eyebrowSpacer} />
         <Text style={styles.description}>{suggestion.description}</Text>
 
         {/* Venue details for place-enriched curated cards */}
@@ -358,22 +594,18 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
             </Text>
           </>
         )}
-        {suggestion.whyNow && (
-          <Text style={styles.whyNowText}>{suggestion.whyNow}</Text>
-        )}
-
         <Text style={styles.eyebrow}>What you'll do</Text>
-        <View style={styles.steps}>
+        <View style={styles.backSteps}>
           {instructions.map((step, i) => (
-            <Text key={`back_step_${i}`} style={styles.stepText}>
-              {i + 1}. {step}
-            </Text>
+            <View key={`back_step_${i}`} style={styles.backStepRow}>
+              <Text style={styles.backStepNum}>{i + 1}</Text>
+              <Text style={styles.backStepText}>{step}</Text>
+            </View>
           ))}
         </View>
 
         {/* Meta details */}
         <View style={styles.metaRow}>
-          <Text style={styles.metaText}>⏱ {formatDuration(suggestion.durationMin)}</Text>
           {eta && <Text style={styles.metaText}>🚀 {eta}</Text>}
           {suggestion.place?.costHint && (
             <Text style={styles.metaText}>💰 {suggestion.place.costHint}</Text>
@@ -381,16 +613,31 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
           {suggestion.event?.priceRange && (
             <Text style={styles.metaText}>🎟️ {suggestion.event.priceRange}</Text>
           )}
+          {typeof suggestion.rating === 'number' && (
+            <Text style={styles.metaText}>⭐ {suggestion.rating.toFixed(1)}</Text>
+          )}
         </View>
 
         {/* Tags as text on the back */}
         {(suggestion.tags?.length ?? 0) > 0 && (
           <View style={styles.tagsRow}>
-            {suggestion.tags!.map((tag) => (
-              <View key={tag} style={styles.tag}>
-                <Text style={styles.tagText}>{tag}</Text>
-              </View>
-            ))}
+            {suggestion.tags!.map((tag) => {
+              const palette = getTagPalette(tag);
+              return (
+                <View
+                  key={tag}
+                  style={[
+                    styles.tag,
+                    {
+                      backgroundColor: palette.backgroundColor,
+                      borderColor: palette.borderColor,
+                    },
+                  ]}
+                >
+                  <Text style={[styles.tagText, { color: palette.textColor }]}>{tag}</Text>
+                </View>
+              );
+            })}
           </View>
         )}
 
@@ -491,6 +738,25 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview }) => {
         {renderBack()}
       </Animated.View>
       </Pressable>
+
+      {/* Admin source debug overlay */}
+      {showSourceDebug && (() => {
+        const src = suggestion.source ?? 'unknown';
+        const cfg = SOURCE_DEBUG_CONFIG[src] ?? { bg: 'rgba(80,80,80,0.92)', text: '#fff', emoji: '❓' };
+        return (
+          <View
+            pointerEvents="none"
+            style={[
+              styles.sourceDebugStrip,
+              { backgroundColor: cfg.bg },
+            ]}
+          >
+            <Text style={[styles.sourceDebugText, { color: cfg.text }]}>
+              {src[0].toUpperCase() + src.slice(1)} · {suggestion.id.slice(0, 10)}
+            </Text>
+          </View>
+        );
+      })()}
     </Animated.View>
   );
 };
@@ -499,7 +765,11 @@ const CARD_HEIGHT = 420;
 
 export { CARD_HEIGHT };
 
-const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
+const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: string; text: string }) => {
+  const accent = deckColors?.bg ?? theme.colors.accent;
+  const accentText = deckColors?.text ?? theme.colors.accentText;
+  const cardBackground = theme.isDark ? theme.colors.card : '#FFFFFF';
+  return StyleSheet.create({
   cardOuter: {
     minHeight: CARD_HEIGHT,
   },
@@ -507,9 +777,27 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     minHeight: CARD_HEIGHT,
     zIndex: 4,
   },
+  sourceDebugStrip: {
+    position: 'absolute',
+    bottom: 10,
+    left: 12,
+    right: 12,
+    borderRadius: 8,
+    paddingVertical: 5,
+    paddingHorizontal: 10,
+    zIndex: 20,
+    alignItems: 'center',
+  },
+  sourceDebugText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    letterSpacing: 0.4,
+  },
   card: {
     minHeight: CARD_HEIGHT,
-    backgroundColor: theme.colors.card,
+    backgroundColor: cardBackground,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
     borderRadius: theme.radius.lg,
     padding: theme.spacing.lg,
     shadowColor: theme.colors.shadow,
@@ -548,9 +836,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
   },
-  badgeHabit: {
-    backgroundColor: theme.colors.success,
-  },
   badgeText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 10,
@@ -558,25 +843,44 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.6,
   },
-  badgeTextHabit: {
-    color: theme.colors.successText,
+  frontTopRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
   },
-  aiBadge: {
-    position: 'absolute',
-    top: 14,
-    right: 14,
-    zIndex: 3,
-    backgroundColor: theme.colors.accent,
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 999,
+  badgeCluster: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    flex: 1,
   },
-  aiBadgeText: {
+  challengeBadge: {
+    backgroundColor: 'rgba(235, 107, 120, 0.16)',
+    borderColor: 'rgba(235, 107, 120, 0.34)',
+  },
+  challengeBadgeText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 10,
-    color: '#FFFFFF',
+    color: '#B33C50',
     textTransform: 'uppercase',
-    letterSpacing: 0.8,
+    letterSpacing: 0.7,
+  },
+  socialStack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+  },
+  socialBadge: {
+    backgroundColor: 'rgba(238, 155, 191, 0.16)',
+    borderColor: 'rgba(238, 155, 191, 0.34)',
+  },
+  socialBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: '#9B4D72',
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
   },
   hookBlock: {
     alignSelf: 'flex-start',
@@ -589,7 +893,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   hookText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 13,
-    color: theme.colors.accentDark,
+    color: deckColors?.text ?? theme.colors.accentDark,
     lineHeight: 18,
   },
   title: {
@@ -604,7 +908,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.heading,
     fontSize: 22,
     lineHeight: 28,
-    color: theme.colors.accent,
+    color: accent,
   },
   titleSubline: {
     fontFamily: theme.fonts.semibold,
@@ -615,9 +919,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   infoRow: {
     flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: 8,
+    justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  infoChipRight: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+    textAlign: 'right',
   },
   timelineCard: {
     marginTop: theme.spacing.xs,
@@ -647,13 +956,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: 2,
   },
   timelineBefore: {
-    backgroundColor: theme.colors.card,
+    backgroundColor: cardBackground,
   },
   timelineActivity: {
     backgroundColor: theme.colors.accentSoft,
   },
   timelineAfter: {
-    backgroundColor: theme.colors.card,
+    backgroundColor: cardBackground,
   },
   timelineLabel: {
     fontFamily: theme.fonts.semibold,
@@ -676,6 +985,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     fontSize: 13,
     color: theme.colors.textMuted,
+    flex: 1,
   },
   ratingChip: {
     fontFamily: theme.fonts.semibold,
@@ -724,7 +1034,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   frontStepNum: {
     fontFamily: theme.fonts.semibold,
     fontSize: 12,
-    color: theme.colors.accent,
+    color: accent,
     width: 16,
     textAlign: 'center',
   },
@@ -732,6 +1042,36 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
     fontFamily: theme.fonts.body,
     fontSize: 13,
+    color: theme.colors.text,
+  },
+  badgePillWrap: {
+    alignSelf: 'flex-start',
+  },
+  badgePill: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderWidth: 1,
+  },
+  socialAvatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#FFFFFF',
+    backgroundColor: theme.colors.backgroundAlt,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  socialAvatarOverlap: {
+    marginLeft: -6,
+  },
+  socialAvatarCount: {
+    backgroundColor: 'rgba(205, 217, 227, 0.92)',
+  },
+  socialAvatarText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
     color: theme.colors.text,
   },
   heroEmojiRow: {
@@ -828,24 +1168,32 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.heading,
     fontSize: 20,
     color: theme.colors.text,
+    flex: 1,
   },
-  ratingBadge: {
-    backgroundColor: '#FDF6E3',
+  backHeaderRight: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+    gap: 4,
+  },
+  backTimeBadge: {
+    backgroundColor: 'rgba(205, 217, 227, 0.22)',
+    borderWidth: 1,
+    borderColor: 'rgba(205, 217, 227, 0.4)',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 999,
     alignItems: 'center',
-    minWidth: 52,
+    minWidth: 60,
   },
-  ratingBadgeText: {
+  backTimeBadgeText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 13,
-    color: '#B8860B',
+    color: theme.colors.text,
   },
-  ratingBadgeCount: {
+  backTimeBadgeSub: {
     fontFamily: theme.fonts.body,
     fontSize: 9,
-    color: '#9A7209',
+    color: theme.colors.textMuted,
     marginTop: 1,
   },
   eyebrow: {
@@ -862,11 +1210,8 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     lineHeight: 20,
     color: theme.colors.text,
   },
-  whyNowText: {
-    fontFamily: theme.fonts.body,
-    fontSize: 13,
-    color: theme.colors.accent,
-    fontStyle: 'italic',
+  eyebrowSpacer: {
+    height: 0,
   },
   venueInfo: {
     fontFamily: theme.fonts.semibold,
@@ -874,18 +1219,31 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.text,
     lineHeight: 18,
   },
-  ratingLine: {
+  backSteps: {
+    gap: 6,
+    backgroundColor: theme.colors.backgroundAlt,
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+  },
+  backStepRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+  },
+  backStepNum: {
     fontFamily: theme.fonts.semibold,
     fontSize: 13,
-    color: '#B8860B',
+    color: accent,
+    width: 18,
+    textAlign: 'center',
   },
-  steps: {
-    gap: 4,
-  },
-  stepText: {
+  backStepText: {
+    flex: 1,
     fontFamily: theme.fonts.body,
-    fontSize: 13,
-    color: theme.colors.textMuted,
+    fontSize: 14,
+    lineHeight: 20,
+    color: theme.colors.text,
   },
   metaRow: {
     flexDirection: 'row',
@@ -901,14 +1259,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   tagsRow: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 6,
-    marginTop: theme.spacing.xs,
+    gap: 8,
+    marginTop: theme.spacing.sm,
   },
   tag: {
-    backgroundColor: theme.colors.backgroundAlt,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: theme.radius.sm,
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
   },
   tagText: {
     fontFamily: theme.fonts.semibold,
@@ -916,3 +1274,4 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.text,
   },
 });
+};

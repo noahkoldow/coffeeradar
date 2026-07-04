@@ -16,19 +16,19 @@ import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { ToggleRow } from '../components/ToggleRow';
 import { updateBusinessProfile } from '../services/business';
+import * as ImagePicker from 'expo-image-picker';
 
-type Props = StackScreenProps<RootStackParamList, 'Deck'>;
+type Props = StackScreenProps<RootStackParamList, 'BusinessSettings'>;
 
-interface BusinessSettingsScreenProps extends StackScreenProps<RootStackParamList, 'Deck'> {}
-
-export const BusinessSettingsScreen: React.FC<BusinessSettingsScreenProps> = ({
+export const BusinessSettingsScreen: React.FC<Props> = ({
   navigation,
 }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
-  const { state } = useAppState();
+  const { state, actions } = useAppState();
 
   const business = state.businessProfile;
 
@@ -44,6 +44,8 @@ export const BusinessSettingsScreen: React.FC<BusinessSettingsScreenProps> = ({
   const [facebook, setFacebook] = useState(business?.socialLinks?.facebook || '');
 
   const [saving, setSaving] = useState(false);
+  const [localLogo, setLocalLogo] = useState<string | undefined>(business?.logo?.url);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
 
   const handleSave = async () => {
     if (!business) return;
@@ -71,6 +73,7 @@ export const BusinessSettingsScreen: React.FC<BusinessSettingsScreenProps> = ({
           instagram: instagram.trim() || undefined,
           facebook: facebook.trim() || undefined,
         },
+        logo: localLogo ? { url: localLogo, uploadedAt: new Date().toISOString() } : undefined,
       });
       Alert.alert('Success', 'Profile updated');
       navigation.goBack();
@@ -110,9 +113,86 @@ export const BusinessSettingsScreen: React.FC<BusinessSettingsScreenProps> = ({
 
         <Text style={styles.title}>Business Settings</Text>
 
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Business mode</Text>
+          <ToggleRow
+            label="Business-only mode"
+            value={state.isBusinessOnly}
+            onValueChange={(value) => {
+              if (value) {
+                Alert.alert(
+                  'Enable business-only mode?',
+                  'Consumer screens will be hidden until you turn this off again.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Enable',
+                      onPress: () => {
+                        actions.setIsBusinessOnly(true);
+                        navigation.reset({ index: 0, routes: [{ name: 'BusinessHub' }] });
+                      },
+                    },
+                  ],
+                );
+                return;
+              }
+
+              Alert.alert(
+                'Disable business-only mode?',
+                'Home, Deck, and AI queuing will come back for this account.',
+                [
+                  { text: 'Cancel', style: 'cancel' },
+                  {
+                    text: 'Disable',
+                    onPress: () => {
+                      actions.setIsBusinessOnly(false);
+                      navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+                    },
+                  },
+                ],
+              );
+            }}
+          />
+          <Text style={styles.sectionSubtitle}>
+            This mode hides consumer screens until you switch it off again.
+          </Text>
+        </View>
+
         {/* Profile Info */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Business info</Text>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Business logo</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <View style={{ width: 56, height: 56, borderRadius: 8, overflow: 'hidden', backgroundColor: theme.colors.backgroundAlt }}>
+                {localLogo ? <Image source={{ uri: localLogo }} style={{ width: '100%', height: '100%', resizeMode: 'cover' }} /> : null}
+              </View>
+              <Pressable
+                onPress={async () => {
+                  setUploadingLogo(true);
+                  try {
+                    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                    if (!permission.granted) {
+                      Alert.alert('Permission required', 'Please allow photo access to upload your logo.');
+                      return;
+                    }
+                    const res = await ImagePicker.launchImageLibraryAsync({ mediaTypes: ['images'], allowsEditing: true, aspect: [1, 1], quality: 0.9 });
+                    if (res.canceled || !res.assets.length) return;
+                    const asset = res.assets[0];
+                    setLocalLogo(asset.uri);
+                  } catch (e) {
+                    console.error(e);
+                  } finally {
+                    setUploadingLogo(false);
+                  }
+                }}
+                style={styles.mediaButton}
+              >
+                <Text style={styles.mediaButtonText}>{uploadingLogo ? 'Uploading...' : localLogo ? 'Change logo' : 'Upload logo'}</Text>
+              </Pressable>
+            </View>
+          </View>
 
           <View style={styles.formGroup}>
             <Text style={styles.label}>Business name</Text>
@@ -333,6 +413,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       borderRadius: theme.radius.md,
       padding: theme.spacing.lg,
       marginBottom: theme.spacing.lg,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      shadowColor: theme.colors.shadow,
+      shadowOpacity: 0.04,
+      shadowRadius: 10,
+      shadowOffset: { width: 0, height: 4 },
+      elevation: 1,
     },
     sectionTitle: {
       fontFamily: theme.fonts.semibold,

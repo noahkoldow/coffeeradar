@@ -5,13 +5,14 @@
 
 import { Availability, DeckSuggestion, Habit } from '../types';
 import { WeatherInfo } from './weather';
-import { formatDuration } from '../utils/time';
+import { formatDuration, getTimeZoneParts } from '../utils/time';
 
 type WhyNowContext = {
   availability: Availability;
   weather: WeatherInfo | null;
   now: Date;
   habits: Habit[];
+  timeZone?: string | null;
 };
 
 const timeOfDayLabel = (hour: number): string => {
@@ -45,6 +46,7 @@ const pickNudge = (id: string): string => {
 const weatherLine = (weather: WeatherInfo | null, type: string): string | null => {
   if (!weather || weather.condition === 'unknown') return null;
   if (type === 'AT_HOME') {
+    if (weather.condition === 'drizzle') return `Light drizzle outside — cozy indoor time still works.`;
     if (weather.condition === 'rain') return `It's raining outside — perfect time for this.`;
     if (weather.condition === 'snow') return `It's snowing — cozy indoor time.`;
     return null;
@@ -52,6 +54,7 @@ const weatherLine = (weather: WeatherInfo | null, type: string): string | null =
   if (type === 'GO_OUT' || type === 'EVENT') {
     if (weather.condition === 'clear') return `${weather.label} — great weather to be outside.`;
     if (weather.condition === 'cloudy') return `${weather.label} — still nice to go out.`;
+    if (weather.condition === 'drizzle') return `A light drizzle outside — still doable with a jacket.`;
     if (weather.condition === 'rain') return `Bring an umbrella — ${weather.label.toLowerCase()}.`;
     if (weather.condition === 'snow') return `Bundle up — ${weather.label.toLowerCase()}.`;
   }
@@ -63,7 +66,9 @@ export const generateWhyNow = (
   ctx: WhyNowContext,
 ): string => {
   const parts: string[] = [];
-  const hour = ctx.now.getHours();
+  // Get local hour using proper timezone handling (not UTC)
+  const tzParts = getTimeZoneParts(ctx.now, ctx.timeZone);
+  const hour = tzParts.hour;
   const tod = timeOfDayLabel(hour);
 
   // 1. Calendar-aware urgency

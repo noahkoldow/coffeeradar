@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -7,6 +7,7 @@ import Slider from '@react-native-community/slider';
 import { RootStackParamList } from '../navigation/types';
 import { ToggleRow } from '../components/ToggleRow';
 import { Chip } from '../components/Chip';
+import WakeWindowRange from '../components/WakeWindowRange';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { getCalendars, requestCalendarPermission } from '../services/calendar';
@@ -20,6 +21,7 @@ import { fetchOsmSuggestions } from '../services/osmPlaces';
 import { fetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { Availability } from '../types';
 import { formatTime, normalizeClockTime } from '../utils/time';
+import { isBusinessAdmin } from '../services/user';
 
 const interestGroups = [
   {
@@ -74,6 +76,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state, actions } = useAppState();
+  const isAdmin = isBusinessAdmin(state.userEmail);
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
   const [debugMessages, setDebugMessages] = useState<DebugMessage[]>([]);
   const [clockTick, setClockTick] = useState(Date.now());
@@ -117,11 +120,15 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     };
   };
 
-  const saveWakeWindow = () => {
+  const updateWakeWindow = (startValue: string, endValue: string) => {
+    const nextStart = normalizeClockTime(startValue, '07:00');
+    const nextEnd = normalizeClockTime(endValue, '23:00');
+    setWakeStartTime(nextStart);
+    setWakeEndTime(nextEnd);
     actions.setPrefs({
       ...state.prefs,
-      wakeStartTime: normalizeClockTime(wakeStartTime, '07:00'),
-      wakeEndTime: normalizeClockTime(wakeEndTime, '23:00'),
+      wakeStartTime: nextStart,
+      wakeEndTime: nextEnd,
     });
   };
 
@@ -201,6 +208,38 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         </View>
 
         <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Business Account</Text>
+          <ToggleRow
+            label="Business-only mode"
+            value={state.isBusinessOnly}
+            onValueChange={(value) => {
+              if (value) {
+                Alert.alert(
+                  'Enable business-only mode?',
+                  'Consumer screens will be hidden until you turn this off again.',
+                  [
+                    { text: 'Cancel', style: 'cancel' },
+                    {
+                      text: 'Enable',
+                      onPress: () => {
+                        actions.setIsBusinessOnly(true);
+                        navigation.reset({ index: 0, routes: [{ name: 'BusinessHub' }] });
+                      },
+                    },
+                  ],
+                );
+                return;
+              }
+              actions.setIsBusinessOnly(false);
+              navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+            }}
+          />
+          <Text style={styles.rowText}>
+            When enabled, consumer screens, Home, and AI queuing are hidden until you disable it.
+          </Text>
+        </View>
+
+        <View style={styles.section}>
           <Text style={styles.sectionTitle}>Mode</Text>
           <ToggleRow
             label="Dark theme"
@@ -211,31 +250,9 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           {interestGroups.map((group) => (
             <View key={group.title}>
               <Text style={styles.groupLabel}>{group.title}</Text>
-              <View style={styles.chipsWrap}>
-                {group.options.map((interest) => {
-                  const selected = state.prefs.interestTags.includes(interest.id);
-                  return (
-                    <Chip
-                      key={interest.id}
-                      label={interest.label}
-                      selected={selected}
-                      onPress={() => {
-                        const updated = selected
-                          ? state.prefs.interestTags.filter((tag) => tag !== interest.id)
-                          : [...state.prefs.interestTags, interest.id];
-                        actions.setPrefs({ ...state.prefs, interestTags: updated });
-                      }}
-                    />
-                  );
-                })}
-              </View>
             </View>
           ))}
-          <Text style={styles.rowText}>Radius — {state.prefs.radiusKm} km</Text>
           <Slider
-            style={styles.slider}
-            minimumValue={1}
-            maximumValue={25}
             step={1}
             value={state.prefs.radiusKm}
             onSlidingComplete={(val) => actions.setPrefs({ ...state.prefs, radiusKm: val })}
@@ -250,30 +267,13 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
 
           <Text style={styles.rowText}>Wake window</Text>
           <Text style={styles.helperText}>Keeps suggestions away from sleep time unless you are clearly awake irregularly.</Text>
-          <View style={styles.inlineRow}>
-            <TextInput
-              style={styles.timeInput}
-              value={wakeStartTime}
-              onChangeText={setWakeStartTime}
-              placeholder="07:00"
-              placeholderTextColor={theme.colors.textMuted}
-              keyboardType="number-pad"
-              maxLength={5}
-            />
-            <Text style={styles.timeDash}>to</Text>
-            <TextInput
-              style={styles.timeInput}
-              value={wakeEndTime}
-              onChangeText={setWakeEndTime}
-              placeholder="23:00"
-              placeholderTextColor={theme.colors.textMuted}
-              keyboardType="number-pad"
-              maxLength={5}
+          <View style={styles.wakeWindowContainer}>
+            <WakeWindowRange
+              start={wakeStartTime}
+              end={wakeEndTime}
+              onChange={(s, e) => updateWakeWindow(s, e)}
             />
           </View>
-          <Pressable style={styles.actionButton} onPress={saveWakeWindow}>
-            <Text style={styles.actionText}>Save wake window</Text>
-          </Pressable>
         </View>
 
         <View style={styles.section}>
@@ -329,80 +329,82 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           </Pressable>
         </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>DevOps</Text>
-          <View style={styles.debugActions}>
-            <Pressable
-              style={styles.debugButton}
-              onPress={() => runTest('ticketmaster_test', async () => {
-                const availability = buildAvailability();
-                const results = await fetchTicketmasterSuggestions(state.location, state.prefs, availability);
-                return results.length;
-              })}
-            >
-              <Text style={styles.debugButtonText}>Test Ticketmaster</Text>
-            </Pressable>
-            <Pressable
-              style={styles.debugButton}
-              onPress={() => runTest('seatgeek_test', async () => {
-                if (!requireLocation()) return null;
-                const availability = buildAvailability();
-                const results = await fetchSeatGeekSuggestions(state.location, state.prefs, availability);
-                return results.length;
-              })}
-            >
-              <Text style={styles.debugButtonText}>Test SeatGeek</Text>
-            </Pressable>
-            <Pressable
-              style={styles.debugButton}
-              onPress={() => runTest('google_places_test', async () => {
-                if (!requireLocation()) return null;
-                const availability = buildAvailability();
-                const results = await fetchGooglePlacesSuggestions(state.location, state.prefs, availability);
-                return results.length;
-              })}
-            >
-              <Text style={styles.debugButtonText}>Test Google Places</Text>
-            </Pressable>
-            <Pressable
-              style={styles.debugButton}
-              onPress={() => runTest('osm_test', async () => {
-                if (!requireLocation()) return null;
-                const availability = buildAvailability();
-                const results = await fetchOsmSuggestions(state.location, state.prefs, availability);
-                return results.length;
-              })}
-            >
-              <Text style={styles.debugButtonText}>Test OSM</Text>
-            </Pressable>
-            <Pressable
-              style={styles.debugButton}
-              onPress={() => runTest('gemini_test', async () => {
-                const availability = buildAvailability();
-                const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null);
-                return results.length;
-              })}
-            >
-              <Text style={styles.debugButtonText}>Test Gemini</Text>
-            </Pressable>
+        {isAdmin && (
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>DevOps</Text>
+            <View style={styles.debugActions}>
+              <Pressable
+                style={styles.debugButton}
+                onPress={() => runTest('ticketmaster_test', async () => {
+                  const availability = buildAvailability();
+                  const results = await fetchTicketmasterSuggestions(state.location, state.prefs, availability);
+                  return results.length;
+                })}
+              >
+                <Text style={styles.debugButtonText}>Test Ticketmaster</Text>
+              </Pressable>
+              <Pressable
+                style={styles.debugButton}
+                onPress={() => runTest('seatgeek_test', async () => {
+                  if (!requireLocation()) return null;
+                  const availability = buildAvailability();
+                  const results = await fetchSeatGeekSuggestions(state.location, state.prefs, availability);
+                  return results.length;
+                })}
+              >
+                <Text style={styles.debugButtonText}>Test SeatGeek</Text>
+              </Pressable>
+              <Pressable
+                style={styles.debugButton}
+                onPress={() => runTest('google_places_test', async () => {
+                  if (!requireLocation()) return null;
+                  const availability = buildAvailability();
+                  const results = await fetchGooglePlacesSuggestions(state.location, state.prefs, availability);
+                  return results.length;
+                })}
+              >
+                <Text style={styles.debugButtonText}>Test Google Places</Text>
+              </Pressable>
+              <Pressable
+                style={styles.debugButton}
+                onPress={() => runTest('osm_test', async () => {
+                  if (!requireLocation()) return null;
+                  const availability = buildAvailability();
+                  const results = await fetchOsmSuggestions(state.location, state.prefs, availability);
+                  return results.length;
+                })}
+              >
+                <Text style={styles.debugButtonText}>Test OSM</Text>
+              </Pressable>
+              <Pressable
+                style={styles.debugButton}
+                onPress={() => runTest('gemini_test', async () => {
+                  const availability = buildAvailability();
+                  const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null);
+                  return results.length;
+                })}
+              >
+                <Text style={styles.debugButtonText}>Test Gemini</Text>
+              </Pressable>
+            </View>
+            {debugMessages.length === 0 ? (
+              <Text style={styles.rowText}>No API errors logged.</Text>
+            ) : (
+              debugMessages.slice(0, 8).map((msg) => (
+                <View key={msg.id} style={styles.debugRow}>
+                  <Text style={styles.debugSource}>{msg.source}</Text>
+                  <Text style={styles.debugText}>{msg.message}</Text>
+                  <Text style={styles.debugTime}>{new Date(msg.ts).toLocaleTimeString()}</Text>
+                </View>
+              ))
+            )}
+            {debugMessages.length > 0 && (
+              <Pressable onPress={clearDebugMessages}>
+                <Text style={styles.link}>Clear logs</Text>
+              </Pressable>
+            )}
           </View>
-          {debugMessages.length === 0 ? (
-            <Text style={styles.rowText}>No API errors logged.</Text>
-          ) : (
-            debugMessages.slice(0, 8).map((msg) => (
-              <View key={msg.id} style={styles.debugRow}>
-                <Text style={styles.debugSource}>{msg.source}</Text>
-                <Text style={styles.debugText}>{msg.message}</Text>
-                <Text style={styles.debugTime}>{new Date(msg.ts).toLocaleTimeString()}</Text>
-              </View>
-            ))
-          )}
-          {debugMessages.length > 0 && (
-            <Pressable onPress={clearDebugMessages}>
-              <Text style={styles.link}>Clear logs</Text>
-            </Pressable>
-          )}
-        </View>
+        )}
       </ScrollView>
     </LinearGradient>
   );
@@ -430,7 +432,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     padding: theme.spacing.md,
     backgroundColor: theme.colors.card,
     borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     gap: theme.spacing.sm,
+    shadowColor: theme.colors.shadow,
+    shadowOpacity: 0.04,
+    shadowRadius: 10,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 1,
   },
   sectionTitle: {
     fontFamily: theme.fonts.semibold,
@@ -474,27 +483,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: 12,
   },
-  inlineRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-  },
-  timeInput: {
-    flex: 1,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    color: theme.colors.text,
-    fontFamily: theme.fonts.body,
-    backgroundColor: theme.colors.card,
-    textAlign: 'center',
-  },
-  timeDash: {
-    fontFamily: theme.fonts.semibold,
-    color: theme.colors.textMuted,
+  wakeWindowContainer: {
+    marginVertical: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
   },
   chipsWrap: {
     flexDirection: 'row',

@@ -10,8 +10,9 @@ import { EmojiConfetti } from '../components/EmojiConfetti';
 import { DeckLoader } from '../components/DeckLoader';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
+import ChargeBar from '../components/ChargeBar';
 import { RootStackParamList } from '../navigation/types';
-import { Availability, Commitment, DeckSuggestion, HistoryState, SavedSuggestion, ScheduledActivity } from '../types';
+import { Availability, Commitment, DeckSuggestion, HistoryState, SavedSuggestion, ScheduledActivity, Suggestion } from '../types';
 import { buildDeck, buildFilteredFallbacks } from '../services/suggestions';
 import { recordActivityShown, recordActivityCompleted, shouldSuggestHabitConversion } from '../services/activityRepetitionService';
 import { recordAccept, recordInterested, recordReject, recordTypeAccept, recordTypeReject, decayAffinities } from '../services/affinity';
@@ -20,8 +21,15 @@ import { chooseTravelMode, estimateEtaMinutes, haversineKm } from '../services/t
 import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../services/calendar';
 import { logEvent } from '../services/analytics';
 import { syncBusinessMetric } from '../services/user';
+import { SuggestionCard } from '../components/SuggestionCard';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
+
+/** Add your admin email(s) here to enable the source-debug overlay on every card */
+const ADMIN_EMAILS: string[] = (process.env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS ?? '')
+  .split(',')
+  .map((e: string) => e.trim())
+  .filter(Boolean);
 
 export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
@@ -29,12 +37,69 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
+  const isAdmin = ADMIN_EMAILS.length > 0 && ADMIN_EMAILS.includes(state.userEmail ?? '');
   const [deck, setDeck] = useState<DeckSuggestion[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [confettiEmojis, setConfettiEmojis] = useState<string[]>([]);
   const [fallbackUsed, setFallbackUsed] = useState(false);
+  const [gridUsed, setGridUsed] = useState(false);
+  const [inspectedGridCard, setInspectedGridCard] = useState<DeckSuggestion | null>(null);
+  const [showLoadingBackButton, setShowLoadingBackButton] = useState(false);
+  const [timerNow, setTimerNow] = useState<number>(Date.now());
+
+  const INTERVAL_MIN = 30;
+  const overlayVisible = !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow';
+
+  useEffect(() => {
+    navigation.setOptions({
+      gestureEnabled: false,
+    });
+  }, [navigation]);
+
+  useEffect(() => {
+    if (!loading) {
+      setShowLoadingBackButton(false);
+      return undefined;
+    }
+
+    setShowLoadingBackButton(false);
+    const timeout = setTimeout(() => setShowLoadingBackButton(true), 10_000);
+    return () => clearTimeout(timeout);
+  }, [loading]);
+
+  useEffect(() => {
+    if (!overlayVisible) return;
+    setTimerNow(Date.now());
+    const t = setInterval(() => setTimerNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [overlayVisible]);
+
+  const formatMs = (ms: number) => {
+    if (ms <= 0) return '00:00';
+    const s = Math.ceil(ms / 1000);
+    const mm = Math.floor(s / 60).toString().padStart(2, '0');
+    const ss = (s % 60).toString().padStart(2, '0');
+    return `${mm}:${ss}`;
+  };
+
+  const nextCreditInfo = (() => {
+    const last = state.swipeBankLastUpdated ?? Date.now();
+    const current = state.swipeBank?.current ?? 0;
+    const max = state.swipeBank?.max ?? 20;
+    if (current >= max) return { show: false, label: 'Full', countdown: '00:00' };
+    const elapsedMin = Math.floor((timerNow - last) / 60000);
+    const sinceInterval = elapsedMin % INTERVAL_MIN;
+    const minsToNext = INTERVAL_MIN - sinceInterval;
+    const nextAt = last + (Math.floor(elapsedMin / INTERVAL_MIN) + 1) * INTERVAL_MIN * 60000;
+    const msToNext = Math.max(0, nextAt - timerNow);
+    return { show: true, label: '+1', countdown: formatMs(msToNext) };
+  })();
+
+  useEffect(() => {
+    if ((state.swipeBank?.current ?? 0) > 0) setGridUsed(false);
+  }, [state.swipeBank?.current]);
   const [rippleConfig, setRippleConfig] = useState<{ left: number; top: number; size: number } | null>(null);
   const [laterVisible, setLaterVisible] = useState(false);
   const [customHour, setCustomHour] = useState('');
@@ -396,6 +461,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         state.savedSuggestions,
         planDate === 'tomorrow' ? new Date(availability.start) : undefined,
       );
+
       usedFallback = usedFallback || result.usedFallback;
       const filtered = filterDeck(result.deck);
       for (const card of filtered) {
@@ -634,6 +700,45 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const current = deck[index] ?? null;
   const next = deck[index + 1] ?? null;
 
+  const openGridCard = useCallback((card: DeckSuggestion) => {
+    if (gridUsed) {
+      Alert.alert('Already used', 'You can only pick one of these until credits refresh.');
+      return;
+    }
+    setInspectedGridCard(card);
+  }, [gridUsed]);
+
+  const acceptInspectedCard = useCallback((card: DeckSuggestion) => {
+    if (gridUsed) {
+      Alert.alert('Already used', 'You can only pick one of these until credits refresh.');
+      return;
+    }
+
+    const now = new Date();
+    const startDate = new Date(now);
+    const endDate = addMinutes(startDate, card.durationMin);
+    const commitment: Commitment = {
+      suggestionId: card.id,
+      type: card.type,
+      title: card.title,
+      startAt: startDate.toISOString(),
+      endAt: endDate.toISOString(),
+    };
+
+    setGridUsed(true);
+    setInspectedGridCard(null);
+
+    if (navigation.canGoBack()) {
+      navigation.navigate('Plan', { commitment, suggestion: card });
+    } else {
+      navigation.replace('Plan', { commitment, suggestion: card });
+    }
+  }, [gridUsed, navigation]);
+
+  const declineInspectedCard = useCallback(() => {
+    setInspectedGridCard(null);
+  }, []);
+
   const saveCurrentSuggestion = (source: SavedSuggestion['source'], moveToNext = false) => {
     if (!current) return;
     actions.saveSuggestion({
@@ -667,6 +772,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     if (!current) return;
     if (swipeLockRef.current) return;
     swipeLockRef.current = true;
+    // consume swipe from bank (unless Plan Ahead mode or admin)
+    if (planDate !== 'tomorrow' && !isAdmin && !actions.spendSwipe()) {
+      swipeLockRef.current = false;
+      Alert.alert('No swipes left', 'You have no swipes remaining. Pick an option from the home screen or earn more by completing activities.');
+      return;
+    }
 
     // Advance index immediately — zero lag for the next card
     setIndex((prev) => prev + 1);
@@ -734,6 +845,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     if (confirming || swipeLockRef.current) return;
     const picked = current;
     swipeLockRef.current = true;
+    // consume swipe from bank (skipped for admin)
+    if (!isAdmin && !actions.spendSwipe()) {
+      swipeLockRef.current = false;
+      Alert.alert('No swipes left', 'You have no swipes remaining. Pick an option from the home screen or earn more by completing activities.');
+      return;
+    }
     setConfettiEmojis(picked.emojis && picked.emojis.length ? picked.emojis : ['✨', '🎉', '⭐']);
     setConfirming(true);
     if (commitWatchdogRef.current) clearTimeout(commitWatchdogRef.current);
@@ -837,11 +954,26 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         calendarWriteFailed,
       };
 
+      const updatedActivityHistory = recordActivityCompleted(picked.id, state.history);
       const updatedHistory = {
-        ...recordActivityCompleted(picked.id, state.history),
-        lastAcceptedIds: [picked.id, ...state.history.lastAcceptedIds].slice(0, 200),
+        ...updatedActivityHistory,
+        lastAcceptedIds: [picked.id, ...updatedActivityHistory.lastAcceptedIds].slice(0, 200),
       };
       actions.setHistory(updatedHistory);
+
+      if (picked.tags?.length) {
+        let aff = decayAffinities(state.tagAffinities, new Date().toISOString());
+        aff = recordAccept(aff, picked.tags);
+        aff = recordTypeAccept(aff, picked.type);
+        actions.setTagAffinities(aff);
+      }
+
+      void logEvent('suggestion_reward', {
+        suggestion_id: picked.id,
+        type: picked.type,
+        source: picked.source ?? 'unknown',
+        reward: mode === 'later' ? 'commit_later' : 'commit_now',
+      }).catch(() => undefined);
 
       // Check if activity should be suggested as a habit (3+ completions)
       const completionCount = (updatedHistory.completedActivityIds?.[picked.id] ?? 0);
@@ -1018,8 +1150,23 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       : deckTypeMap[planDate] ?? 'do_now';
     
     return (
-      <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
-        <DeckLoader deckType={deckType} />
+      <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
+        <View style={styles.loadingContent}>
+          <DeckLoader deckType={deckType} />
+          {showLoadingBackButton && (
+            <View style={styles.loadingBackButtonWrap}>
+              <PrimaryButton
+                label="Back to Home"
+                onPress={() => {
+                  setLoading(false);
+                  setShowLoadingBackButton(false);
+                  navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+                }}
+                variant="muted"
+              />
+            </View>
+          )}
+        </View>
       </LinearGradient>
     );
   }
@@ -1027,10 +1174,22 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   // Map deck type to display colors (from HomeScreen)
   const getDeckColors = () => {
     const filter = route.params?.filter;
-    if (filter === 'productive') return { bg: '#A8D8EA', text: '#1A3A4A' };
-    if (filter === 'at_home') return { bg: '#E2B6CF', text: '#3A1A2E' };
-    if (planDate === 'tomorrow') return { bg: '#B5EAD7', text: '#1A4A3A' };
-    return { bg: theme.colors.accent, text: '#FFFFFF' };
+    if (filter === 'productive') {
+      return theme.isDark
+        ? { bg: '#2A4A5E', text: '#D8F0FF' }
+        : { bg: '#A8D8EA', text: '#1A3A4A' };
+    }
+    if (filter === 'at_home') {
+      return theme.isDark
+        ? { bg: '#54374A', text: '#F5DDED' }
+        : { bg: '#E2B6CF', text: '#3A1A2E' };
+    }
+    if (planDate === 'tomorrow') {
+      return theme.isDark
+        ? { bg: '#2E4F45', text: '#D9F6EA' }
+        : { bg: '#B5EAD7', text: '#1A4A3A' };
+    }
+    return { bg: theme.colors.accent, text: theme.colors.accentText };
   };
   const deckColors = getDeckColors();
 
@@ -1040,7 +1199,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // Auto-trigger rebuild on Plan Tomorrow if empty
     if (planDate === 'tomorrow' && !loading) {
       return (
-        <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
+        <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
           <DeckLoader />
         </LinearGradient>
       );
@@ -1048,7 +1207,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     
     // Allow a first tap anywhere on the empty area to queue a fresh deck
     return (
-      <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
+      <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
         <Pressable style={styles.emptyState} onPress={rebuildDeck}>
           <Text style={styles.title}>Nothing clicked.</Text>
           <Text style={styles.subtitle}>
@@ -1082,7 +1241,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const area = state.location.areaLabel ? `near ${state.location.areaLabel}` : 'near you';
 
   return (
-    <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
+    <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
       <Animated.View
         style={[{
           opacity: uiAppear,
@@ -1125,34 +1284,70 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           next={next}
           onSwipeLeft={handleSwipeLeft}
           onSwipeRight={handleCommit}
-          disabled={confirming}
+          disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
+          deckColors={deckColors}
+          showSourceDebug={isAdmin}
+        />
+      </View>
+
+      <View style={styles.chargeBarContainer}>
+        <ChargeBar
+          current={state.swipeBank?.current ?? 0}
+          max={state.swipeBank?.max ?? 20}
+          onPress={() => navigation.navigate('Bank')}
+          disabled={(state.swipeBank?.current ?? 0) <= 0}
         />
       </View>
 
       <View style={styles.controls}>
         <Pressable
           onPress={handleSwipeLeft}
-          style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
-          disabled={confirming}
+          style={({ pressed }) => [
+            styles.controlButton,
+            !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
+            pressed && styles.controlPressed,
+          ]}
+          disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
         >
-          <Text style={styles.controlText}>X</Text>
+          <Text style={[!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled, styles.controlText]}>X</Text>
         </Pressable>
         <Pressable
           onPress={handleSaveQuick}
-          style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
-          disabled={confirming}
+          style={({ pressed }) => [
+            styles.controlButton,
+            !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
+            pressed && styles.controlPressed,
+          ]}
+          disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
         >
-          <Text style={[styles.controlText, heartAnimIds.has(current?.id ?? '') && { color: '#EF4444' }]}>
+          <Text style={[
+            !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled,
+            heartAnimIds.has(current?.id ?? '') && { color: theme.colors.danger },
+            styles.controlText,
+          ]}>
             {heartAnimIds.has(current?.id ?? '') ? '❤️' : '♡'}
           </Text>
         </Pressable>
         <View ref={commitButtonRef} onLayout={updateRippleLayout} collapsable={false} style={styles.controlSlot}>
           <Pressable
             onPress={() => deckRef.current?.swipeRight()}
-            style={({ pressed }) => [styles.controlButton, styles.controlPrimary, pressed && styles.controlPressed]}
-            disabled={confirming}
+            style={({ pressed }) => [
+              styles.controlButton,
+              styles.controlPrimary,
+              !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
+              !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlPrimaryDisabled,
+              pressed && styles.controlPressed,
+            ]}
+            disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
           >
-            <Text style={[styles.controlText, styles.controlTextPrimary]}>{planDate === 'tomorrow' ? 'Add to calendar' : 'Do it'}</Text>
+            <Text style={[
+              styles.controlText,
+              styles.controlTextPrimary,
+              !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextPrimaryDisabled,
+              !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled,
+            ]}>
+              {planDate === 'tomorrow' ? 'Add to calendar' : 'Do it'}
+            </Text>
           </Pressable>
         </View>
       </View>
@@ -1181,6 +1376,91 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         />
       )}
       <EmojiConfetti visible={confirming} emojis={confettiEmojis} />
+
+      {/* Empty swipes card picker - 2x2 grid */}
+      {!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow' && (
+        <View style={styles.emptySwipesOverlay}>
+          <View style={styles.emptySwipesContent}>
+            <Text style={styles.emptySwipesTitle}>Out of swipes</Text>
+            <Text style={styles.emptySwipesSubtitle}>Tap a card to inspect it, then decide whether to use it</Text>
+            <View style={styles.cardsGrid}>
+              {deck.slice(index, index + 4).map((card, idx) => (
+                <Pressable
+                  key={card.id}
+                  style={({ pressed }) => [
+                    styles.gridCard,
+                    pressed && { opacity: 0.9, transform: [{ scale: 0.97 }] },
+                  ]}
+                  onPress={() => openGridCard(card)}
+                >
+                  <View style={styles.gridCardContainer}>
+                    <View style={styles.cardBonusBadge}>
+                      <Text style={styles.cardBonusText}>+{Math.floor(card.durationMin / 30)}</Text>
+                    </View>
+                    <Text style={[styles.gridCardEmoji, { fontSize: 40 }]}>{card.emojis?.[0] ?? (card.tags?.[0] ? '✨' : '⭐')}</Text>
+                    <Text style={styles.gridCardTitle} numberOfLines={2}>{card.title}</Text>
+                    <Text style={styles.gridCardDuration}>{card.durationMin}m</Text>
+                  </View>
+                </Pressable>
+              ))}
+            </View>
+            <Text style={styles.emptySwipesHint}>Credits reset in a few minutes — gain bonus credits in the meantime</Text>
+            <Pressable
+              style={({ pressed }) => [
+                styles.homeButtonContainer,
+                pressed && { opacity: 0.7 },
+              ]}
+              onPress={() => {
+                setGridUsed(false);
+                navigation.navigate('Home');
+              }}
+            >
+              <Text style={styles.homeButtonText}>Home</Text>
+            </Pressable>
+          </View>
+        </View>
+      )}
+
+      <Modal
+        visible={!!inspectedGridCard}
+        transparent
+        animationType="fade"
+        onRequestClose={declineInspectedCard}
+      >
+        <View style={styles.inspectOverlay}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={declineInspectedCard} />
+          <View style={styles.inspectSheet}>
+            <Text style={styles.inspectTitle}>Inspect this activity</Text>
+            <Text style={styles.inspectSubtitle}>Tap the card for more details, then accept or decline.</Text>
+            <ScrollView
+              style={styles.inspectScroll}
+              contentContainerStyle={styles.inspectScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              {inspectedGridCard && (
+                <View style={styles.inspectCardWrap}>
+                  <SuggestionCard suggestion={inspectedGridCard} showSourceDebug={isAdmin} />
+                </View>
+              )}
+            </ScrollView>
+            <View style={styles.inspectActions}>
+              <PrimaryButton
+                label="Decline"
+                onPress={declineInspectedCard}
+                variant="muted"
+                style={styles.inspectActionButton}
+              />
+              {inspectedGridCard && (
+                <PrimaryButton
+                  label="Use this one"
+                  onPress={() => acceptInspectedCard(inspectedGridCard)}
+                  style={styles.inspectActionButton}
+                />
+              )}
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {savedPopupVisible && (
         <Animated.View
@@ -1334,7 +1614,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                       if (pendingScheduleStart) doScheduleLater(pendingScheduleStart);
                     }}
                   >
-                    <Text style={[styles.modalOptionText, { color: '#fff' }]}>Schedule anyway</Text>
+                    <Text style={[styles.modalOptionText, { color: theme.colors.accentText }]}>Schedule anyway</Text>
                   </Pressable>
                 </View>
               </View>
@@ -1411,6 +1691,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
     paddingVertical: theme.spacing.md,
+  },
+  chargeBarContainer: {
+    position: 'absolute',
+    top: 12,
+    right: theme.spacing.md,
+    zIndex: 50,
   },
   controls: {
     flexDirection: 'row',
@@ -1627,7 +1913,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   clashTitle: {
     fontFamily: theme.fonts.semibold,
-    color: '#DC2626',
+    color: theme.colors.danger,
   },
   clashText: {
     fontFamily: theme.fonts.body,
@@ -1664,5 +1950,230 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.accentText,
     fontSize: 14,
+  },
+  emptySwipesOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.4)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 12,
+    padding: theme.spacing.lg,
+  },
+  emptySwipesContent: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.lg,
+    alignItems: 'center',
+    maxWidth: 320,
+  },
+  emptySwipesTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 18,
+    color: theme.colors.text,
+    marginBottom: theme.spacing.sm,
+  },
+  emptySwipesSubtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 14,
+    color: theme.colors.textMuted,
+    marginBottom: theme.spacing.lg,
+    textAlign: 'center',
+  },
+  cardsGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: theme.spacing.md,
+    marginBottom: theme.spacing.lg,
+    justifyContent: 'center',
+  },
+  gridCard: {
+    width: '45%',
+    aspectRatio: 1,
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.lg,
+    padding: theme.spacing.md,
+      borderWidth: 2,
+      borderColor: theme.colors.accentSoft,
+      shadowColor: theme.colors.shadow,
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.1,
+      shadowRadius: 4,
+      elevation: 3,
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  gridCardEmoji: {
+    fontSize: 32,
+  },
+  gridCardTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: theme.colors.text,
+    textAlign: 'center',
+  },
+  gridCardDuration: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+  },
+  emptySwipesHint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+  },
+  loadingContent: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+  },
+  loadingBackButtonWrap: {
+    marginTop: theme.spacing.lg,
+    paddingHorizontal: theme.spacing.lg,
+  },
+  inspectOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.72)',
+    justifyContent: 'center',
+    paddingHorizontal: theme.spacing.lg,
+    paddingVertical: theme.spacing.lg,
+  },
+  inspectSheet: {
+    flex: 1,
+    borderRadius: theme.radius.xl,
+    backgroundColor: theme.colors.background,
+    padding: theme.spacing.lg,
+    overflow: 'hidden',
+  },
+  inspectTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 20,
+    color: theme.colors.text,
+    textAlign: 'center',
+  },
+  inspectSubtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    lineHeight: 18,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+    marginTop: 6,
+  },
+  inspectScroll: {
+    flex: 1,
+    marginTop: theme.spacing.md,
+  },
+  inspectScrollContent: {
+    paddingBottom: theme.spacing.md,
+  },
+  inspectCardWrap: {
+    width: '100%',
+  },
+  inspectActions: {
+    flexDirection: 'row',
+    gap: theme.spacing.md,
+    paddingTop: theme.spacing.sm,
+  },
+  inspectActionButton: {
+    flex: 1,
+  },
+  homeButtonContainer: {
+    paddingVertical: theme.spacing.sm,
+    paddingHorizontal: theme.spacing.lg,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+    alignItems: 'center',
+  },
+  homeButtonText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.colors.accentText,
+  },
+  bonusCorner: {
+    position: 'absolute',
+    top: theme.spacing.lg,
+    right: theme.spacing.lg,
+    backgroundColor: theme.colors.success,
+    borderRadius: 20,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    zIndex: 10,
+  },
+  bonusCornerText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.colors.accentText,
+  },
+  cardBonusBadge: {
+    position: 'absolute',
+    top: 6,
+    right: 6,
+    backgroundColor: theme.colors.success,
+    borderRadius: 12,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: 2,
+  },
+  cardBonusText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: theme.colors.accentText,
+  },
+  controlButtonDisabled: {
+    opacity: 0.4,
+  },
+  controlPrimaryDisabled: {
+    backgroundColor: theme.colors.textMuted,
+  },
+  controlTextDisabled: {
+    color: theme.colors.textMuted,
+    opacity: 0.6,
+  },
+  controlTextPrimaryDisabled: {
+    color: theme.colors.textMuted,
+  },
+  gridCardContainer: {
+    position: 'relative',
+    width: '100%',
+    height: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  creditCircle: {
+    position: 'absolute',
+    top: -8,
+    right: -8,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: theme.colors.success,
+    justifyContent: 'center',
+    alignItems: 'center',
+    shadowColor: theme.colors.shadow,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  creditText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.colors.accentText,
+  },
+  smallCountdown: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+  },
+  bonusText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.colors.success,
+    textAlign: 'center',
   },
 });

@@ -61,6 +61,6 @@ export const deletePlanEvent = async (): Promise<void> => {
   return;
 };
 
-export const getUpcomingEvents = async (): Promise<{ title: string; startDate: Date; endDate: Date }[]> => {
+export const getUpcomingEvents = async (): Promise<Array<{ title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
   return [];
 };

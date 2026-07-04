@@ -29,7 +29,7 @@ export type EventDetails = {
 export type Suggestion = {
   id: string;
   type: SuggestionType;
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback' | 'gemini' | 'business';
+  source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community';
   habitId?: string;
   businessId?: string;  // Link to business if business-promoted
   title: string;
@@ -62,10 +62,12 @@ export type Suggestion = {
 };
 
 export type SuggestionMeta = {
+  timeZone?: string | null;
   distanceKm?: number;
   etaMin?: number;
   leaveBy?: string;
   startInMin?: number;
+  socialProofCount?: number;
   openStatus?: 'open_now' | 'opens_soon' | 'unknown';
   opensInMin?: number;
   closesInMin?: number;
@@ -169,11 +171,13 @@ export type ActivityLog = {
   title: string;
   durationMin: number;
   timestamp: string;
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'fallback' | 'gemini';
+  source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community';
   isHabit?: boolean;
   habitId?: string;
   tags?: string[];
   suggestionType?: SuggestionType;
+  movementKm?: number;
+  chatThreadId?: string;
 };
 
 export type SessionState = {
@@ -210,6 +214,8 @@ export type ScheduledActivity = {
   /** Serialised DeckSuggestion + Commitment so we can open PlanScreen */
   suggestion: DeckSuggestion;
   commitment: Commitment;
+  /** Tracks if calendar sync failed and activity was rescheduled */
+  calendarWriteFailed?: boolean;
 };
 
 /** Per-tag affinity score learned from swipes & completions */
@@ -301,4 +307,43 @@ export type BusinessSubmission = {
   reviewedAt?: string | null;
   reviewerId?: string | null;
   reviewNote?: string | null;
+};
+
+export type CommunityIdeaStatus = 'pending' | 'approved' | 'rejected';
+
+export type CommunityIdeaSubmission = {
+  id: string;
+  title: string;
+  hook: string;
+  description: string;
+  type: SuggestionType;
+  durationMin: number;
+  cta?: string;
+  tags?: string[];
+  emojis?: string[];
+  place?: Place;
+  event?: EventDetails;
+  imageUrl?: string | null;
+  submittedBy: string;
+  submittedByEmail?: string | null;
+  status: CommunityIdeaStatus;
+  submittedAt: string;
+  reviewedAt?: string | null;
+  reviewerId?: string | null;
+  reviewNote?: string | null;
+};
+
+export type CommunityIdeaSubmissionInput = {
+  title: string;
+  hook: string;
+  description: string;
+  type: SuggestionType;
+  durationMin: number;
+  cta?: string;
+  tags?: string[];
+  emojis?: string[];
+  place?: Place;
+  event?: EventDetails;
+  imageUrl?: string | null;
+  localImageUri?: string | null;
 };

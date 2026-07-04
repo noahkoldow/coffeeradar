@@ -1,0 +1,489 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // ========================================================================
+    // Helper Functions
+    // ========================================================================
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn()
+        && request.auth.token.email != null
+        && request.auth.token.email.lower() in [
+          'bitsapp.admin@gmail.com'
+        ];
+    }
+
+    function getUserId() {
+      return request.auth.uid;
+    }
+
+    function isBusinessOwner(businessId) {
+      return isSignedIn()
+        && get(
+          /databases/$(database)/documents/businesses/$(businessId)
+        ).data.ownerId == getUserId();
+    }
+
+    function isBusinessMember(businessId) {
+      let business = get(
+        /databases/$(database)/documents/businesses/$(businessId)
+      ).data;
+
+      let memberId = getUserId();
+
+      return isSignedIn()
+        && (
+          business.ownerId == memberId
+          || memberId in business.teamMembers.keys()
+        );
+    }
+
+    function isBusinessMemberWithRole(businessId, requiredRole) {
+      let business = get(
+        /databases/$(database)/documents/businesses/$(businessId)
+      ).data;
+
+      let memberId = getUserId();
+      let memberRole = business.teamMembers[memberId];
+
+      return isSignedIn()
+        && (
+          business.ownerId == memberId
+          || (
+            memberId in business.teamMembers
+            && (
+              requiredRole == 'any'
+              || memberRole in ['owner', 'admin', requiredRole]
+            )
+          )
+        );
+    }
+
+    function hasValidBusinessData(data) {
+      return data.keys().hasAll([
+          'businessName',
+          'category',
+          'email',
+          'location',
+          'website',
+          'ownerId',
+          'verificationStatus',
+          'createdAt'
+        ])
+        && data.businessName is string
+        && data.businessName.size() > 0
+        && data.category is string
+        && data.email is string
+        && data.location is map
+        && data.location.keys().hasAll([
+          'address',
+          'city',
+          'country'
+        ])
+        && data.website is string
+        && data.ownerId is string
+        && data.verificationStatus in [
+          'pending',
+          'verified',
+          'rejected'
+        ];
+    }
+
+    function hasValidCampaignData(data) {
+      return data.keys().hasAll([
+          'businessId',
+          'title',
+          'hook',
+          'cta',
+          'description',
+          'category',
+          'status',
+          'targeting',
+          'createdAt',
+          'createdBy'
+        ])
+        && data.title is string
+        && data.title.size() > 0
+        && data.hook is string
+        && data.cta is string
+        && data.status in [
+          'draft',
+          'pending_approval',
+          'approved',
+          'active',
+          'paused',
+          'archived'
+        ]
+        && data.targeting is map
+        && data.targeting.keys().hasAll([
+          'moods',
+          'weatherConditions',
+          'locationRadius',
+          'interests'
+        ])
+        && data.createdBy is string;
+    }
+
+    // ========================================================================
+    // User Collection
+    // ========================================================================
+
+    match /users/{userId} {
+      allow read, write: if isSignedIn()
+        && request.auth.uid == userId;
+
+      match /{subcollection}/{document} {
+        allow read, write: if isSignedIn()
+          && request.auth.uid == userId;
+      }
+    }
+
+    // ========================================================================
+    // Analytics Events Collection
+    // ========================================================================
+
+    match /analytics_events/{eventId} {
+      allow create: if isSignedIn()
+        && request.resource.data.uid == request.auth.uid
+        && request.resource.data.timestamp is timestamp;
+    }
+
+    // ========================================================================
+    // Business Submissions Collection (Legacy)
+    // ========================================================================
+
+    match /business_submissions/{submissionId} {
+      allow create: if isSignedIn()
+        && request.resource.data.submittedBy == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.business.isVerified == false;
+
+      allow read: if isAdmin()
+        || (
+          isSignedIn()
+          && resource.data.submittedBy == request.auth.uid
+        );
+
+      allow update: if isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // ========================================================================
+    // Businesses Collection + nested rules (unchanged)
+    // ========================================================================
+
+    match /businesses/{businessId} {
+      allow read: if true;
+
+      allow create: if isSignedIn()
+        && request.resource.data.ownerId == request.auth.uid
+        && hasValidBusinessData(request.resource.data)
+        && request.resource.data.teamMembers is map
+        && request.resource.data.verificationStatus == 'pending';
+
+      allow update: if (
+          isAdmin()
+          || isBusinessOwner(businessId)
+        )
+        && hasValidBusinessData(request.resource.data);
+
+      allow delete: if isAdmin();
+
+      match /campaigns/{campaignId} {
+        allow read: if isBusinessMember(businessId)
+          || resource.data.status in ['approved', 'active'];
+
+        allow create: if isBusinessMemberWithRole(
+            businessId,
+            'editor'
+          )
+          && hasValidCampaignData(request.resource.data)
+          && request.resource.data.businessId == businessId
+          && request.resource.data.status == 'draft'
+          && request.resource.data.createdBy == request.auth.uid;
+
+        allow update: if (
+            isBusinessMemberWithRole(businessId, 'editor')
+            && request.resource.data.status in [
+              'draft',
+              'pending_approval'
+            ]
+          )
+          || isAdmin();
+
+        allow update: if isAdmin()
+          && request.resource.data.status in [
+            'approved',
+            'active'
+          ];
+
+        allow delete: if isBusinessOwner(businessId)
+          || isAdmin();
+
+        match /approvals/{approvalId} {
+          allow read: if isAdmin()
+            || (
+              isBusinessMember(businessId)
+              && get(
+                /databases/$(database)/documents/businesses/$(businessId)/campaigns/$(campaignId)
+              ).data.createdBy == request.auth.uid
+            );
+
+          allow create: if false;
+
+          allow update: if isAdmin()
+            && (
+              request.resource.data.status in [
+                'approved',
+                'rejected'
+              ]
+              || request.resource.data.status
+                == resource.data.status
+            );
+
+          allow delete: if isAdmin();
+        }
+
+        match /metrics/{metricId} {
+          allow read: if isBusinessMember(businessId);
+
+          allow create: if request.resource.data.type in [
+              'impression',
+              'click',
+              'conversion'
+            ]
+            && request.resource.data.timestamp is timestamp
+            && (
+              request.resource.data.type == 'impression'
+              || (
+                request.resource.data.type == 'click'
+                && request.resource.data.userId is string
+              )
+              || (
+                request.resource.data.type == 'conversion'
+                && request.resource.data.value is number
+              )
+            );
+
+          allow update, delete: if isAdmin();
+        }
+
+        match /targeting_logs/{logId} {
+          allow read: if isBusinessMember(businessId);
+
+          allow create: if request.resource.data.timestamp is timestamp
+            && request.resource.data.matched is bool;
+
+          allow update, delete: if isAdmin();
+        }
+      }
+
+      match /team_members/{memberId} {
+        allow read: if isBusinessMember(businessId);
+
+        allow create: if (
+            isBusinessOwner(businessId)
+            || isAdmin()
+          )
+          && request.resource.data.role in [
+            'viewer',
+            'editor',
+            'admin'
+          ]
+          && request.resource.data.joinedAt is timestamp;
+
+        allow update: if isBusinessOwner(businessId)
+          || (
+            isAdmin()
+            && request.resource.data.role in [
+              'viewer',
+              'editor',
+              'admin'
+            ]
+          );
+
+        allow delete: if isBusinessOwner(businessId)
+          || isAdmin();
+      }
+
+      match /billing/{billingId} {
+        allow read: if isBusinessOwner(businessId)
+          || isAdmin();
+
+        allow create: if false;
+
+        allow update: if isAdmin();
+
+        allow delete: if isAdmin();
+
+        match /invoices/{invoiceId} {
+          allow read: if isBusinessOwner(businessId)
+            || isAdmin();
+
+          allow create, update, delete: if isAdmin();
+        }
+      }
+
+      match /verification_docs/{docId} {
+        allow read: if isBusinessOwner(businessId)
+          || isAdmin();
+
+        allow create: if isBusinessOwner(businessId)
+          && request.resource.data.type in [
+            'id_photo',
+            'business_license',
+            'address_proof'
+          ]
+          && request.resource.data.uploadedAt is timestamp;
+
+        allow update: if isAdmin();
+
+        allow delete: if (
+            isBusinessOwner(businessId)
+            && resource.data.status == 'pending'
+          )
+          || isAdmin();
+      }
+    }
+
+    // ========================================================================
+    // Activities collection (DB-first content store)
+    // ========================================================================
+
+    match /community_ideas/{ideaId} {
+      allow read: if isAdmin()
+        || resource.data.status == 'approved'
+        || (
+          isSignedIn()
+          && resource.data.submittedBy == request.auth.uid
+        );
+
+      allow create: if isSignedIn()
+        && request.resource.data.submittedBy == request.auth.uid
+        && request.resource.data.status == 'pending'
+        && request.resource.data.submittedAt is string
+        && request.resource.data.submittedAtTs is timestamp
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.hook is string
+        && request.resource.data.hook.size() > 0
+        && request.resource.data.description is string
+        && request.resource.data.description.size() > 0
+        && request.resource.data.type in [
+          'AT_HOME',
+          'GO_OUT',
+          'EVENT'
+        ]
+        && request.resource.data.durationMin is number
+        && request.resource.data.durationMin > 0;
+
+      allow update: if isAdmin()
+        || (
+          isSignedIn()
+          && resource.data.submittedBy == request.auth.uid
+          && resource.data.status == 'pending'
+          && request.resource.data.submittedBy == resource.data.submittedBy
+          && request.resource.data.submittedAt == resource.data.submittedAt
+          && request.resource.data.submittedAtTs == resource.data.submittedAtTs
+          && request.resource.data.createdAt == resource.data.createdAt
+        );
+
+      allow delete: if isAdmin();
+    }
+
+    match /activities/{activityId} {
+      allow read: if true;
+      allow create: if false;
+      allow update, delete: if isAdmin();
+    }
+
+    // ========================================================================
+    // Affiliates catalog (public read, admin-managed)
+    // ========================================================================
+
+    match /affiliates/{affiliateId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ========================================================================
+    // Vouchers (server-issued) and Conversions (server-recorded)
+    // ========================================================================
+
+    match /vouchers/{voucherId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid || isAdmin();
+      allow create: if false;
+      allow update, delete: if false;
+    }
+
+    match /conversions/{conversionId} {
+      allow read: if isAdmin();
+      allow create: if false;
+      allow update, delete: if isAdmin();
+    }
+
+    // ========================================================================
+    // Approval queue and metrics (unchanged)
+    // ========================================================================
+
+    match /approval_queue/{approvalId} {
+      allow read: if isAdmin();
+      allow create: if isSignedIn()
+        && request.resource.data.kind == 'community_idea'
+        && request.resource.data.ideaId == approvalId
+        && request.resource.data.status == 'pending'
+        && request.resource.data.submittedBy == request.auth.uid
+        && request.resource.data.submittedAt is timestamp
+        && (
+          request.resource.data.submittedByEmail is string
+          || request.resource.data.submittedByEmail == null
+        )
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.hook is string
+        && request.resource.data.hook.size() > 0
+        && request.resource.data.description is string
+        && request.resource.data.description.size() > 0
+        && request.resource.data.type in [
+          'AT_HOME',
+          'GO_OUT',
+          'EVENT'
+        ]
+        && request.resource.data.durationMin is number
+        && request.resource.data.durationMin > 0
+        && request.resource.data.tags is list
+        && request.resource.data.hasLocation is bool
+        && request.resource.data.hasImage is bool;
+      allow update: if isAdmin()
+        && request.resource.data.status in [
+          'approved',
+          'rejected'
+        ];
+      allow delete: if isAdmin();
+    }
+
+    match /campaign_metrics_daily/{date} {
+      allow read: if true;
+      allow create, update, delete: if false;
+    }
+
+    match /business_directory/{categoryId} {
+      allow read: if true;
+      allow create, update, delete: if isAdmin();
+    }
+
+    // ========================================================================
+    // Catch-all (deny)
+    // ========================================================================
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

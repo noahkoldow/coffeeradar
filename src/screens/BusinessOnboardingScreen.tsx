@@ -1,6 +1,7 @@
 import React, { useState, useRef, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, Pressable, Animated, Dimensions } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
+import { BusinessHeader } from '../components/BusinessHeader';
 
 interface BusinessOnboardingProps {
   onComplete: () => void;
@@ -120,6 +121,7 @@ export const BusinessOnboarding: React.FC<BusinessOnboardingProps> = ({ onComple
 
   return (
     <View style={styles.container}>
+      <BusinessHeader showSettingsIcon={false} />
       <Animated.ScrollView
         ref={scrollViewRef}
         horizontal
@@ -133,7 +135,7 @@ export const BusinessOnboarding: React.FC<BusinessOnboardingProps> = ({ onComple
       >
         {SLIDES.map((s) => (
           <View key={s.id} style={[styles.slide, { width: windowWidth }]}>
-            <View style={[styles.slideContent, { backgroundColor: s.color + '15' }]}>
+            <View style={[styles.slideContent, { backgroundColor: '#FFFFFF' }]}>
               <View style={styles.iconContainer}>
                 <Text style={styles.icon}>{s.icon}</Text>
               </View>

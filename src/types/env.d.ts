@@ -4,5 +4,8 @@ declare const process: {
     EXPO_PUBLIC_GOOGLE_PLACES_KEY?: string;
     EXPO_PUBLIC_SEATGEEK_KEY?: string;
     EXPO_PUBLIC_GEMINI_API_KEY?: string;
+    EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS?: string;
+    EXPO_PUBLIC_ADMIN_EMAILS?: string;
+    EXPO_PUBLIC_BUSINESS_PREMIUM_EMAILS?: string;
   };
 };

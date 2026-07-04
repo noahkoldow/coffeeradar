@@ -46,7 +46,7 @@ export const CalendarPermissionScreen: React.FC<Props> = ({ navigation }) => {
     >
       <View style={styles.content}>
         <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
-        <Text style={styles.title}>Connect your calendar</Text>
+        <Text style={styles.title}>Connect your calendar 📅</Text>
         <Text style={styles.subtitle}>
           We read your next event to find real free time, and write a plan when you commit.
         </Text>

@@ -12,6 +12,10 @@ const KEYS = {
   locationProfile: 'location_profile',
   scheduledActivities: 'scheduled_activities',
   savedSuggestions: 'saved_suggestions',
+  isBusinessOnly: 'is_business_only',
+  swipeBank: 'swipe_bank',
+  geminiUsage: 'gemini_usage',
+  profileAvatar: 'profile_avatar_uri',
 };
 
 const keyFor = (base: string, userId?: string | null): string => {
@@ -118,6 +122,51 @@ export const loadSavedSuggestions = async (userId?: string | null): Promise<Save
 
 export const saveSavedSuggestions = async (items: SavedSuggestion[], userId?: string | null): Promise<void> => {
   await AsyncStorage.setItem(keyFor(KEYS.savedSuggestions, userId), JSON.stringify(items));
+};
+
+export const loadIsBusinessOnly = async (userId?: string | null): Promise<boolean> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.isBusinessOnly, userId));
+  return raw ? JSON.parse(raw) === true : false;
+};
+
+export const saveIsBusinessOnly = async (isBusinessOnly: boolean, userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.isBusinessOnly, userId), JSON.stringify(isBusinessOnly));
+};
+
+export type SwipeBankStorage = { current: number; max: number; lastUpdated?: string };
+
+export type GeminiUsageStorage = { callCount: number; date?: string };
+
+export const loadSwipeBank = async (userId?: string | null): Promise<SwipeBankStorage | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.swipeBank, userId));
+  return raw ? (JSON.parse(raw) as SwipeBankStorage) : null;
+};
+
+export const saveSwipeBank = async (bank: SwipeBankStorage, userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.swipeBank, userId), JSON.stringify(bank));
+};
+
+export const loadGeminiUsage = async (): Promise<GeminiUsageStorage | null> => {
+  const raw = await AsyncStorage.getItem(KEYS.geminiUsage);
+  return raw ? (JSON.parse(raw) as GeminiUsageStorage) : null;
+};
+
+export const saveGeminiUsage = async (usage: GeminiUsageStorage): Promise<void> => {
+  await AsyncStorage.setItem(KEYS.geminiUsage, JSON.stringify(usage));
+};
+
+export const loadProfileAvatarUri = async (userId?: string | null): Promise<string | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.profileAvatar, userId));
+  return raw ? String(raw) : null;
+};
+
+export const saveProfileAvatarUri = async (uri: string | null, userId?: string | null): Promise<void> => {
+  const key = keyFor(KEYS.profileAvatar, userId);
+  if (uri) {
+    await AsyncStorage.setItem(key, uri);
+  } else {
+    await AsyncStorage.removeItem(key);
+  }
 };
 
 export const clearStorage = async (userId?: string | null): Promise<void> => {

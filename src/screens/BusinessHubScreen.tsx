@@ -70,7 +70,7 @@ export const BusinessHubScreen: React.FC<Props> = ({ navigation }) => {
           try {
             const created = await createBusinessProfile(state.userId, profile as any);
             setHasProfile(true);
-            actions.setBusinessProfile(created as any);
+            actions.switchToBusinessMode(created as any);
           } catch (err) {
             console.error('Failed to create business profile:', err);
           } finally {

@@ -66,12 +66,12 @@ export const BadgeDetailScreen: React.FC<Props> = ({ navigation, route }) => {
         <View style={[styles.heroSection, { backgroundColor: data.color + '15', borderColor: data.color + '30' }]}>
           <View style={styles.badgeIconContainer}>
             <BadgeRing size={140} strokeWidth={12} progress={data.progress} level={data.level} color={data.color} showLevel />
-            <View style={styles.badgeIconOverlay}>
-              <BadgeIcon badgeId={data.id} size={64} color={data.color} />
-            </View>
           </View>
 
-          <Text style={[styles.title, { color: data.color }]}>{data.title}</Text>
+          <View style={styles.titleContainer}>
+            <BadgeIcon badgeId={data.id} size={48} color={data.color} />
+            <Text style={[styles.title, { color: data.color }]}>{data.title}</Text>
+          </View>
           <Text style={styles.subtitle}>{data.description}</Text>
 
           <View style={styles.levelBadge}>
@@ -169,26 +169,22 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderWidth: 1,
   },
   badgeIconContainer: {
-    position: 'relative',
     width: 140,
     height: 140,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  badgeIconOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    justifyContent: 'center',
+  titleContainer: {
+    flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
   },
   title: {
     fontFamily: theme.fonts.heading,
-    fontSize: 28,
-    textAlign: 'center',
-    marginTop: theme.spacing.sm,
+    fontSize: 26,
+    flex: 1,
   },
   subtitle: {
     fontFamily: theme.fonts.body,

@@ -3,16 +3,18 @@ import { Alert, Animated, Linking, PanResponder, Platform, Pressable, ScrollView
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { Countdown } from '../components/Countdown';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { MapThumbnail } from '../components/MapThumbnail';
-import { TimerSteps } from '../components/TimerSteps';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
-import { clamp, formatCountdown, formatDuration, formatTime } from '../utils/time';
+import { clamp, formatDuration, formatTime } from '../utils/time';
 import { logEvent } from '../services/analytics';
 import { createPlanEvent, deletePlanEvent, updatePlanEventEnd } from '../services/calendar';
 import { useAppState } from '../state/AppState';
+import { getCurrentLocation } from '../services/location';
+import { haversineKm } from '../services/travel';
+import { ensureActivityChatThread, makeActivityChatThreadId } from '../services/activityChat';
+import { getConfirmedSocialProofCount } from '../utils/social';
 
 export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> = ({ navigation, route }) => {
   const theme = useTheme();
@@ -30,9 +32,20 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const [activityLogged, setActivityLogged] = useState(false);
   const [manualStartAt, setManualStartAt] = useState<Date | null>(null);
   const [guideChecks, setGuideChecks] = useState<boolean[]>([]);
-  const [ctaPressed, setCtaPressed] = useState(false);
+  const [movementKm, setMovementKm] = useState(0);
   const cancelledRef = useRef(false);
   const finishingRef = useRef(false);
+  const movementStartRef = useRef<{ lat: number; lng: number } | null>(null);
+  const ctaPressed = !!manualStartAt;
+  const hasFixedPlace = !!suggestion.place?.name?.trim() || !!suggestion.event?.venue?.trim();
+  const hasFixedTime = !!commitment.startAt || !!suggestion.event?.startAt || !!suggestion.meta?.planStartAt;
+  const isSocialActivity = (commitment.type === 'GO_OUT' || commitment.type === 'EVENT') && hasFixedPlace && hasFixedTime;
+  const socialProofCount = getConfirmedSocialProofCount(suggestion);
+  const chatThreadId = useMemo(
+    () => (isSocialActivity ? makeActivityChatThreadId(suggestion.id, state.location.areaLabel) : null),
+    [isSocialActivity, suggestion.id, state.location.areaLabel],
+  );
+  const chatExpiresAt = useMemo(() => new Date(new Date(commitment.startAt).getTime() + 24 * 60 * 60 * 1000).toISOString(), [commitment.startAt]);
 
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
@@ -43,20 +56,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     logEvent('plan_page_opened');
   }, []);
 
-  const target = useMemo(() => {
-    if (commitment.type === 'GO_OUT' && commitment.leaveBy) return new Date(commitment.leaveBy);
-    return new Date(commitment.startAt);
-  }, [commitment]);
-
-  const isRoutineStarted = commitment.type === 'AT_HOME' && manualStartAt !== null;
-  const countdownLabel = isRoutineStarted ? '00:00' : formatCountdown(target, now);
-  const headline = isRoutineStarted
-    ? 'In progress'
-    : commitment.type === 'GO_OUT'
-      ? 'Leave in'
-      : commitment.type === 'EVENT'
-        ? 'Starts in'
-        : 'Starting in';
+  const headline = manualStartAt ? 'In progress' : 'Ready when you are';
 
   const routineTotalSeconds = useMemo(() => {
     if (commitment.type !== 'AT_HOME') return 0;
@@ -113,18 +113,65 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return `rgb(${r},${g},${b})`;
   }, [routineProgress]);
 
-  const openMaps = async () => {
-    if (!suggestion.place?.lat || !suggestion.place?.lng) return;
-    const lat = suggestion.place.lat;
-    const lng = suggestion.place.lng;
-    const label = encodeURIComponent(suggestion.place.name ?? suggestion.title);
-    const url = Platform.select({
-      ios: `https://maps.apple.com/?daddr=${lat},${lng}&dirflg=r`,
-      android: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=transit`,
-      default: `https://www.google.com/maps/dir/?api=1&destination=${lat},${lng}&travelmode=transit`,
+  useEffect(() => {
+    if (!manualStartAt || !isSocialActivity) return undefined;
+    let active = true;
+
+    const sampleMovement = async () => {
+      const current = await getCurrentLocation().catch(() => null);
+      if (!active || !current?.lat || !current.lng) return;
+      if (!movementStartRef.current) {
+        if (state.location.lat != null && state.location.lng != null) {
+          movementStartRef.current = { lat: state.location.lat, lng: state.location.lng };
+        } else {
+          movementStartRef.current = { lat: current.lat, lng: current.lng };
+        }
+      }
+      setMovementKm(haversineKm(movementStartRef.current.lat, movementStartRef.current.lng, current.lat, current.lng));
+    };
+
+    void sampleMovement();
+    const interval = setInterval(() => {
+      void sampleMovement();
+    }, 30000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [manualStartAt, isSocialActivity, state.location.lat, state.location.lng]);
+
+  const beginActivity = useCallback(async () => {
+    if (manualStartAt) return;
+    await logEvent('activity_started', { type: commitment.type, suggestion_id: suggestion.id });
+    setManualStartAt(new Date());
+    setRoutineFinished(false);
+    setFinishAt(null);
+    setGuideChecks(guideSteps.map(() => false));
+    movementStartRef.current = state.location.lat != null && state.location.lng != null
+      ? { lat: state.location.lat, lng: state.location.lng }
+      : null;
+    if (chatThreadId) {
+      await ensureActivityChatThread({
+        threadId: chatThreadId,
+        suggestionId: suggestion.id,
+        title: suggestion.title,
+        expiresAt: chatExpiresAt,
+        regionLabel: state.location.areaLabel,
+      });
+    }
+  }, [manualStartAt, commitment.type, suggestion.id, suggestion.title, guideSteps, chatThreadId, chatExpiresAt, state.location.lat, state.location.lng, state.location.areaLabel]);
+
+  const openChat = useCallback(() => {
+    if (!chatThreadId) return;
+    navigation.navigate('ActivityChat', {
+      threadId: chatThreadId,
+      title: suggestion.title,
+      expiresAt: chatExpiresAt,
+      suggestionId: suggestion.id,
+      regionLabel: state.location.areaLabel,
     });
-    if (url) await Linking.openURL(url);
-  };
+  }, [navigation, chatThreadId, chatExpiresAt, suggestion.id, suggestion.title, state.location.areaLabel]);
 
   const websiteUrl = useMemo(() => {
     const placeSite = suggestion.place?.websiteUrl?.trim();
@@ -141,66 +188,9 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   }, [websiteUrl, commitment.type, suggestion.id]);
 
   const onPrimary = async () => {
-    const typeMap = {
-      AT_HOME: 'start',
-      GO_OUT: 'directions',
-      EVENT: 'tickets',
-    } as const;
-    await logEvent('cta_primary_clicked', { action: typeMap[commitment.type] });
-
-    if (!activityLogged && commitment.type !== 'AT_HOME') {
-      actions.recordActivity({
-        id: `act_${Date.now()}`,
-        suggestionId: suggestion.id,
-        title: suggestion.title,
-        durationMin: suggestion.durationMin,
-        timestamp: new Date().toISOString(),
-        source: suggestion.source,
-        isHabit: !!suggestion.habitId,
-        habitId: suggestion.habitId,
-        tags: suggestion.tags,
-        suggestionType: suggestion.type,
-      });
-      if (suggestion.habitId) {
-        actions.completeHabit(suggestion.habitId);
-      }
-      setActivityLogged(true);
-    }
-
-    if (commitment.type === 'AT_HOME') {
-      if (!manualStartAt) {
-        setManualStartAt(new Date());
-        setRoutineFinished(false);
-        setFinishAt(null);
-        setStartSignal((prev) => prev + 1);
-        setCtaPressed(true);
-        return;
-      }
-      setCtaPressed(true);
-      const hasSteps = (suggestion.steps?.length ?? 0) > 0;
-      if (hasSteps) {
-        const lastStepIndex = Math.max(0, (suggestion.steps?.length ?? 1) - 1);
-        if (activeStepIndex >= lastStepIndex) {
-          setRoutineFinished(true);
-          setFinishAt(new Date());
-        }
-        setAdvanceSignal((prev) => prev + 1);
-      } else {
-        setRoutineFinished(true);
-        setFinishAt(new Date());
-      }
-      return;
-    }
-    if (commitment.type === 'GO_OUT') {
-      setCtaPressed(true);
-      const hasPlace = !!(suggestion.place?.lat && suggestion.place?.lng);
-      if (hasPlace) await openMaps();
-      return;
-    }
-    if (commitment.type === 'EVENT' && commitment.ticketUrl) {
-      setCtaPressed(true);
-      await Linking.openURL(commitment.ticketUrl);
-    }
+    if (manualStartAt) return;
+    await logEvent('cta_primary_clicked', { action: 'start' });
+    await beginActivity();
   };
 
   const retryCalendar = async () => {
@@ -370,21 +360,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   );
 
   const autoChecks = useMemo(() => {
-    if (commitment.type === 'AT_HOME' && manualStartAt && suggestion.steps?.length) {
-      // Check off all steps up to and including the current step (it's been started)
-      return suggestion.steps.map((_, index) => {
-        if (routineFinished) return true;          // all done
-        return index < activeStepIndex;            // completed steps
-      });
-    }
-    if (commitment.type === 'AT_HOME' && manualStartAt && guideSteps.length) {
-      return guideSteps.map((_, index) => index === 0);
-    }
-    if (ctaPressed && guideSteps.length) {
-      return guideSteps.map((_, index) => index === 0);
-    }
     return guideSteps.map(() => false);
-  }, [commitment.type, manualStartAt, suggestion.steps, guideSteps, ctaPressed, activeStepIndex, routineFinished]);
+  }, [guideSteps]);
 
   /** Index of the step currently being worked on (for highlighting) */
   const activeGuideIndex = useMemo(() => {
@@ -393,6 +370,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     if (suggestion.steps?.length) return activeStepIndex;
     return 0;
   }, [commitment.type, manualStartAt, routineFinished, suggestion.steps, activeStepIndex]);
+
+  const canFinish = manualStartAt !== null && guideChecks.every(Boolean);
 
   const navigateToCompletion = useCallback((durationMin: number) => {
     if (cancelledRef.current || finishingRef.current === false) return;
@@ -405,8 +384,9 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       suggestionId: suggestion.id,
       habitId: suggestion.habitId,
       description: suggestion.description,
+      movementKm,
     });
-  }, [navigation, suggestion]);
+  }, [navigation, suggestion, movementKm]);
 
   useEffect(() => {
     if (commitment.type !== 'AT_HOME') return;
@@ -425,6 +405,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       habitId: suggestion.habitId,
       tags: suggestion.tags,
       suggestionType: suggestion.type,
+      movementKm,
+      chatThreadId: chatThreadId ?? undefined,
     });
     if (suggestion.habitId) {
       actions.completeHabit(suggestion.habitId);
@@ -480,6 +462,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         habitId: suggestion.habitId,
         tags: suggestion.tags,
         suggestionType: suggestion.type,
+        movementKm,
+        chatThreadId: chatThreadId ?? undefined,
       });
       if (suggestion.habitId) {
         actions.completeHabit(suggestion.habitId);
@@ -500,22 +484,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return activeStepIndex >= lastStepIndex;
   }, [commitment.type, manualStartAt, suggestion.steps, activeStepIndex]);
 
-  const primaryLabel = useMemo(() => {
-    if (commitment.type === 'AT_HOME') {
-      if (!manualStartAt) return 'Start';
-      if (routineFinished) return "I'm done! \uD83C\uDF89";
-      if (isLastStep) return "I'm done! \uD83C\uDF89";
-      return 'Next step →';
-    }
-    if (commitment.type === 'GO_OUT') {
-      if (ctaPressed) return "I'm done! \uD83C\uDF89";
-      const hasPlace = !!(suggestion.place?.lat && suggestion.place?.lng);
-      return hasPlace ? 'Get directions' : 'Start';
-    }
-    if (ctaPressed) return "I'm done! \uD83C\uDF89";
-    return 'Buy tickets';
-  }, [commitment.type, manualStartAt, suggestion.steps, activeStepIndex, routineFinished, isLastStep, ctaPressed]);
-
+  const challengeLabel = useMemo(() => /challenge|quest|mission|sprint|try this/i.test([suggestion.title, suggestion.cta, suggestion.hook, suggestion.description].join(' ')), [suggestion]);
   return (
     <LinearGradient
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
@@ -532,50 +501,56 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         keyboardShouldPersistTaps="handled"
       >
       <View style={styles.header}>
-        <Text style={styles.headline}>{headline}</Text>
-        {isRoutineStarted ? (
-          <View style={styles.progressWrap}>
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${Math.round(routineProgress * 100)}%`, backgroundColor: progressColor }]} />
-            </View>
-            <Text style={styles.progressLabel}>
-              {Math.round(routineProgress * 100)}% complete
-            </Text>
+        <View style={styles.topRow}>
+          <View style={styles.titleBlock}>
+            <Text style={styles.headline}>{headline}</Text>
+            <Text style={styles.subheadline}>{suggestion.title}</Text>
+          </View>
+          <View style={styles.badgeColumn}>
+            {challengeLabel && (
+              <View style={styles.challengeBadge}>
+                <Text style={styles.challengeBadgeText}>Challenge</Text>
+              </View>
+            )}
+            {isSocialActivity && (
+              <View style={styles.socialStack}>
+                <View style={styles.socialBadge}>
+                  <Text style={styles.socialBadgeText}>
+                    {socialProofCount > 0 ? `${socialProofCount} going` : 'Social'}
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+        </View>
+
+        {manualStartAt ? (
+          <View style={styles.timerPanel}>
+            <Text style={styles.timerLabel}>Timer</Text>
+            <Text style={styles.timerValue}>{formatDuration(Math.max(1, Math.round((now.getTime() - manualStartAt.getTime()) / 60000)))}</Text>
+            <Text style={styles.timerMeta}>{commitment.type === 'GO_OUT' ? `${movementKm.toFixed(1)} km tracked` : `${Math.round(routineProgress * 100)}% complete`}</Text>
           </View>
         ) : (
-          <Countdown label={countdownLabel} />
+          <PrimaryButton label="Start" onPress={beginActivity} glow />
         )}
-        <Text style={styles.subheadline}>{suggestion.title}</Text>
       </View>
 
-      {commitment.type === 'AT_HOME' && (routineFinished || isLastStep) ? (
-        <PrimaryButton
-          label={primaryLabel}
-          onPress={() => {
-            if (!routineFinished) {
-              setRoutineFinished(true);
-              setFinishAt(new Date());
-            }
-            finishActivity();
-          }}
-          glow
-          bgColor={theme.colors.success}
-          textColor={theme.colors.successText}
-        />
-      ) : commitment.type !== 'AT_HOME' && ctaPressed ? (
-        <PrimaryButton
-          label={primaryLabel}
-          onPress={finishActivity}
-          glow
-          bgColor={theme.colors.success}
-          textColor={theme.colors.successText}
-        />
-      ) : (
-        <PrimaryButton
-          label={primaryLabel}
-          onPress={onPrimary}
-          glow
-        />
+      {manualStartAt && (
+        <View style={styles.actionRow}>
+          <PrimaryButton
+            label="Finish activity"
+            onPress={finishActivity}
+            disabled={!canFinish}
+            glow={canFinish}
+            bgColor={canFinish ? theme.colors.success : undefined}
+            textColor={canFinish ? theme.colors.successText : undefined}
+          />
+          {chatThreadId && (
+            <Pressable style={styles.chatButton} onPress={openChat}>
+              <Text style={styles.chatButtonText}>Chat</Text>
+            </Pressable>
+          )}
+        </View>
       )}
 
       {websiteUrl && (
@@ -597,8 +572,9 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         <View style={styles.guideBlock}>
           <Text style={styles.sectionTitle}>Next steps</Text>
           {guideSteps.map((step, index) => {
-            const isChecked = guideChecks[index] || autoChecks[index];
+            const isChecked = guideChecks[index];
             const isActive = index === activeGuideIndex;
+            const hasLink = /ticket|direction|route|website|map/i.test(step) && !!websiteUrl;
             return (
             <Pressable
               key={`guide_${index}`}
@@ -617,32 +593,22 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
               <Text style={[styles.guideText, isChecked && styles.guideTextOn, isActive && !isChecked && styles.guideTextActive]}>
                 {step}
               </Text>
+              {hasLink && websiteUrl && (
+                <Pressable onPress={openWebsite}>
+                  <Text style={styles.guideLink}>Open link</Text>
+                </Pressable>
+              )}
             </Pressable>
             );
           })}
         </View>
-
-        {commitment.type === 'AT_HOME' && (
-          <TimerSteps
-            steps={suggestion.steps || []}
-            startSignal={startSignal}
-            advanceSignal={advanceSignal}
-            onStepChange={(index) => {
-              if (!finishingRef.current) setActiveStepIndex(index);
-            }}
-            onFinish={() => {
-              if (finishingRef.current) return; // user already pressed "I'm done"
-              setRoutineFinished(true);
-              setFinishAt(new Date());
-            }}
-          />
-        )}
 
         {commitment.type === 'GO_OUT' && (
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>{suggestion.place?.name}</Text>
             {leaveBy && <Text style={styles.metaText}>Leave by {leaveBy}</Text>}
             <Text style={styles.metaText}>{formatDuration(suggestion.durationMin)} activity</Text>
+            {movementKm > 0 && <Text style={styles.metaText}>{movementKm.toFixed(1)} km tracked</Text>}
             {suggestion.place?.address && <Text style={styles.metaText}>{suggestion.place.address}</Text>}
             <View style={styles.instructions}>
               {instructionList.slice(0, 3).map((item, index) => (
@@ -660,6 +626,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
             {leaveBy && <Text style={styles.metaText}>Leave by {leaveBy}</Text>}
             <Text style={styles.metaText}>{suggestion.event?.priceRange || 'Tickets required'}</Text>
             {suggestion.place?.address && <Text style={styles.metaText}>{suggestion.place.address}</Text>}
+            {movementKm > 0 && <Text style={styles.metaText}>{movementKm.toFixed(1)} km tracked</Text>}
             <View style={styles.instructions}>
               {instructionList.slice(0, 3).map((item, index) => (
                 <Text key={`event_${index}`} style={styles.instructionText}>- {item}</Text>
@@ -698,6 +665,98 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   header: {
     marginTop: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  topRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: theme.spacing.md,
+  },
+  titleBlock: {
+    flex: 1,
+    gap: 4,
+  },
+  badgeColumn: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  challengeBadge: {
+    backgroundColor: theme.colors.danger,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  challengeBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#fff',
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+  },
+  socialStack: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  socialBadge: {
+    backgroundColor: theme.colors.info,
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  socialBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.infoText,
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+  },
+  timerPanel: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.lg,
+    paddingVertical: theme.spacing.md,
+    paddingHorizontal: theme.spacing.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    gap: 4,
+  },
+  timerLabel: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+    fontSize: 11,
+    textTransform: 'uppercase',
+    letterSpacing: 0.8,
+  },
+  timerValue: {
+    fontFamily: theme.fonts.heading,
+    color: theme.colors.text,
+    fontSize: 34,
+  },
+  timerMeta: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  actionRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.sm,
+    alignItems: 'center',
+  },
+  chatButton: {
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.backgroundAlt,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  chatButtonText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
+  guideLink: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentDark,
+    fontSize: 12,
   },
   headline: {
     fontFamily: theme.fonts.semibold,

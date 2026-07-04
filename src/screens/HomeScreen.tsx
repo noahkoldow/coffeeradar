@@ -5,6 +5,7 @@ import { StackActions, useFocusEffect } from '@react-navigation/native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { ChargeBar } from '../components/ChargeBar';
 import { Chip } from '../components/Chip';
 import { BadgeRing } from '../components/BadgeRing';
 import { BadgeIcon } from '../components/BadgeIcon';
@@ -72,7 +73,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const screenWidth = Dimensions.get('window').width - theme.spacing.xl * 2;
 
-  // ── Banner auto-swipe ──
+  // ������ Banner auto-swipe ������
   const bannerScrollRef = useRef<ScrollView>(null);
   const bannerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const bannerPageRef = useRef(0); // track page without re-renders
@@ -80,7 +81,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const scheduleBannerSwipe = useCallback(() => {
     if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
-    const delay = 60_000 + Math.random() * 60_000; // 1–2 min
+    const delay = 60_000 + Math.random() * 60_000; // 1���2 min
     bannerTimerRef.current = setTimeout(() => {
       if (!hasBadges.current) return; // only one page, nothing to swipe
       const nextPage = bannerPageRef.current === 0 ? 1 : 0;
@@ -91,50 +92,9 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     }, delay);
   }, [screenWidth]);
 
-  // ── Dashboard popup state ──
-  const [popupVisible, setPopupVisible] = useState(false);
-  const popupAnim = useRef(new Animated.Value(0)).current;
-  const backdropAnim = useRef(new Animated.Value(0)).current;
-
-  // ── Badge popup state ──
-  const [badgePopupVisible, setBadgePopupVisible] = useState(false);
-  const badgePopupAnim = useRef(new Animated.Value(0)).current;
-  const badgeBackdropAnim = useRef(new Animated.Value(0)).current;
-
-  const openPopup = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setPopupVisible(true);
-    Animated.parallel([
-      Animated.spring(popupAnim, { toValue: 1, tension: 65, friction: 10, useNativeDriver: true }),
-      Animated.timing(backdropAnim, { toValue: 1, duration: 250, useNativeDriver: true }),
-    ]).start();
-  }, [popupAnim, backdropAnim]);
-
-  const closePopup = useCallback(() => {
-    Animated.parallel([
-      Animated.spring(popupAnim, { toValue: 0, tension: 65, friction: 10, useNativeDriver: true }),
-      Animated.timing(backdropAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
-    ]).start(() => setPopupVisible(false));
-  }, [popupAnim, backdropAnim]);
-
-  const openBadgePopup = useCallback(() => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
-    setBadgePopupVisible(true);
-    Animated.parallel([
-      Animated.spring(badgePopupAnim, { toValue: 1, tension: 65, friction: 10, useNativeDriver: true }),
-      Animated.timing(badgeBackdropAnim, { toValue: 1, duration: 250, useNativeDriver: true }),
-    ]).start();
-  }, [badgePopupAnim, badgeBackdropAnim]);
-
-  const closeBadgePopup = useCallback(() => {
-    Animated.parallel([
-      Animated.spring(badgePopupAnim, { toValue: 0, tension: 65, friction: 10, useNativeDriver: true }),
-      Animated.timing(badgeBackdropAnim, { toValue: 0, duration: 200, useNativeDriver: true }),
-    ]).start(() => setBadgePopupVisible(false));
-  }, [badgePopupAnim, badgeBackdropAnim]);
-
-  // ── Scheduled activity popup ──
+  // ������ Scheduled activity popup ������
   const [schedulePrompt, setSchedulePrompt] = useState<ScheduledActivity | null>(null);
+  const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
 
   const recentActivities = useMemo(() => {
     return state.activityLog.slice(0, 10);
@@ -152,11 +112,30 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const ACTION_MODES = useMemo(() => [
-    { key: 'all', label: 'DO SOMETHING NOW', filter: undefined as string | undefined, bg: theme.colors.accent, text: '#FFFFFF' },
-    { key: 'productive', label: 'BE PRODUCTIVE', filter: 'productive', bg: '#A8D8EA', text: '#1A3A4A' },
-    { key: 'tomorrow', label: 'PLAN AHEAD', filter: undefined as string | undefined, planDate: 'tomorrow' as const, bg: '#B5EAD7', text: '#1A4A3A' },
-    { key: 'at_home', label: 'HOMEBODY IT', filter: 'at_home', bg: '#E2B6CF', text: '#3A1A2E' },
-  ], [theme.colors.accent]);
+    { key: 'all', label: 'DO SOMETHING NOW', filter: undefined as string | undefined, bg: theme.colors.accent, text: theme.colors.accentText },
+    {
+      key: 'productive',
+      label: 'BE PRODUCTIVE',
+      filter: 'productive',
+      bg: theme.isDark ? '#2A4A5E' : '#A8D8EA',
+      text: theme.isDark ? '#D8F0FF' : '#1A3A4A',
+    },
+    {
+      key: 'tomorrow',
+      label: 'PLAN AHEAD',
+      filter: undefined as string | undefined,
+      planDate: 'tomorrow' as const,
+      bg: theme.isDark ? '#2E4F45' : '#B5EAD7',
+      text: theme.isDark ? '#D9F6EA' : '#1A4A3A',
+    },
+    {
+      key: 'at_home',
+      label: 'HOMEBODY IT',
+      filter: 'at_home',
+      bg: theme.isDark ? '#54374A' : '#E2B6CF',
+      text: theme.isDark ? '#F5DDED' : '#3A1A2E',
+    },
+  ], [theme.colors.accent, theme.colors.accentText, theme.isDark]);
 
   const weekGraph = useMemo(() => {
     const days = Array.from({ length: 7 }, (_, offset) => {
@@ -165,14 +144,31 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       date.setDate(date.getDate() - (6 - offset));
       const dayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(date);
       const key = date.toDateString();
-      const minutes = state.activityLog
+      const activities = state.activityLog
         .filter((entry) => new Date(entry.timestamp).toDateString() === key)
-        .reduce((sum, entry) => sum + entry.durationMin, 0);
-      return { date, dayLabel, minutes };
+        .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const minutes = activities.reduce((sum, entry) => sum + entry.durationMin, 0);
+      return { date, dayLabel, key, minutes, activities };
     });
     const maxMinutes = Math.max(1, ...days.map((day) => day.minutes));
-    return days.map((day) => ({ ...day, height: Math.max(8, (day.minutes / maxMinutes) * 100) }));
+    return days.map((day) => ({
+      ...day,
+      hasActivity: day.minutes > 0,
+      height: day.minutes > 0 ? Math.max(8, (day.minutes / maxMinutes) * 100) : 0,
+    }));
   }, [state.activityLog]);
+
+  useEffect(() => {
+    if (selectedDayKey && weekGraph.some((day) => day.key === selectedDayKey)) return;
+    const defaultDay = [...weekGraph].reverse().find((day) => day.minutes > 0) ?? weekGraph[weekGraph.length - 1];
+    setSelectedDayKey(defaultDay?.key ?? null);
+  }, [selectedDayKey, weekGraph]);
+
+  const selectedDay = useMemo(
+    () => weekGraph.find((day) => day.key === selectedDayKey) ?? weekGraph[weekGraph.length - 1] ?? null,
+    [selectedDayKey, weekGraph],
+  );
+  const selectedDayActivities = selectedDay?.activities ?? [];
 
   const onActionScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
@@ -191,11 +187,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const footerGradientColors = useMemo(() => [
     hexToRgba(theme.colors.background, 0),
-    hexToRgba(theme.colors.background, 0.137),
-    hexToRgba(theme.colors.background, 0.263),
-    hexToRgba(theme.colors.background, 0.485),
-    hexToRgba(theme.colors.background, 0.678),
-    hexToRgba(theme.colors.background, 0.848),
+    hexToRgba(theme.colors.background, 0.1),
+    hexToRgba(theme.colors.background, 0.22),
+    hexToRgba(theme.colors.background, 0.42),
+    hexToRgba(theme.colors.background, 0.66),
+    hexToRgba(theme.colors.background, 0.86),
     hexToRgba(theme.colors.background, 1),
   ] as [string, string, ...string[]], [theme.colors.background]);
 
@@ -296,6 +292,8 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     : '';
 
   const areaLabel = state.location.areaLabel ?? null;
+  const locationStatusLabel = areaLabel
+    ?? (state.permissions.locationGranted ? 'Finding location...' : 'Location off');
 
   const stats = useMemo(() => {
     const now = new Date();
@@ -384,7 +382,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       navigation.navigate('Completion', {
         title: habit.name,
         durationMin: habit.lengthMin,
-        emojis: ['✨', '🎉', '⭐', '🔥'],
+        emojis: ['ԣ�', '����', 'ԡ�', '����'],
         tags: habit.tags ?? [],
         suggestionType: habit.type,
         habitId: habit.id,
@@ -428,37 +426,41 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   return (
-    <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
-      <ScrollView
-        contentContainerStyle={[
-          styles.scroll,
-          { paddingTop: insets.top + theme.spacing.sm, paddingBottom: insets.bottom + 120 },
-        ]}
-      >
+    <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
+      <View style={[styles.pinnedHeader, { paddingTop: insets.top + theme.spacing.sm }]}> 
         <View style={styles.topBar}>
           <View style={styles.logoContainer}>
             <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
             <Text style={styles.lastUpdated}>Last updated: {lastUpdatedLabel}</Text>
-          </View>
-          <View style={styles.headerRight}>
-            <Pressable onPress={() => navigation.navigate('Profile')}>
-              <Text style={styles.settings}>Profile</Text>
-            </Pressable>
-            <Pressable onPress={() => navigation.navigate('Settings')}>
-              <Text style={styles.settings}>Settings</Text>
-            </Pressable>
-          </View>
-        </View>
-        <View style={styles.header}>
-          {areaLabel ? (
             <View style={styles.locationRow}>
-              <Text style={styles.pinIcon}>📍</Text>
-              <Text style={styles.locationLabel} numberOfLines={1}>{areaLabel}</Text>
+              <Text style={styles.pinIcon}>{'\u{1F4CD}'}</Text>
+              <Text style={styles.locationLabel} numberOfLines={1}>{locationStatusLabel}</Text>
             </View>
-          ) : (
-            <View style={styles.locationRow} />
-          )}
+          </View>
+          <View style={styles.headerRightColumn}>
+            <ChargeBar
+              current={state.swipeBank?.current ?? 0}
+              max={state.swipeBank?.max ?? 20}
+              onPress={() => navigation.navigate('Bank')}
+              style={styles.homeBankCounter}
+            />
+            <View style={styles.headerRight}>
+              <Pressable onPress={() => navigation.navigate('Profile')}>
+                <Text style={styles.settings}>Profile</Text>
+              </Pressable>
+              <Pressable onPress={() => navigation.navigate('Settings')}>
+                <Text style={styles.settings}>Settings</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
+      </View>
+      <ScrollView
+        contentContainerStyle={[
+          styles.scroll,
+          { paddingTop: theme.spacing.sm, paddingBottom: insets.bottom + 120 },
+        ]}
+      >
         <View style={styles.content}>
         <View style={styles.bannerSwipeContainer}>
           <ScrollView
@@ -555,7 +557,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 : availabilityLabel}
             </Text>
           </View>
-          {/* ── Scheduled activities ── */}
+          {/* ������ Scheduled activities ������ */}
           {state.scheduledActivities.filter((s) => new Date(s.startAt) > new Date()).length > 0 && (
             <View style={styles.scheduledSection}>
               <Text style={styles.scheduledSectionTitle}>Scheduled</Text>
@@ -576,10 +578,10 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.scheduledTitle} numberOfLines={1}>{item.title}</Text>
                         <Text style={styles.scheduledMeta}>
-                          {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · {formatTime(new Date(item.startAt))} · {item.durationMin} min
+                          {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} -� {formatTime(new Date(item.startAt))} -� {item.durationMin} min
                         </Text>
                       </View>
-                      <Text style={styles.scheduledArrow}>›</Text>
+                      <Text style={styles.scheduledArrow}>�Ǧ</Text>
                     </View>
                   </Pressable>
                 ))}
@@ -599,80 +601,114 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           )}
         </View>
           {stats.totalDone < 3 ? (
-          <View style={styles.dashboard}>
-            <Text style={styles.dashboardTitle}>Unlock your dashboard</Text>
-            <Text style={styles.emptyText}>
-              Do {3 - stats.totalDone} more {3 - stats.totalDone === 1 ? 'activity' : 'activities'} to see your stats.
-            </Text>
-            <View style={styles.progressTrack}>
-              <View style={[styles.progressFill, { width: `${Math.min(stats.totalDone, 3) / 3 * 100}%` }]} />
+            <View style={styles.dashboard}>
+              <Text style={styles.dashboardTitle}>Unlock your dashboard</Text>
+              <Text style={styles.emptyText}>
+                Do {3 - stats.totalDone} more {3 - stats.totalDone === 1 ? 'activity' : 'activities'} to see your stats.
+              </Text>
+              <View style={styles.progressTrack}>
+                <View style={[styles.progressFill, { width: `${Math.min(stats.totalDone, 3) / 3 * 100}%` }]} />
+              </View>
+              <Text style={styles.progressLabel}>{Math.min(stats.totalDone, 3)}/3 done</Text>
+              <Text style={styles.encourageText}>Tap "DO SOMETHING NOW" to get your first wins.</Text>
             </View>
-            <Text style={styles.progressLabel}>{Math.min(stats.totalDone, 3)}/3 done</Text>
-            <Text style={styles.encourageText}>Tap "DO SOMETHING NOW" to get your first wins.</Text>
-          </View>
-        ) : (
-          <>
-          <Pressable onPress={openPopup} style={({ pressed }) => pressed ? { opacity: 0.92 } : undefined}>
-          <View style={styles.dashboard}>
-            <View style={styles.dashboardTitleRow}>
-              <Text style={styles.dashboardTitle}>Your activity</Text>
-              <Text style={styles.expandHint}>Tap to expand ↗</Text>
-            </View>
-            <View style={styles.dashboardGraph}>
-              {weekGraph.map((day) => (
-                <View key={day.dayLabel} style={styles.dashboardGraphCol}>
-                  <View style={styles.dashboardGraphTrack}>
-                    <View style={[styles.dashboardGraphFill, { height: `${day.height}%` }]} />
-                  </View>
-                  <Text style={styles.dashboardGraphLabel}>{day.dayLabel}</Text>
-                  <Text style={styles.dashboardGraphValue}>{day.minutes}m</Text>
+          ) : (
+            <>
+              <View style={styles.dashboard}>
+                <View style={styles.dashboardTitleRow}>
+                  <Text style={styles.dashboardTitle}>Your activity</Text>
                 </View>
-              ))}
-            </View>
-            <View style={styles.statsRow}>
-              <View style={styles.statCard}>
-                <Text style={styles.statValue}>{stats.activityCount}</Text>
-                <Text style={styles.statLabel}>Activities</Text>
+                <View style={styles.dashboardGraph}>
+                  {weekGraph.map((day) => (
+                    <Pressable
+                      key={day.key}
+                      onPress={() => setSelectedDayKey(day.key)}
+                      style={({ pressed }) => [
+                        styles.dashboardGraphCol,
+                        day.key === selectedDayKey && styles.dashboardGraphColActive,
+                        pressed && styles.dashboardGraphColPressed,
+                      ]}
+                    >
+                      <View style={styles.dashboardGraphTrack}>
+                        {day.hasActivity ? (
+                          <View style={[styles.dashboardGraphFill, { height: `${day.height}%` }]} />
+                        ) : (
+                          <Text style={styles.dashboardGraphEmptyMark}>×</Text>
+                        )}
+                      </View>
+                      <Text style={styles.dashboardGraphLabel}>{day.dayLabel}</Text>
+                      {day.minutes > 0 && <Text style={styles.dashboardGraphValue}>{day.minutes}m</Text>}
+                    </Pressable>
+                  ))}
+                </View>
+                <View style={styles.statsRow}>
+                  <View style={styles.statCard}>
+                    <Text style={styles.statValue}>{stats.activityCount}</Text>
+                    <Text style={styles.statLabel}>Activities</Text>
+                  </View>
+                  <View style={styles.statCard}>
+                    <Text style={styles.statValue}>{stats.minutes}m</Text>
+                    <Text style={styles.statLabel}>This week</Text>
+                  </View>
+                  {stats.habitTotal > 0 && (
+                    <Pressable
+                      onPress={() => navigation.navigate('Habits')}
+                      style={({ pressed }) => [styles.statCard, styles.statCardPressable, pressed && styles.statCardPressed]}
+                    >
+                      <Text style={styles.statValue}>{stats.habitPercent ?? 0}%</Text>
+                      <Text style={styles.statLabel}>Habit rate</Text>
+                    </Pressable>
+                  )}
+                </View>
+                <View style={styles.dayDetailsCard}>
+                  <View style={styles.dayDetailsHeader}>
+                    <Text style={styles.dashboardTitle}>{selectedDay?.dayLabel ?? 'Today'}</Text>
+                    <Text style={styles.dayDetailsMeta}>{selectedDay && selectedDay.minutes > 0 ? `${selectedDay.minutes} min` : 'No activity'}</Text>
+                  </View>
+                  {selectedDayActivities.length > 0 ? (
+                    <View style={styles.dayActivityList}>
+                      {selectedDayActivities.map((entry) => (
+                        <View key={entry.id} style={styles.dayActivityRow}>
+                          <View style={[styles.dayActivityTypePill, entry.isHabit ? styles.dayActivityHabitPill : styles.dayActivityOneOffPill]}>
+                            <Text style={[styles.dayActivityTypeText, entry.isHabit ? styles.dayActivityHabitText : styles.dayActivityOneOffText]}>
+                              {entry.isHabit ? 'Habit' : 'One-time'}
+                            </Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.dayActivityTitle}>{entry.title}</Text>
+                            <Text style={styles.dayActivityMeta}>{formatTime(new Date(entry.timestamp))} · {entry.durationMin}m</Text>
+                          </View>
+                        </View>
+                      ))}
+                    </View>
+                  ) : (
+                    <Text style={styles.dayDetailsEmpty}>No activities for this day yet.</Text>
+                  )}
+                </View>
               </View>
-              <View style={styles.statCard}>
-                <Text style={styles.statValue}>{stats.minutes}m</Text>
-                <Text style={styles.statLabel}>This week</Text>
-              </View>
-              {stats.habitTotal > 0 && (
-                <View style={styles.statCard}>
-                  <Text style={styles.statValue}>{stats.habitPercent ?? 0}%</Text>
-                  <Text style={styles.statLabel}>Habit rate</Text>
+              {badgeProgress.length > 0 && (
+                <View style={styles.badgeCard}>
+                  <View style={styles.dashboardTitleRow}>
+                    <Text style={styles.dashboardTitle}>Badges</Text>
+                  </View>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.badgeScrollContent}>
+                    {badgeProgress.map((badge) => (
+                      <Pressable key={badge.id} style={styles.badgeScrollCell} onPress={() => navigation.navigate('BadgeDetail', { badgeId: badge.id })}>
+                        <Text style={styles.badgeLevelLabelSmall}>Lv {badge.level}</Text>
+                        <View style={styles.badgeScrollIconWrap}>
+                          <BadgeRing size={36} strokeWidth={3} progress={badge.progress} level={badge.level} color={badge.color} />
+                          <View style={styles.bannerBadgeOverlay}>
+                            <BadgeIcon badgeId={badge.id} size={28} color={badge.color} />
+                          </View>
+                        </View>
+                        <Text style={styles.badgeScrollName} numberOfLines={1}>{badge.title}</Text>
+                      </Pressable>
+                    ))}
+                  </ScrollView>
                 </View>
               )}
-            </View>
-          </View>
-          </Pressable>
-          {badgeProgress.length > 0 && (
-            <View style={styles.badgeCard}>
-              <Pressable onPress={openBadgePopup}>
-                <View style={styles.dashboardTitleRow}>
-                  <Text style={styles.dashboardTitle}>Badges</Text>
-                  <Text style={styles.expandHint}>Tap to expand ↗</Text>
-                </View>
-              </Pressable>
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.badgeScrollContent}>
-                {badgeProgress.map((badge) => (
-                  <Pressable key={badge.id} style={styles.badgeScrollCell} onPress={() => navigation.navigate('BadgeDetail', { badgeId: badge.id })}>
-                    <Text style={styles.badgeLevelLabelSmall}>Lv {badge.level}</Text>
-                    <View style={styles.badgeScrollIconWrap}>
-                      <BadgeRing size={36} strokeWidth={3} progress={badge.progress} level={badge.level} color={badge.color} />
-                      <View style={styles.bannerBadgeOverlay}>
-                        <BadgeIcon badgeId={badge.id} size={28} color={badge.color} />
-                      </View>
-                    </View>
-                    <Text style={styles.badgeScrollName} numberOfLines={1}>{badge.title}</Text>
-                  </Pressable>
-                ))}
-              </ScrollView>
-            </View>
+            </>
           )}
-          </>
-        )}
       </View>
       </ScrollView>
       <LinearGradient
@@ -689,247 +725,33 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.habitsButtonText}>Habits</Text>
           </Pressable>
           <Pressable
+            style={({ pressed }) => [styles.habitsButton, styles.smartCalendarButton, pressed && styles.habitsButtonPressed]}
+            onPress={() => navigation.navigate('SmartCalendar')}
+          >
+            <Text style={styles.libraryButtonIcon}>{'\u{1F4C5}'}</Text>
+          </Pressable>
+          <Pressable
             style={({ pressed }) => [styles.habitsButton, styles.libraryButton, pressed && styles.habitsButtonPressed]}
             onPress={() => navigation.navigate('Library')}
           >
-            <Text style={styles.libraryButtonIcon}>❤️</Text>
+            <Text style={styles.libraryButtonIcon}>{'\u{1F4DA}'}</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.habitsButton, styles.addIdeaButton, pressed && styles.habitsButtonPressed]}
+            onPress={() => navigation.navigate('CommunityIdeaForm')}
+          >
+            <Text style={styles.addIdeaButtonIcon}>+</Text>
           </Pressable>
         </View>
       </LinearGradient>
 
-      {/* ── Dashboard Popup Modal ── */}
-      <Modal visible={popupVisible} transparent animationType="none" onRequestClose={closePopup}>
-        <View style={styles.popupOverlay}>
-          <Animated.View style={[styles.popupBackdrop, { opacity: backdropAnim }]}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={closePopup} />
-          </Animated.View>
-
-          <Animated.View style={[
-            styles.popupContainer,
-            {
-              paddingTop: insets.top + 12,
-              paddingBottom: insets.bottom + 12,
-              transform: [
-                { translateY: popupAnim.interpolate({ inputRange: [0, 1], outputRange: [screenHeight, 0] }) },
-              ],
-            },
-          ]}>
-            <ScrollView style={styles.popupScroll} contentContainerStyle={styles.popupScrollContent} showsVerticalScrollIndicator={false}>
-              {/* Header */}
-              <View style={styles.popupHeader}>
-                <Text style={styles.popupTitle}>📊 Dashboard</Text>
-                <Pressable onPress={closePopup} hitSlop={12}>
-                  <Text style={styles.popupClose}>✕</Text>
-                </Pressable>
-              </View>
-
-              {/* Stats overview - Modern Grid */}
-              <View style={styles.popupSection}>
-                <Text style={styles.popupSectionTitle}>📈 This week</Text>
-                <View style={styles.popupStatsGrid}>
-                  <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
-                    <Text style={styles.popupStatLabel}>Activities</Text>
-                    <Text style={[styles.popupStatValue, { color: theme.colors.accent }]}>{stats.activityCount}</Text>
-                  </View>
-                  <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
-                    <Text style={styles.popupStatLabel}>Total time</Text>
-                    <Text style={[styles.popupStatValue, { color: theme.colors.success }]}>{stats.minutes}m</Text>
-                  </View>
-                  {stats.habitTotal > 0 && (
-                    <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
-                      <Text style={styles.popupStatLabel}>Habits done</Text>
-                      <Text style={[styles.popupStatValue, { color: theme.colors.info }]}>
-                        {Math.round((stats.habitDone / stats.habitTotal) * 100)}%
-                      </Text>
-                    </View>
-                  )}
-                  <View style={[styles.popupStatCard, styles.popupStatCardLarge]}>
-                    <Text style={styles.popupStatLabel}>Streaks</Text>
-                    <Text style={[styles.popupStatValue, { color: theme.colors.danger }]}>
-                      {state.habits.reduce((max, h) => Math.max(max, h.currentStreak || 0), 0)}🔥
-                    </Text>
-                  </View>
-                </View>
-              </View>
-
-              {/* Habits section */}
-              {state.habits.length > 0 && (
-                <View style={styles.popupSection}>
-                  <Pressable onPress={() => { closePopup(); setTimeout(() => navigation.navigate('Habits'), 300); }} style={styles.popupSectionHeader}>
-                    <Text style={styles.popupSectionTitle}>Habits</Text>
-                    <Text style={styles.popupLink}>View all →</Text>
-                  </Pressable>
-                  {state.habits.map((habit) => {
-                    const due = isHabitDue(habit);
-                    const dots = weeklyDots(habit);
-                    const streak = habit.currentStreak ?? 0;
-                    return (
-                      <Pressable
-                        key={habit.id}
-                        style={({ pressed }) => [styles.popupHabitCard, pressed && { opacity: 0.85 }]}
-                        onPress={() => { closePopup(); setTimeout(() => navigation.navigate('Habits'), 300); }}
-                      >
-                        <View style={styles.popupHabitTop}>
-                          <View style={{ flex: 1 }}>
-                            <Text style={styles.popupHabitName}>{habit.name}</Text>
-                            <Text style={styles.popupHabitMeta}>
-                              {formatHabitFrequency(habit.frequency)} · {formatHabitTimeOfDay(habit.timeOfDay)} · {habit.lengthMin}m
-                            </Text>
-                          </View>
-                          {streak > 0 && (
-                            <View style={styles.streakBadge}>
-                              <Text style={styles.streakText}>{streakEmoji(streak)} {streak}</Text>
-                            </View>
-                          )}
-                        </View>
-                        <View style={styles.popupDotsRow}>
-                          {['M','T','W','T','F','S','S'].map((label, i) => (
-                            <View key={`pd${i}`} style={styles.popupDotCol}>
-                              <View style={[styles.popupDot, dots[i] ? styles.popupDotDone : styles.popupDotEmpty]} />
-                              <Text style={styles.popupDotLabel}>{label}</Text>
-                            </View>
-                          ))}
-                          <View style={{ marginLeft: 'auto' }}>
-                            {due ? (
-                              <Pressable
-                                style={({ pressed }) => [styles.markDoneBtn, pressed && { opacity: 0.7 }]}
-                                onPress={(e) => {
-                                  e.stopPropagation?.();
-                                  closePopup();
-                                  setTimeout(() => markHabitDone(habit), 300);
-                                }}
-                              >
-                                <Text style={styles.markDoneText}>✓ Done</Text>
-                              </Pressable>
-                            ) : (
-                              <Pressable
-                                style={({ pressed }) => [styles.undoBtn, pressed && { opacity: 0.7 }]}
-                                onPress={(e) => {
-                                  e.stopPropagation?.();
-                                  Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-                                  actions.uncompleteHabit(habit.id);
-                                  actions.removeLatestActivityForHabit(habit.id);
-                                }}
-                              >
-                                <Text style={styles.undoText}>✓ Undo</Text>
-                              </Pressable>
-                            )}
-                          </View>
-                        </View>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
-
-              {/* Badges section */}
-              {badgeProgress.length > 0 && (
-                <View style={styles.popupSection}>
-                  <Text style={styles.popupSectionTitle}>Badges</Text>
-                  <View style={styles.popupBadgeGrid}>
-                    {badgeProgress.map((badge) => {
-                      const pLabel = badge.nextTarget
-                        ? `${badge.count}/${badge.nextTarget}`
-                        : `${badge.count} total`;
-                      return (
-                        <Pressable
-                          key={badge.id}
-                          style={({ pressed }) => [styles.popupBadgeItem, pressed && { transform: [{ scale: 0.95 }] }]}
-                          onPress={() => { closePopup(); setTimeout(() => navigation.navigate('BadgeDetail', { badgeId: badge.id }), 300); }}
-                        >
-                          <View style={styles.popupBadgeIconStack}>
-                            <BadgeRing size={40} strokeWidth={4} progress={badge.progress} level={badge.level} color={badge.color} />
-                            <View style={styles.popupBadgeRingOverlay}>
-                              <BadgeIcon badgeId={badge.id} size={Math.round(40 * 0.8)} color={badge.color} />
-                            </View>
-                          </View>
-                          <Text style={styles.popupBadgeName}>{badge.title}</Text>
-                          <Text style={styles.popupBadgeMeta}>{pLabel}</Text>
-                        </Pressable>
-                      );
-                    })}
-                  </View>
-                </View>
-              )}
-
-              {/* Recent activities */}
-              {recentActivities.length > 0 && (
-                <View style={styles.popupSection}>
-                  <Text style={styles.popupSectionTitle}>Recent activities</Text>
-                  {recentActivities.map((entry) => {
-                    const d = new Date(entry.timestamp);
-                    const dayLabel = d.toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
-                    return (
-                      <View key={entry.id} style={styles.popupActivityRow}>
-                        <View style={styles.popupActivityDot} />
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.popupActivityTitle}>{entry.title}</Text>
-                          <Text style={styles.popupActivityMeta}>{dayLabel} · {entry.durationMin}m{entry.isHabit ? ' · 🔁 habit' : ''}</Text>
-                        </View>
-                      </View>
-                    );
-                  })}
-                </View>
-              )}
-            </ScrollView>
-          </Animated.View>
-        </View>
-      </Modal>
-
-      {/* ── Badge Popup Modal ── */}
-      <Modal visible={badgePopupVisible} transparent animationType="none" onRequestClose={closeBadgePopup}>
-        <View style={styles.popupOverlay}>
-          <Animated.View style={[styles.popupBackdrop, { opacity: badgeBackdropAnim }]}>
-            <Pressable style={StyleSheet.absoluteFill} onPress={closeBadgePopup} />
-          </Animated.View>
-
-          <Animated.View style={[
-            styles.popupContainer,
-            { maxHeight: screenHeight * 0.85, paddingTop: insets.top + 12, paddingBottom: insets.bottom + 12 },
-            { transform: [{ translateY: badgePopupAnim.interpolate({ inputRange: [0, 1], outputRange: [screenHeight, 0] }) }] },
-          ]}>
-            <ScrollView style={styles.popupScroll} contentContainerStyle={styles.popupScrollContent} showsVerticalScrollIndicator={false}>
-              <View style={styles.popupHeader}>
-                <Text style={styles.popupTitle}>🏆 All Badges</Text>
-                <Pressable onPress={closeBadgePopup} hitSlop={12}>
-                  <Text style={styles.popupClose}>✕</Text>
-                </Pressable>
-              </View>
-
-              <View style={styles.badgePopupGrid}>
-                {badgeProgress.map((badge) => {
-                  const progressLabel = badge.nextTarget
-                    ? `${badge.count}/${badge.nextTarget}`
-                    : `${badge.count} total`;
-                  return (
-                    <Pressable
-                      key={badge.id}
-                      style={({ pressed }) => [
-                        styles.badgePopupCell,
-                        pressed && { opacity: 0.85 },
-                      ]}
-                      onPress={() => { closeBadgePopup(); setTimeout(() => navigation.navigate('BadgeDetail', { badgeId: badge.id }), 300); }}
-                    >
-                      <BadgeIcon badgeId={badge.id} size={28} color={badge.color} />
-                      <BadgeRing size={44} strokeWidth={4} progress={badge.progress} level={badge.level} color={badge.color} showLevel />
-                      <Text style={styles.popupBadgeName} numberOfLines={1}>{badge.title}</Text>
-                      <Text style={styles.popupBadgeMeta}>{progressLabel}</Text>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            </ScrollView>
-          </Animated.View>
-        </View>
-      </Modal>
-
-      {/* ── Scheduled activity prompt ── */}
+      {/* ������ Scheduled activity prompt ������ */}
       <Modal visible={!!schedulePrompt} transparent animationType="fade" onRequestClose={() => setSchedulePrompt(null)}>
         <Pressable style={styles.scheduleModalOverlay} onPress={() => setSchedulePrompt(null)}>
           <Pressable style={styles.scheduleModalCard} onPress={() => {}}>
             <Text style={styles.scheduleModalTitle}>{schedulePrompt?.title}</Text>
             <Text style={styles.scheduleModalMeta}>
-              Scheduled at {schedulePrompt ? formatTime(new Date(schedulePrompt.startAt)) : ''} · {schedulePrompt?.durationMin} min
+              Scheduled at {schedulePrompt ? formatTime(new Date(schedulePrompt.startAt)) : ''} -� {schedulePrompt?.durationMin} min
             </Text>
             <Text style={[styles.scheduleModalMeta, { marginTop: -4 }]}>Do you want to start this activity now?</Text>
             <View style={styles.scheduleModalActions}>
@@ -971,8 +793,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   container: {
     flex: 1,
   },
+  pinnedHeader: {
+    paddingHorizontal: theme.spacing.xl,
+  },
   scroll: {
-    padding: theme.spacing.xl,
+    paddingHorizontal: theme.spacing.xl,
     flexGrow: 1,
   },
   logo: {
@@ -987,8 +812,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   topBar: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    alignItems: 'center',
+    alignItems: 'flex-start',
     marginBottom: theme.spacing.sm,
+  },
+  headerRightColumn: {
+    alignItems: 'flex-end',
+    gap: theme.spacing.xs,
+    paddingTop: 0,
+  },
+  homeBankCounter: {
+    alignSelf: 'flex-end',
   },
   lastUpdated: {
     fontFamily: theme.fonts.body,
@@ -1005,6 +838,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   headerRight: {
     flexDirection: 'row',
     gap: theme.spacing.md,
+    marginTop: 0,
   },
   locationRow: {
     flexDirection: 'row',
@@ -1012,6 +846,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: 4,
     flexShrink: 1,
     minWidth: 40,
+    marginTop: 2,
   },
   pinIcon: {
     fontSize: 14,
@@ -1031,7 +866,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexGrow: 1,
     justifyContent: 'flex-start',
     gap: theme.spacing.md,
-    marginTop: theme.spacing.xl,
+    marginTop: theme.spacing.md,
   },
   deckMetaRow: {
     flexDirection: 'row',
@@ -1131,10 +966,26 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
     justifyContent: 'center',
   },
+  smartCalendarButton: {
+    flex: 1,
+    justifyContent: 'center',
+  },
   libraryButtonIcon: {
     fontSize: 18,
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
+  },
+  addIdeaButton: {
+    flex: 1,
+    justifyContent: 'center',
+    backgroundColor: theme.colors.accent,
+    borderColor: theme.colors.accent,
+  },
+  addIdeaButtonIcon: {
+    fontFamily: theme.fonts.heading,
+    color: theme.colors.accentText,
+    fontSize: 20,
+    lineHeight: 20,
   },
   subtext: {
     fontFamily: theme.fonts.semibold,
@@ -1160,10 +1011,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexWrap: 'wrap',
   },
   dashboard: {
-    marginTop: theme.spacing.xl,
+    marginTop: theme.spacing.lg,
     padding: theme.spacing.lg,
     borderRadius: theme.radius.lg,
-    backgroundColor: theme.colors.card,
+    backgroundColor: theme.isDark ? theme.colors.card : '#FFFFFF',
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     gap: theme.spacing.md,
   },
   dashboardGraph: {
@@ -1179,6 +1032,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     gap: 4,
+    paddingVertical: 4,
+    borderRadius: theme.radius.sm,
+  },
+  dashboardGraphColActive: {
+    backgroundColor: theme.colors.backgroundAlt,
+  },
+  dashboardGraphColPressed: {
+    opacity: 0.78,
   },
   dashboardGraphTrack: {
     width: '100%',
@@ -1189,6 +1050,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
     overflow: 'hidden',
+  },
+  dashboardGraphEmptyMark: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    textAlign: 'center',
+    textAlignVertical: 'center',
+    fontFamily: theme.fonts.semibold,
+    fontSize: 18,
+    color: theme.colors.textMuted,
+    opacity: 0.6,
   },
   dashboardGraphFill: {
     width: '100%',
@@ -1229,6 +1103,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.backgroundAlt,
   },
+  statCardPressable: {
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  statCardPressed: {
+    opacity: 0.85,
+    transform: [{ translateY: 1 }],
+  },
   statValue: {
     fontFamily: theme.fonts.heading,
     fontSize: 20,
@@ -1258,6 +1140,71 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   encourageText: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.accentDark,
+  },
+  dayDetailsCard: {
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.backgroundAlt,
+    gap: theme.spacing.sm,
+  },
+  dayDetailsHeader: {
+    flexDirection: 'row',
+    alignItems: 'baseline',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  dayDetailsMeta: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+  },
+  dayDetailsEmpty: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+  },
+  dayActivityList: {
+    gap: theme.spacing.sm,
+  },
+  dayActivityRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  dayActivityTypePill: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 999,
+    alignSelf: 'flex-start',
+  },
+  dayActivityHabitPill: {
+    backgroundColor: theme.colors.background,
+  },
+  dayActivityOneOffPill: {
+    backgroundColor: theme.colors.background,
+  },
+  dayActivityTypeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+  },
+  dayActivityHabitText: {
+    color: theme.colors.success,
+  },
+  dayActivityOneOffText: {
+    color: theme.colors.textMuted,
+  },
+  dayActivityTitle: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.text,
+  },
+  dayActivityMeta: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 12,
   },
   progressTrack: {
     height: 8,
@@ -1342,7 +1289,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   markDoneText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 12,
-    color: '#fff',
+    color: theme.colors.accentText,
   },
   doneTag: {
     marginLeft: 'auto',
@@ -1402,7 +1349,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
 
-  /* ── Inline badge trio grid ─── */
+  /* ������ Inline badge trio grid ��������� */
   badgeTrioGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1421,7 +1368,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     textAlign: 'center',
     maxWidth: '100%',
   },
-  /* ── Expanded badge popup grid ─── */
+  /* ������ Expanded badge popup grid ��������� */
   badgePopupGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1478,7 +1425,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'center',
   },
 
-  /* ── Dashboard title row ─── */
+  /* ������ Dashboard title row ��������� */
   dashboardTitleRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1490,7 +1437,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
 
-  /* ── Popup ─────────────────────────────────── */
+  /* ������ Popup ��������������������������������������������������������������������������������������������������������� */
   popupOverlay: {
     flex: 1,
   },
@@ -1536,7 +1483,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     padding: 4,
   },
 
-  /* ── Popup stats ─── */
+  /* ������ Popup stats ��������� */
   popupSection: {
     gap: theme.spacing.sm,
   },
@@ -1589,7 +1536,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
 
-  /* ── Popup habits ─── */
+  /* ������ Popup habits ��������� */
   popupHabitCard: {
     backgroundColor: theme.colors.card,
     borderRadius: theme.radius.md,
@@ -1642,7 +1589,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
 
-  /* ── Popup badges ─── */
+  /* ������ Popup badges ��������� */
   popupBadgeGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
@@ -1670,7 +1617,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
 
-  /* ── Popup activities ─── */
+  /* ������ Popup activities ��������� */
   popupActivityRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1696,7 +1643,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
   },
 
-  /* ── Banner swipe ─── */
+  /* ������ Banner swipe ��������� */
   bannerSwipeContainer: {
     zIndex: 2,
   },
@@ -1705,8 +1652,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     overflow: 'hidden',
   },
   badgeBannerPage: {
-    backgroundColor: theme.colors.card,
+    backgroundColor: theme.isDark ? theme.colors.card : '#FFFFFF',
     borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-evenly',
@@ -1768,7 +1717,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     width: 14,
   },
 
-  /* ── Badge horizontal scroll ─── */
+  /* ������ Badge horizontal scroll ��������� */
   badgeScrollContent: {
     gap: theme.spacing.md,
     paddingHorizontal: theme.spacing.xs,

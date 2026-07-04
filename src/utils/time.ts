@@ -1,5 +1,6 @@
 const MINUTE_MS = 60 * 1000;
 let preferredTimeZone: string | null = null;
+let deviceTimezoneInitialized = false;
 
 export type Daypart = 'morning' | 'afternoon' | 'evening' | 'night';
 
@@ -21,17 +22,58 @@ export type TimeWindowContext = {
   isFridayNight: boolean;
 };
 
-export const setPreferredTimeZone = (timeZone?: string | null): void => {
-  preferredTimeZone = timeZone ?? null;
+/** Initialize the device's native timezone. Call this once on app startup. */
+export const initializeDeviceTimeZone = (): void => {
+  if (deviceTimezoneInitialized) return;
+  const deviceTz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (deviceTz && !preferredTimeZone) {
+    preferredTimeZone = deviceTz;
+  }
+  deviceTimezoneInitialized = true;
 };
 
-export const getPreferredTimeZone = (): string | null => preferredTimeZone;
+export const setPreferredTimeZone = (timeZone?: string | null): void => {
+  if (timeZone && timeZone.trim().length > 0) {
+    preferredTimeZone = timeZone;
+  }
+};
+
+export const getPreferredTimeZone = (): string | null => {
+  // If not yet initialized, do it now (emergency fallback)
+  if (!deviceTimezoneInitialized) {
+    initializeDeviceTimeZone();
+  }
+  return preferredTimeZone;
+};
+
+export const resolveTimeZone = (timeZone?: string | null): string => {
+  return timeZone ?? getPreferredTimeZone() ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+};
 
 export const parseClockTime = (value?: string | null): number | null => {
   if (!value) return null;
-  const match = value.trim().match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  const normalized = value.trim().replace(/\./g, '').replace(/\s+/g, ' ');
+
+  const twentyFourHour = normalized.match(/^([01]?\d|2[0-3]):([0-5]\d)$/);
+  if (twentyFourHour) {
+    return Number(twentyFourHour[1]) * 60 + Number(twentyFourHour[2]);
+  }
+
+  const amPm = normalized.match(/^([1-9]|1[0-2])(?::([0-5]\d))?\s*([AaPp][Mm])$/);
+  if (!amPm) return null;
+
+  const hour12 = Number(amPm[1]);
+  const minute = Number(amPm[2] ?? '0');
+  const meridiem = amPm[3].toLowerCase();
+  const hour24 = hour12 % 12 + (meridiem === 'pm' ? 12 : 0);
+  return hour24 * 60 + minute;
+};
+
+export const extractClockLabelFromText = (text?: string | null): string | null => {
+  if (!text) return null;
+  const match = text.match(/\b((?:[01]?\d|2[0-3]):[0-5]\d(?:\s*[AaPp]\.?[Mm]\.?)?|(?:1[0-2]|0?[1-9])(?::[0-5]\d)?\s*[AaPp]\.?[Mm]\.?)\b/);
   if (!match) return null;
-  return Number(match[1]) * 60 + Number(match[2]);
+  return match[1].replace(/\./g, '').replace(/\s+/g, ' ').trim();
 };
 
 export const normalizeClockTime = (value?: string | null, fallback = '07:00'): string => {
@@ -43,14 +85,20 @@ export const normalizeClockTime = (value?: string | null, fallback = '07:00'): s
 };
 
 const getTimeZoneFormatter = (timeZone?: string | null, options: Intl.DateTimeFormatOptions = {}) => {
-  const resolved = timeZone ?? preferredTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const resolved = resolveTimeZone(timeZone);
   return new Intl.DateTimeFormat('en-AU', { timeZone: resolved, ...options });
+};
+
+const prefers24HourClock = (timeZone?: string | null): boolean => {
+  const resolved = resolveTimeZone(timeZone);
+  return resolved.startsWith('Europe/');
 };
 
 export const formatTime = (date: Date, timeZone?: string | null): string => {
   return getTimeZoneFormatter(timeZone, {
     hour: 'numeric',
     minute: '2-digit',
+    hour12: prefers24HourClock(timeZone) ? false : undefined,
   }).format(date);
 };
 
@@ -63,7 +111,7 @@ export const getTimeZoneParts = (date: Date, timeZone?: string | null): {
   minute: number;
   weekday: string;
 } => {
-  const resolved = timeZone ?? preferredTimeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone;
+  const resolved = resolveTimeZone(timeZone);
   const parts = new Intl.DateTimeFormat('en-AU', {
     timeZone: resolved,
     year: 'numeric',
@@ -86,7 +134,76 @@ export const getTimeZoneParts = (date: Date, timeZone?: string | null): {
   };
 };
 
+export const formatLocalDateTime = (date: Date, timeZone?: string | null): string => {
+  const parts = getTimeZoneParts(date, timeZone);
+  const offsetPart = new Intl.DateTimeFormat('en-US', {
+    timeZone: parts.timeZone,
+    timeZoneName: 'longOffset',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+    .formatToParts(date)
+    .find((part) => part.type === 'timeZoneName')?.value
+    .replace('GMT', 'UTC');
+
+  const localDate = `${parts.year}-${String(parts.month).padStart(2, '0')}-${String(parts.day).padStart(2, '0')}`;
+  const localTime = `${String(parts.hour).padStart(2, '0')}:${String(parts.minute).padStart(2, '0')}`;
+  const zoneLabel = offsetPart ? `${parts.timeZone}, ${offsetPart}` : parts.timeZone;
+  return `${localDate} ${localTime} (${parts.weekday}, ${zoneLabel})`;
+};
+
+export const dateFromLocalClockTime = (
+  clockTime: string,
+  referenceDate = new Date(),
+  timeZone?: string | null,
+): Date | null => {
+  const minutes = parseClockTime(clockTime);
+  if (minutes == null) return null;
+
+  const targetHour = Math.floor(minutes / 60);
+  const targetMinute = minutes % 60;
+  const referenceParts = getTimeZoneParts(referenceDate, timeZone);
+  const targetAsUtc = Date.UTC(
+    referenceParts.year,
+    referenceParts.month - 1,
+    referenceParts.day,
+    targetHour,
+    targetMinute,
+  );
+
+  const firstGuess = new Date(targetAsUtc);
+  const guessParts = getTimeZoneParts(firstGuess, referenceParts.timeZone);
+  const guessLocalAsUtc = Date.UTC(
+    guessParts.year,
+    guessParts.month - 1,
+    guessParts.day,
+    guessParts.hour,
+    guessParts.minute,
+  );
+
+  return new Date(firstGuess.getTime() + targetAsUtc - guessLocalAsUtc);
+};
+
 const minutesSinceMidnight = (hour: number, minute: number): number => hour * 60 + minute;
+
+const isWithinCircularWindow = (currentMinutes: number, startMinutes: number, endMinutes: number): boolean => {
+  if (startMinutes <= endMinutes) {
+    return currentMinutes >= startMinutes && currentMinutes <= endMinutes;
+  }
+  return currentMinutes >= startMinutes || currentMinutes <= endMinutes;
+};
+
+const minutesUntilWindowEnd = (currentMinutes: number, startMinutes: number, endMinutes: number): number => {
+  if (startMinutes <= endMinutes) {
+    return Math.max(0, endMinutes - currentMinutes);
+  }
+  if (currentMinutes >= startMinutes) {
+    return totalMinutesUntilEndOfDay(currentMinutes) + endMinutes;
+  }
+  return Math.max(0, endMinutes - currentMinutes);
+};
+
+const totalMinutesUntilEndOfDay = (currentMinutes: number): number => (24 * 60) - currentMinutes;
 
 export const getTimeWindowContext = (
   date: Date,
@@ -98,8 +215,8 @@ export const getTimeWindowContext = (
   const currentMinutes = minutesSinceMidnight(parts.hour, parts.minute);
   const wakeStartMinutes = parseClockTime(wakeStartTime) ?? 7 * 60;
   const wakeEndMinutes = parseClockTime(wakeEndTime) ?? 23 * 60;
-  const isWithinWakeWindow = currentMinutes >= wakeStartMinutes && currentMinutes <= wakeEndMinutes;
-  const minutesUntilWakeEnd = Math.max(0, wakeEndMinutes - currentMinutes);
+  const isWithinWakeWindow = isWithinCircularWindow(currentMinutes, wakeStartMinutes, wakeEndMinutes);
+  const minutesUntilWakeEnd = minutesUntilWindowEnd(currentMinutes, wakeStartMinutes, wakeEndMinutes);
   const isNearWakeEnd = isWithinWakeWindow && minutesUntilWakeEnd <= 90;
   const isIrregularWake = !isWithinWakeWindow || isNearWakeEnd;
   const weekday = parts.weekday;
