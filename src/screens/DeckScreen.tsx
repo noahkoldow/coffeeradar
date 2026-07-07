@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Alert, Animated, Easing, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,7 +16,7 @@ import { Availability, Commitment, DeckSuggestion, HistoryState, SavedSuggestion
 import { buildDeck, buildFilteredFallbacks } from '../services/suggestions';
 import { recordActivityShown, recordActivityCompleted, shouldSuggestHabitConversion } from '../services/activityRepetitionService';
 import { recordAccept, recordInterested, recordReject, recordTypeAccept, recordTypeReject, decayAffinities } from '../services/affinity';
-import { addMinutes, formatDuration, formatTime, toISO } from '../utils/time';
+import { addMinutes, formatDuration, formatTime, getTimeWindowContext, toISO } from '../utils/time';
 import { chooseTravelMode, estimateEtaMinutes, haversineKm } from '../services/travel';
 import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../services/calendar';
 import { logEvent } from '../services/analytics';
@@ -47,13 +47,24 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const [confettiEmojis, setConfettiEmojis] = useState<string[]>([]);
   const [fallbackUsed, setFallbackUsed] = useState(false);
   const [gridUsed, setGridUsed] = useState(false);
+  const [outOfSwipesGridVisible, setOutOfSwipesGridVisible] = useState(false);
+  const [outOfSwipesGridUnlocked, setOutOfSwipesGridUnlocked] = useState(true);
+  const [declinedGridCardIds, setDeclinedGridCardIds] = useState<Set<string>>(new Set());
   const [inspectedGridCard, setInspectedGridCard] = useState<DeckSuggestion | null>(null);
   const [showLoadingBackButton, setShowLoadingBackButton] = useState(false);
   const [timerNow, setTimerNow] = useState<number>(Date.now());
   const planDate = route.params?.planDate ?? 'today';
+  const activityMode = useMemo<'all' | 'productive' | 'tomorrow' | 'at_home'>(() => {
+    if (planDate === 'tomorrow') return 'tomorrow';
+    if (route.params?.filter === 'productive') return 'productive';
+    if (route.params?.filter === 'at_home') return 'at_home';
+    return 'all';
+  }, [planDate, route.params?.filter]);
 
   const INTERVAL_MIN = 30;
-  const overlayVisible = !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow';
+  const outOfSwipesBase = !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow';
+  const controlsDisabled = confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow');
+  const overlayVisible = outOfSwipesBase || outOfSwipesGridVisible;
 
   useEffect(() => {
     navigation.setOptions({
@@ -103,6 +114,24 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   useEffect(() => {
     if ((state.swipeBank?.current ?? 0) > 0) setGridUsed(false);
   }, [state.swipeBank?.current]);
+
+  useEffect(() => {
+    if (outOfSwipesBase && outOfSwipesGridUnlocked && !outOfSwipesGridVisible) {
+      setOutOfSwipesGridVisible(true);
+      setOutOfSwipesGridUnlocked(false);
+      return;
+    }
+    if (!outOfSwipesBase && outOfSwipesGridVisible) {
+      setOutOfSwipesGridVisible(false);
+    }
+  }, [outOfSwipesBase, outOfSwipesGridUnlocked, outOfSwipesGridVisible]);
+
+  useEffect(() => {
+    if (deck.length >= DESIRED_SIZE && index >= deck.length && !outOfSwipesGridUnlocked) {
+      setOutOfSwipesGridUnlocked(true);
+    }
+  }, [deck.length, index, outOfSwipesGridUnlocked]);
+
   const [rippleConfig, setRippleConfig] = useState<{ left: number; top: number; size: number } | null>(null);
   const [laterVisible, setLaterVisible] = useState(false);
   const [customHour, setCustomHour] = useState('');
@@ -120,6 +149,9 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const [tomorrowCalendarEvents, setTomorrowCalendarEvents] = useState<Array<{ title: string; startDate: Date; endDate: Date }>>([]);
   const [savedPopupVisible, setSavedPopupVisible] = useState(false);
   const [heartAnimIds, setHeartAnimIds] = useState<Set<string>>(new Set());
+  const [bedtimeNow, setBedtimeNow] = useState<number>(Date.now());
+  const bedtimePulse = useRef(new Animated.Value(0)).current;
+  const bedtimePulseLoop = useRef<Animated.CompositeAnimation | null>(null);
   const deckRef = useRef<SwipeDeckHandle>(null);
   const commitButtonRef = useRef<View>(null);
   const ripple = useRef(new Animated.Value(0)).current;
@@ -132,6 +164,54 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const schedulePreviewAnim = useRef(new Animated.Value(0)).current;
   const savedPopupAnim = useRef(new Animated.Value(0)).current;
   const prevIndexRef = useRef(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => setBedtimeNow(Date.now()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const isPastBedTime = useMemo(() => {
+    const ctx = getTimeWindowContext(
+      new Date(bedtimeNow),
+      null,
+      state.prefs.wakeStartTime ?? '07:00',
+      state.prefs.wakeEndTime ?? '23:00',
+    );
+    return !ctx.isWithinWakeWindow;
+  }, [bedtimeNow, state.prefs.wakeEndTime, state.prefs.wakeStartTime]);
+
+  useEffect(() => {
+    bedtimePulseLoop.current?.stop();
+    bedtimePulse.setValue(1);
+    if (!isPastBedTime) {
+      return;
+    }
+
+    bedtimePulseLoop.current = Animated.loop(
+      Animated.sequence([
+        Animated.timing(bedtimePulse, {
+          toValue: 1,
+          duration: 1800,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(bedtimePulse, {
+          toValue: 0,
+          duration: 1500,
+          easing: Easing.inOut(Easing.sin),
+          useNativeDriver: true,
+        }),
+        Animated.timing(bedtimePulse, {
+          toValue: 0,
+          duration: 700,
+          useNativeDriver: true,
+        }),
+      ]),
+    );
+    bedtimePulseLoop.current.start();
+
+    return () => bedtimePulseLoop.current?.stop();
+  }, [bedtimePulse, isPastBedTime]);
 
   useEffect(() => {
     const prevIndex = prevIndexRef.current;
@@ -731,8 +811,11 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       Alert.alert('Already used', 'You can only pick one of these until credits refresh.');
       return;
     }
+    if (declinedGridCardIds.has(card.id)) {
+      return;
+    }
     setInspectedGridCard(card);
-  }, [gridUsed]);
+  }, [declinedGridCardIds, gridUsed]);
 
   const acceptInspectedCard = useCallback((card: DeckSuggestion) => {
     if (gridUsed) {
@@ -755,15 +838,22 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     setInspectedGridCard(null);
 
     if (navigation.canGoBack()) {
-      navigation.navigate('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow' });
+      navigation.navigate('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
     } else {
-      navigation.replace('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow' });
+      navigation.replace('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
     }
-  }, [gridUsed, navigation, planDate]);
+  }, [activityMode, gridUsed, navigation, planDate]);
 
   const declineInspectedCard = useCallback(() => {
+    if (inspectedGridCard) {
+      setDeclinedGridCardIds((prev) => {
+        const nextIds = new Set(prev);
+        nextIds.add(inspectedGridCard.id);
+        return nextIds;
+      });
+    }
     setInspectedGridCard(null);
-  }, []);
+  }, [inspectedGridCard]);
 
   const saveCurrentSuggestion = (source: SavedSuggestion['source'], moveToNext = false) => {
     if (!current) return;
@@ -1036,6 +1126,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           startAt: startDate.toISOString(),
           endAt: endDate.toISOString(),
           type: picked.type,
+          activityMode,
           tags: picked.tags,
           calendarEventId,
           suggestion: picked,
@@ -1046,9 +1137,9 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         setIndex((prev) => prev + 1);
       } else {
         if (navigation.canGoBack()) {
-          navigation.navigate('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow' });
+          navigation.navigate('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
         } else {
-          navigation.replace('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow' });
+          navigation.replace('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
         }
       }
     } catch (error) {
@@ -1218,6 +1309,8 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     return { bg: theme.colors.accent, text: theme.colors.accentText };
   };
   const deckColors = getDeckColors();
+  const bedtimeBadgeColor = deckColors.bg;
+  const topOverlayOffset = insets.top + theme.spacing.sm + theme.spacing.md;
 
   if (!current) {
     const ranOutEarly = deck.length < DESIRED_SIZE;
@@ -1268,6 +1361,31 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
+      <View pointerEvents="box-none" style={[styles.topOverlayRow, { top: topOverlayOffset }]}>
+        {isPastBedTime && (
+          <Animated.View
+            pointerEvents="none"
+            style={[
+              styles.pageBedtimeBadge,
+              {
+                borderColor: bedtimeBadgeColor,
+                opacity: bedtimePulse,
+              },
+            ]}
+          >
+            <Text style={[styles.pageBedtimeBadgeText, { color: bedtimeBadgeColor }]}>🛏️ Past bedtime 💤</Text>
+          </Animated.View>
+        )}
+        <View style={styles.topOverlayBank}>
+          <ChargeBar
+            current={state.swipeBank?.current ?? 0}
+            max={state.swipeBank?.max ?? 20}
+            onPress={() => navigation.navigate('Bank')}
+            disabled={(state.swipeBank?.current ?? 0) <= 0}
+          />
+        </View>
+      </View>
+
       <Animated.View
         style={[{
           opacity: uiAppear,
@@ -1310,7 +1428,13 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               ]}
               hitSlop={8}
             >
-              <Text style={[styles.counterUndoText, (!canUndoSlide || confirming) && styles.counterUndoTextDisabled]}>↶</Text>
+              <Image
+                source={require('../../assets/backarrow.png')}
+                style={[
+                  styles.counterUndoIcon,
+                  (!canUndoSlide || confirming) && styles.counterUndoIconDisabled,
+                ]}
+              />
             </Pressable>
             <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
           </View>
@@ -1324,18 +1448,9 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           next={next}
           onSwipeLeft={handleSwipeLeft}
           onSwipeRight={handleCommit}
-          disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
+          disabled={controlsDisabled}
           deckColors={deckColors}
           showSourceDebug={isAdmin}
-        />
-      </View>
-
-      <View style={styles.chargeBarContainer}>
-        <ChargeBar
-          current={state.swipeBank?.current ?? 0}
-          max={state.swipeBank?.max ?? 20}
-          onPress={() => navigation.navigate('Bank')}
-          disabled={(state.swipeBank?.current ?? 0) <= 0}
         />
       </View>
 
@@ -1347,7 +1462,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
             pressed && styles.controlPressed,
           ]}
-          disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
+          disabled={controlsDisabled}
         >
           <Text style={[!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled, styles.controlText]}>X</Text>
         </Pressable>
@@ -1358,7 +1473,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
             pressed && styles.controlPressed,
           ]}
-          disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
+          disabled={controlsDisabled}
         >
           <Text style={[
             !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled,
@@ -1378,7 +1493,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlPrimaryDisabled,
               pressed && styles.controlPressed,
             ]}
-            disabled={confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow')}
+            disabled={controlsDisabled}
           >
             <Text style={[
               styles.controlText,
@@ -1418,31 +1533,37 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       <EmojiConfetti visible={confirming} emojis={confettiEmojis} />
 
       {/* Empty swipes card picker - 2x2 grid */}
-      {!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow' && (
+      {outOfSwipesGridVisible && (
         <View style={styles.emptySwipesOverlay}>
           <View style={styles.emptySwipesContent}>
             <Text style={styles.emptySwipesTitle}>Out of swipes</Text>
             <Text style={styles.emptySwipesSubtitle}>Tap a card to inspect it, then decide whether to use it</Text>
             <View style={styles.cardsGrid}>
-              {deck.slice(index, index + 4).map((card, idx) => (
-                <Pressable
-                  key={card.id}
-                  style={({ pressed }) => [
-                    styles.gridCard,
-                    pressed && { opacity: 0.9, transform: [{ scale: 0.97 }] },
-                  ]}
-                  onPress={() => openGridCard(card)}
-                >
-                  <View style={styles.gridCardContainer}>
-                    <View style={styles.cardBonusBadge}>
-                      <Text style={styles.cardBonusText}>+{Math.floor(card.durationMin / 30)}</Text>
+              {deck.slice(index, index + 4).map((card) => {
+                const isDeclined = declinedGridCardIds.has(card.id);
+                return (
+                  <Pressable
+                    key={card.id}
+                    style={({ pressed }) => [
+                      styles.gridCard,
+                      isDeclined && styles.gridCardDisabled,
+                      pressed && !isDeclined && { opacity: 0.9, transform: [{ scale: 0.97 }] },
+                    ]}
+                    disabled={isDeclined}
+                    onPress={() => openGridCard(card)}
+                  >
+                    <View style={styles.gridCardContainer}>
+                      <View style={styles.cardBonusBadge}>
+                        <Text style={styles.cardBonusText}>+{Math.floor(card.durationMin / 30)}</Text>
+                      </View>
+                      <Text style={[styles.gridCardEmoji, { fontSize: 40 }]}>{card.emojis?.[0] ?? (card.tags?.[0] ? '✨' : '⭐')}</Text>
+                      <Text style={styles.gridCardTitle} numberOfLines={2}>{card.title}</Text>
+                      <Text style={styles.gridCardDuration}>{card.durationMin}m</Text>
+                      {isDeclined && <Text style={styles.gridCardDeclinedLabel}>Declined</Text>}
                     </View>
-                    <Text style={[styles.gridCardEmoji, { fontSize: 40 }]}>{card.emojis?.[0] ?? (card.tags?.[0] ? '✨' : '⭐')}</Text>
-                    <Text style={styles.gridCardTitle} numberOfLines={2}>{card.title}</Text>
-                    <Text style={styles.gridCardDuration}>{card.durationMin}m</Text>
-                  </View>
-                </Pressable>
-              ))}
+                  </Pressable>
+                );
+              })}
             </View>
             <Text style={styles.emptySwipesHint}>Credits reset in a few minutes — gain bonus credits in the meantime</Text>
             <Pressable
@@ -1678,7 +1799,8 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
   },
   header: {
-    marginTop: theme.spacing.lg,
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.xl,
     gap: theme.spacing.xs,
   },
   back: {
@@ -1688,6 +1810,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   headerTypeTag: {
     alignSelf: 'flex-start',
+    marginTop: theme.spacing.sm,
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
     borderRadius: theme.radius.sm,
@@ -1728,7 +1851,8 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     minWidth: 24,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: 2,
+    marginBottom: 6,
+    marginTop: -2,
   },
   counterUndoButtonDisabled: {
     opacity: 0.35,
@@ -1736,14 +1860,15 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   counterUndoPressed: {
     transform: [{ scale: 0.94 }],
   },
-  counterUndoText: {
-    fontFamily: theme.fonts.semibold,
-    fontSize: 18,
-    color: theme.colors.textMuted,
-    lineHeight: 20,
+  counterUndoIcon: {
+    width: 14,
+    height: 14,
+    resizeMode: 'contain',
+    tintColor: theme.isDark ? theme.colors.text : undefined,
+    opacity: 0.75,
   },
-  counterUndoTextDisabled: {
-    color: theme.colors.border,
+  counterUndoIconDisabled: {
+    opacity: 0.3,
   },
   headerMetaRow: {
     flexDirection: 'row',
@@ -1758,11 +1883,34 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'center',
     paddingVertical: theme.spacing.md,
   },
-  chargeBarContainer: {
+  topOverlayRow: {
     position: 'absolute',
-    top: 12,
-    right: theme.spacing.md,
+    left: theme.spacing.lg,
+    right: theme.spacing.lg,
+    minHeight: 32,
+    zIndex: 60,
+    elevation: 60,
+  },
+  topOverlayBank: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    zIndex: 61,
+  },
+  pageBedtimeBadge: {
+    alignSelf: 'center',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 999,
+    borderWidth: 1,
+    backgroundColor: 'transparent',
+    alignItems: 'center',
     zIndex: 50,
+  },
+  pageBedtimeBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    lineHeight: 16,
   },
   controls: {
     flexDirection: 'row',
@@ -2073,6 +2221,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     alignItems: 'center',
     gap: theme.spacing.sm,
   },
+  gridCardDisabled: {
+    opacity: 0.45,
+  },
+  gridCardDeclinedLabel: {
+    marginTop: 4,
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+  },
   gridCardEmoji: {
     fontSize: 32,
   },
@@ -2110,7 +2268,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: theme.spacing.lg,
   },
   inspectSheet: {
-    flex: 1,
+    maxHeight: '82%',
     borderRadius: theme.radius.xl,
     backgroundColor: theme.colors.background,
     padding: theme.spacing.lg,

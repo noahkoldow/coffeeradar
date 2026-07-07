@@ -27,6 +27,7 @@ export type RootStackParamList = {
     commitment: Commitment;
     suggestion: DeckSuggestion;
     fromDoSomethingNow?: boolean;
+    activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home';
   };
   ActivityChat: {
     threadId: string;

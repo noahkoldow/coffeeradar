@@ -23,6 +23,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { commitment, suggestion } = route.params;
   const fromDoSomethingNow = route.params?.fromDoSomethingNow === true;
+  const activityMode = route.params?.activityMode ?? (suggestion.type === 'AT_HOME' ? 'at_home' : 'all');
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
 
@@ -375,6 +376,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         title: suggestion.title,
         durationMin,
         timestamp: new Date().toISOString(),
+        activityMode,
         source: suggestion.source,
         isHabit: !!suggestion.habitId,
         habitId: suggestion.habitId,
@@ -389,7 +391,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     actions.setInProgressPlanSession(null);
 
     navigateToCompletion(durationMin);
-  }, [activityLogged, actions, canFinish, commitment.calendarEventId, commitment.calendarWriteFailed, commitment.endAt, commitment.startAt, commitment.suggestionId, manualStartAt, movementKm, navigateToCompletion, state.scheduledActivities, suggestion.habitId, suggestion.id, suggestion.source, suggestion.tags, suggestion.title, suggestion.type]);
+  }, [activityLogged, actions, activityMode, canFinish, commitment.calendarEventId, commitment.calendarWriteFailed, commitment.endAt, commitment.startAt, commitment.suggestionId, manualStartAt, movementKm, navigateToCompletion, state.scheduledActivities, suggestion.habitId, suggestion.id, suggestion.source, suggestion.tags, suggestion.title, suggestion.type]);
 
   const cancelPlan = useCallback(async () => {
     cancelledRef.current = true;

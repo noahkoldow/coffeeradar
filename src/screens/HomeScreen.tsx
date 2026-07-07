@@ -41,6 +41,8 @@ type ActionMode = {
   text: string;
 };
 
+type ActivityModeKey = ActionMode['key'];
+
 const durationOptions = [30, 60, 120, 240];
 
 const formatDurationLabel = (minutes: number): string => {
@@ -49,6 +51,7 @@ const formatDurationLabel = (minutes: number): string => {
 };
 
 const BANNER_PAGE_HEIGHT = 94;
+const DASHBOARD_STACK_SEGMENT_OVERLAP_PX = 10;
 
 // Logo: 1:3 aspect ratio, half the button height (~30px tall, 90px wide)
 const LOGO_HEIGHT = 30;
@@ -64,6 +67,49 @@ const hexToRgba = (hex: string, alpha: number): string => {
   const g = parseInt(hex.slice(3, 5), 16);
   const b = parseInt(hex.slice(5, 7), 16);
   return `rgba(${r},${g},${b},${alpha.toFixed(3)})`;
+};
+
+type DashboardTagTone = {
+  backgroundColor: string;
+  borderColor: string;
+  textColor: string;
+};
+
+const getDashboardTagTone = (tag: string): DashboardTagTone => {
+  const t = tag.trim().toLowerCase();
+
+  if (/(nature|outdoor|park|walk|hike|garden|forest|tree|green|trail|fresh air|sunset|view)/.test(t)) {
+    return { backgroundColor: '#EAF6EE', borderColor: '#B8DDC5', textColor: '#3C7D50' };
+  }
+  if (/(fitness|workout|exercise|run|jog|bike|cycle|sport|movement|active)/.test(t)) {
+    return { backgroundColor: '#E8F7EF', borderColor: '#B2DFC7', textColor: '#2E8055' };
+  }
+  if (/(social|friends|date|meet|party|group|community|hangout)/.test(t)) {
+    return { backgroundColor: '#FAEDF3', borderColor: '#E5C2D3', textColor: '#9B4D72' };
+  }
+  if (/(coffee|cafe|food|cook|eat|drink|restaurant|market|snack|brunch|lunch|dinner)/.test(t)) {
+    return { backgroundColor: '#FBF3E6', borderColor: '#E8D0A3', textColor: '#9A6A12' };
+  }
+  if (/(learn|read|study|focus|work|project|planning|organize|library|cowork|brain|research)/.test(t)) {
+    return { backgroundColor: '#EBF0FC', borderColor: '#C3D0F4', textColor: '#3559B8' };
+  }
+  if (/(creative|art|music|draw|paint|write|craft|design|photo|film)/.test(t)) {
+    return { backgroundColor: '#FBEFE8', borderColor: '#E9C7B0', textColor: '#A05A2D' };
+  }
+  if (/(relax|calm|rest|self care|sleep|stretch|yoga|meditat|breathe|mindful)/.test(t)) {
+    return { backgroundColor: '#F1ECFA', borderColor: '#D3C8EC', textColor: '#6A56A8' };
+  }
+  if (/(clean|tidy|declutter|laundry|home|repair|prep|routine|organise|organize)/.test(t)) {
+    return { backgroundColor: '#EDF3F6', borderColor: '#C7D5DE', textColor: '#4F6472' };
+  }
+  if (/(shopping|market|store|browse|gift|fashion|style)/.test(t)) {
+    return { backgroundColor: '#F7EDF5', borderColor: '#DEC6DA', textColor: '#955A8D' };
+  }
+  if (/(explore|adventure|trip|travel|discover|wander|city|museum|gallery|daytrip)/.test(t)) {
+    return { backgroundColor: '#EAF5F4', borderColor: '#C2DEDB', textColor: '#3D7880' };
+  }
+
+  return { backgroundColor: '#EEF1F6', borderColor: '#D2D9E5', textColor: '#5C6775' };
 };
 
 export const HomeScreen: React.FC<Props> = ({ navigation }) => {
@@ -97,6 +143,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const screenWidth = Dimensions.get('window').width - theme.spacing.xl * 2;
   const homeScrollRef = useRef<ScrollView>(null);
+  const actionScrollRef = useRef<ScrollView>(null);
 
   // ������ Banner auto-swipe ������
   const bannerScrollRef = useRef<ScrollView>(null);
@@ -170,11 +217,43 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         planDate: 'tomorrow' as const,
         bg: theme.isDark ? '#2E4F45' : '#B5EAD7',
         text: theme.isDark ? '#D9F6EA' : '#1A4A3A',
-      },
+      } as ActionMode,
       baseModes[1],
       baseModes[2],
     ];
   }, [premiumEnabled, theme.colors.accent, theme.colors.accentText, theme.isDark]);
+
+  const swipesRemaining = state.swipeBank?.current ?? 0;
+  const hasSwipes = swipesRemaining > 0;
+  const isModeAvailable = useCallback((mode: ActionMode) => hasSwipes || mode.key === 'tomorrow', [hasSwipes]);
+
+  useEffect(() => {
+    if (!(premiumEnabled && !hasSwipes)) return;
+    const tomorrowIndex = ACTION_MODES.findIndex((mode) => mode.key === 'tomorrow');
+    if (tomorrowIndex < 0) return;
+
+    if (actionIndex !== tomorrowIndex) {
+      setActionIndex(tomorrowIndex);
+    }
+    actionScrollRef.current?.scrollTo({ x: tomorrowIndex * screenWidth, animated: true });
+  }, [ACTION_MODES, actionIndex, hasSwipes, premiumEnabled, screenWidth]);
+
+  const activityModeColors = useMemo<Record<ActivityModeKey, string>>(() => ({
+    all: theme.colors.accent,
+    tomorrow: theme.isDark ? '#2E4F45' : '#B5EAD7',
+    productive: theme.isDark ? '#2A4A5E' : '#A8D8EA',
+    at_home: theme.isDark ? '#54374A' : '#E2B6CF',
+  }), [theme.colors.accent, theme.isDark]);
+
+  const resolveActivityMode = useCallback((entry: ActivityLog): ActivityModeKey => {
+    if (entry.activityMode) return entry.activityMode;
+    if (entry.suggestionType === 'AT_HOME') return 'at_home';
+    const productiveTags = new Set(['productivity', 'learning', 'creative', 'focus', 'planning', 'work', 'study', 'reading']);
+    if (entry.tags?.some((tag) => productiveTags.has(tag))) return 'productive';
+    return 'all';
+  }, []);
+
+  const activityModeOrder: ActivityModeKey[] = ['all', 'tomorrow', 'productive', 'at_home'];
 
   const weekGraph = useMemo(() => {
     const anchorDate = new Date();
@@ -190,12 +269,28 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       const scheduled = state.scheduledActivities
         .filter((item) => key === todayKey && new Date(item.startAt).toDateString() === key)
         .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+      const minutesByMode: Record<ActivityModeKey, number> = {
+        all: 0,
+        tomorrow: 0,
+        productive: 0,
+        at_home: 0,
+      };
+      for (const entry of activities) {
+        const mode = resolveActivityMode(entry);
+        minutesByMode[mode] += entry.durationMin;
+      }
       const minutes = activities.reduce((sum, entry) => sum + entry.durationMin, 0);
-      return { date, dayLabel, key, minutes, activities, scheduled };
+      return { date, dayLabel, key, minutes, minutesByMode, activities, scheduled };
     });
     const maxMinutes = Math.max(1, ...days.map((day) => day.minutes));
     return days.map((day) => ({
       ...day,
+      modeSegments: activityModeOrder
+        .filter((mode) => day.minutesByMode[mode] > 0)
+        .map((mode) => ({
+          mode,
+          minutes: day.minutesByMode[mode],
+        })),
       hasActivity: day.minutes > 0 || day.scheduled.length > 0,
       height: day.minutes > 0
         ? Math.max(8, (day.minutes / maxMinutes) * 100)
@@ -203,7 +298,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           ? 18
           : 0,
     }));
-  }, [state.activityLog, state.scheduledActivities, todayKey]);
+  }, [activityModeOrder, resolveActivityMode, state.activityLog, state.scheduledActivities, todayKey]);
 
   useEffect(() => {
     if (selectedDayKey && weekGraph.some((day) => day.key === selectedDayKey)) return;
@@ -658,6 +753,9 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const onDoSomethingNow = () => {
     const currentMode = ACTION_MODES[actionIndex];
+    if (!isModeAvailable(currentMode)) {
+      return;
+    }
     if (isBusyNow) {
       Alert.alert(
         'You are busy right now',
@@ -677,6 +775,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     navigation.navigate('Plan', {
       commitment: item.commitment,
       suggestion: item.suggestion,
+      activityMode: item.activityMode,
     });
   }, [navigation, openPlanSession]);
 
@@ -790,6 +889,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         </View>
         <View style={styles.hero}>
           <ScrollView
+            ref={actionScrollRef}
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
@@ -801,14 +901,21 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           >
             {ACTION_MODES.map((item) => (
               <View key={item.key} style={{ width: screenWidth, paddingHorizontal: 16 }}>
+                {(() => {
+                  const modeAvailable = isModeAvailable(item);
+                  const modeMuted = !modeAvailable || (isBusyNow && item.key !== 'tomorrow');
+                  return (
                 <PrimaryButton
                   label={loading ? 'Working...' : item.label}
-                  glow={!isBusyNow}
-                  variant={isBusyNow && item.key !== 'tomorrow' ? 'muted' : 'default'}
-                  bgColor={isBusyNow && item.key !== 'tomorrow' ? undefined : item.bg}
-                  textColor={isBusyNow && item.key !== 'tomorrow' ? undefined : item.text}
+                  glow={!isBusyNow && modeAvailable}
+                  variant={modeMuted ? 'muted' : 'default'}
+                  bgColor={modeMuted ? undefined : item.bg}
+                  textColor={modeMuted ? undefined : item.text}
+                  disabled={loading || !modeAvailable}
                   onPress={onDoSomethingNow}
                 />
+                  );
+                })()}
               </View>
             ))}
           </ScrollView>
@@ -966,7 +1073,20 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                       >
                         <View style={styles.dashboardGraphTrack}>
                           {day.hasActivity ? (
-                            <View style={[styles.dashboardGraphFill, { height: `${day.height}%` }]} />
+                            <View style={[styles.dashboardGraphStack, { height: `${day.height}%` }]}>
+                              {day.modeSegments.map((segment, idx) => (
+                                <View
+                                  key={`${day.key}_${segment.mode}`}
+                                  style={[
+                                    styles.dashboardGraphSegment,
+                                    { flex: segment.minutes, backgroundColor: activityModeColors[segment.mode] },
+                                    idx > 0 && styles.dashboardGraphSegmentStart,
+                                    idx < day.modeSegments.length - 1 && styles.dashboardGraphSegmentOverlap,
+                                    idx === 0 && styles.dashboardGraphSegmentTop,
+                                  ]}
+                                />
+                              ))}
+                            </View>
                           ) : (
                             <Text style={styles.dashboardGraphEmptyMark}>×</Text>
                           )}
@@ -1015,18 +1135,46 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                         const activityKey = entry.suggestionId || entry.title.trim().toLowerCase();
                         const aggregateStats = activityStatsByKey.get(activityKey);
                         const alreadyInHabits = entry.isHabit || existingHabitNames.has(entry.title.trim().toLowerCase());
+                        const activityMode = resolveActivityMode(entry);
+                        const displayTags = [...new Set((entry.tags ?? []).filter((tag) => !!tag?.trim()))].slice(0, 2);
                         return (
                         <View key={entry.id} style={styles.dayActivityRow}>
-                          <View style={[styles.dayActivityTypePill, entry.isHabit ? styles.dayActivityHabitPill : styles.dayActivityOneOffPill]}>
-                            <Text style={[styles.dayActivityTypeText, entry.isHabit ? styles.dayActivityHabitText : styles.dayActivityOneOffText]}>
-                              {entry.isHabit ? 'Habit' : 'One-time'}
-                            </Text>
+                          <View
+                            style={[
+                              styles.dayActivitySourceDot,
+                              { backgroundColor: activityModeColors[activityMode] },
+                            ]}
+                          />
+                          <View style={styles.dayActivityTypeBlock}>
+                            <View style={[styles.dayActivityTypePill, entry.isHabit ? styles.dayActivityHabitPill : styles.dayActivityOneOffPill]}>
+                              <Text style={[styles.dayActivityTypeText, entry.isHabit ? styles.dayActivityHabitText : styles.dayActivityOneOffText]}>
+                                {entry.isHabit ? 'Habit' : 'One-time'}
+                              </Text>
+                            </View>
+                            {displayTags.length > 0 && (
+                              <View style={styles.dayActivityTagsRow}>
+                                {displayTags.map((tag, index) => (
+                                  <View
+                                    key={`${entry.id}_${tag}_${index}`}
+                                    style={[
+                                      styles.dayActivityTag,
+                                      {
+                                        backgroundColor: getDashboardTagTone(tag).backgroundColor,
+                                        borderColor: getDashboardTagTone(tag).borderColor,
+                                      },
+                                    ]}
+                                  >
+                                    <Text style={[styles.dayActivityTagText, { color: getDashboardTagTone(tag).textColor }]} numberOfLines={1}>{tag}</Text>
+                                  </View>
+                                ))}
+                              </View>
+                            )}
                           </View>
                           <View style={{ flex: 1 }}>
                             <Text style={styles.dayActivityTitle}>{entry.title}</Text>
                             <Text style={styles.dayActivityMeta}>{formatTime(new Date(entry.timestamp))} · {entry.durationMin}m</Text>
                             <View style={styles.dayActivityBottomRow}>
-                              <Text style={styles.dayActivityStatText}>
+                              <Text style={styles.dayActivityStatText} numberOfLines={1}>
                                 {aggregateStats
                                   ? `${aggregateStats.count}x done · ${aggregateStats.minutes}m total`
                                   : `${entry.durationMin}m done`}
@@ -1177,19 +1325,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   premiumButton: {
     width: 40,
-    height: 30,
-    borderRadius: 15,
-    borderWidth: 1,
+    height: 28,
+    borderRadius: 14,
     alignItems: 'center',
     justifyContent: 'center',
   },
   premiumButtonActive: {
     backgroundColor: '#F7E8A6',
-    borderColor: '#E8D889',
   },
   premiumButtonInactive: {
     backgroundColor: theme.colors.backgroundAlt,
-    borderColor: theme.colors.border,
   },
   premiumButtonPressed: {
     transform: [{ scale: 0.97 }],
@@ -1478,10 +1623,25 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     opacity: 0.6,
   },
-  dashboardGraphFill: {
+  dashboardGraphStack: {
     width: '100%',
-    borderRadius: 999,
-    backgroundColor: theme.colors.accent,
+    borderBottomLeftRadius: 999,
+    borderBottomRightRadius: 999,
+    overflow: 'hidden',
+  },
+  dashboardGraphSegment: {
+    width: '100%',
+  },
+  dashboardGraphSegmentStart: {
+    borderTopLeftRadius: 999,
+    borderTopRightRadius: 999,
+  },
+  dashboardGraphSegmentOverlap: {
+    marginBottom: -DASHBOARD_STACK_SEGMENT_OVERLAP_PX,
+  },
+  dashboardGraphSegmentTop: {
+    borderTopLeftRadius: 999,
+    borderTopRightRadius: 999,
   },
   dashboardGraphLabel: {
     fontFamily: theme.fonts.semibold,
@@ -1587,14 +1747,24 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: theme.spacing.sm,
   },
   dayActivityRow: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'flex-start',
     gap: theme.spacing.sm,
     padding: theme.spacing.sm,
+    paddingRight: theme.spacing.lg + 10,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.card,
     borderWidth: 1,
     borderColor: theme.colors.border,
+  },
+  dayActivitySourceDot: {
+    position: 'absolute',
+    top: 10,
+    right: 10,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
   },
   dayActivityRowPressed: {
     opacity: 0.82,
@@ -1604,6 +1774,27 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: 4,
     borderRadius: 999,
     alignSelf: 'flex-start',
+  },
+  dayActivityTypeBlock: {
+    alignItems: 'flex-start',
+    gap: 4,
+    maxWidth: 110,
+  },
+  dayActivityTagsRow: {
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    gap: 4,
+  },
+  dayActivityTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+    borderWidth: 1,
+    maxWidth: 92,
+  },
+  dayActivityTagText: {
+    fontFamily: theme.fonts.body,
+    fontSize: 10,
   },
   dayActivityHabitPill: {
     backgroundColor: theme.colors.background,
@@ -1645,6 +1836,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   dayActivityStatText: {
     flex: 1,
+    minWidth: 0,
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
     fontSize: 11,
@@ -1654,6 +1846,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 999,
     backgroundColor: theme.colors.accentSoft,
+    flexShrink: 0,
+    marginLeft: 'auto',
+    marginRight: -(theme.spacing.lg + 2),
   },
   dayActivityHabitActionPressed: {
     opacity: 0.84,

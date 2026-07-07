@@ -188,6 +188,7 @@ export type ActivityLog = {
   title: string;
   durationMin: number;
   timestamp: string;
+  activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home';
   source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community';
   isHabit?: boolean;
   habitId?: string;
@@ -226,6 +227,7 @@ export type ScheduledActivity = {
   startAt: string;
   endAt: string;
   type: SuggestionType;
+  activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home';
   tags?: string[];
   calendarEventId?: string;
   /** Serialised DeckSuggestion + Commitment so we can open PlanScreen */

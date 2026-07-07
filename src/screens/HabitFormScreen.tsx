@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -77,6 +77,19 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const [usePreferredTime, setUsePreferredTime] = useState(Boolean(existing?.preferredTime));
   const [scheduledWeekdays, setScheduledWeekdays] = useState<number[]>(existing?.scheduledWeekdays ?? []);
   const [selectedTags, setSelectedTags] = useState<string[]>(existing?.tags ?? []);
+
+  useEffect(() => {
+    setName(existing?.name ?? '');
+    setHabitType(existing?.type ?? 'AT_HOME');
+    setLengthMin(existing ? String(existing.lengthMin) : '20');
+    setDescription(existing?.description ?? '');
+    setFrequency(existing?.frequency ?? 'daily');
+    setTimeOfDay(existing?.timeOfDay ?? 'any');
+    setPreferredTime(normalizeClockTime(existing?.preferredTime, '07:30'));
+    setUsePreferredTime(Boolean(existing?.preferredTime));
+    setScheduledWeekdays(existing?.scheduledWeekdays ?? []);
+    setSelectedTags(existing?.tags ?? []);
+  }, [existing]);
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>

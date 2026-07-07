@@ -265,7 +265,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
                 onPress={() => {
                   Alert.alert('Habit options', habit.name, [
                     { text: 'Cancel', style: 'cancel' },
-                    { text: 'Edit', onPress: () => navigation.navigate('HabitForm', { habit }) },
+                    { text: 'Edit', onPress: () => navigation.push('HabitForm', { habit }) },
                     { text: 'Delete', style: 'destructive', onPress: () => confirmDelete(habit) },
                   ]);
                 }}
@@ -333,7 +333,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
             <Pressable onPress={() => navigation.goBack()}>
               <Text style={styles.back}>Back</Text>
             </Pressable>
-            <Pressable onPress={() => navigation.navigate('HabitForm')}>
+            <Pressable onPress={() => navigation.push('HabitForm')}>
               <View style={styles.addButtonSmall}>
                 <Text style={styles.addButtonSmallText}>+ New</Text>
               </View>
@@ -363,7 +363,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
             <Text style={styles.emptyText}>No habits yet</Text>
             <Text style={styles.emptySubtext}>Start by adding a habit to build streaks!</Text>
             <Pressable
-              onPress={() => navigation.navigate('HabitForm')}
+              onPress={() => navigation.push('HabitForm')}
               style={({ pressed }) => [styles.emptyButton, pressed && { opacity: 0.85 }]}
             >
               <Text style={styles.emptyButtonText}>Create your first habit</Text>

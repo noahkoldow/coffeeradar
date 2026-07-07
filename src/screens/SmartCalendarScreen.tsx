@@ -121,6 +121,12 @@ type ManualPreviewState = {
   durationMin: number;
 };
 
+type FutureGapWindow = {
+  startAt: Date;
+  endAt: Date;
+  durationMin: number;
+};
+
 type TodoSchedulingContext = {
   isSocialCall: boolean;
   avoidBeforeMin: number;
@@ -473,15 +479,16 @@ const buildTodoCandidateSlots = (
   const slots: TodoCandidateSlot[] = [];
   for (const column of columns) {
     for (const gap of column.gaps) {
-      if (gap.endAt.getTime() <= now.getTime()) continue;
-      if (gap.durationMin < minDurationMin) continue;
+      const futureWindow = resolveFutureGapWindow(gap, now);
+      if (!futureWindow) continue;
+      if (futureWindow.durationMin < minDurationMin) continue;
       slots.push({
         id: gap.id,
         dayId: column.id,
         dayLabel: column.label,
-        startAt: gap.startAt,
-        endAt: gap.endAt,
-        durationMin: gap.durationMin,
+        startAt: futureWindow.startAt,
+        endAt: futureWindow.endAt,
+        durationMin: futureWindow.durationMin,
         beforeTitle: gap.before?.title,
         afterTitle: gap.after?.title,
       });
@@ -496,17 +503,28 @@ const snapMinutesToGrid = (value: number, step = 5): number => {
   return Math.round(value / step) * step;
 };
 
+const resolveFutureGapWindow = (gap: CalendarGap, now = new Date()): FutureGapWindow | null => {
+  const startMs = Math.max(gap.startAt.getTime(), now.getTime());
+  const endMs = gap.endAt.getTime();
+  if (endMs <= startMs) return null;
+
+  const startAt = new Date(startMs);
+  const endAt = new Date(endMs);
+  const durationMin = Math.max(1, Math.round((endMs - startMs) / 60000));
+  return { startAt, endAt, durationMin };
+};
+
 const computeManualStartInGap = (
-  gap: CalendarGap,
+  gapWindow: FutureGapWindow,
   pressLocationY: number,
   renderedGapHeight: number,
   todoDurationMin: number,
 ): Date => {
   const safeHeight = Math.max(1, renderedGapHeight);
   const ratio = Math.max(0, Math.min(1, pressLocationY / safeHeight));
-  const maxOffset = Math.max(0, gap.durationMin - todoDurationMin);
+  const maxOffset = Math.max(0, gapWindow.durationMin - todoDurationMin);
   const offsetMin = Math.max(0, Math.min(maxOffset, snapMinutesToGrid(ratio * maxOffset, 5)));
-  return new Date(gap.startAt.getTime() + offsetMin * 60000);
+  return new Date(gapWindow.startAt.getTime() + offsetMin * 60000);
 };
 
 const parseSmartSlotJson = (text: string): {
@@ -739,14 +757,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     columnsScrollRef.current?.scrollTo({ x: targetOffsetX, y: 0, animated });
   };
 
-  const focusRankedTodoSlot = (slot: RankedTodoSlot, animated: boolean) => {
+  const focusRankedTodoSlot = (slot: RankedTodoSlot, animated: boolean): boolean => {
     const targetColumn = columns.find((column) => column.id === slot.slot.dayId);
-    if (!targetColumn) return;
+    if (!targetColumn) return false;
 
     const colX = dayColumnXRef.current[targetColumn.id];
-    if (Number.isFinite(colX)) {
-      columnsScrollRef.current?.scrollTo({ x: Math.max(0, colX - 10), y: 0, animated });
-    }
+    if (!Number.isFinite(colX)) return false;
+
+    columnsScrollRef.current?.scrollTo({ x: Math.max(0, colX - 10), y: 0, animated });
 
     const targetMinute = Math.max(
       globalTimelineRange.minStartMin,
@@ -755,6 +773,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const top = TIMELINE_VERTICAL_INSET + (targetMinute - globalTimelineRange.minStartMin) * pxPerMinute;
     const offsetY = Math.max(0, top - DAY_TIMELINE_VIEWPORT_HEIGHT * 0.28);
     calendarVerticalScrollRef.current?.scrollTo({ y: offsetY, animated });
+    return true;
   };
 
   useEffect(() => {
@@ -786,11 +805,29 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const focusId = `${best.slot.dayId}_${best.rank}_${best.suggestedStartAt.getTime()}`;
     if (lastAutoFocusedRankedSlotRef.current === focusId) return;
 
-    lastAutoFocusedRankedSlotRef.current = focusId;
-    const timer = setTimeout(() => {
-      focusRankedTodoSlot(best, true);
-    }, 80);
-    return () => clearTimeout(timer);
+    let cancelled = false;
+    let retryCount = 0;
+    const maxRetries = 6;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const tryFocus = () => {
+      if (cancelled) return;
+      const focused = focusRankedTodoSlot(best, true);
+      if (focused) {
+        lastAutoFocusedRankedSlotRef.current = focusId;
+        return;
+      }
+      if (retryCount >= maxRetries) return;
+      retryCount += 1;
+      retryTimer = setTimeout(tryFocus, 120);
+    };
+
+    const timer = setTimeout(tryFocus, 80);
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      if (retryTimer) clearTimeout(retryTimer);
+    };
   }, [columns, rankedTodoSlots, smartTodoSlotLoading, todoSchedulingMode, pxPerMinute]);
 
   const showPremiumInfo = () => {
@@ -970,8 +1007,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   }, [state.enabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, state.scheduledActivities]);
 
   const toDeckEntries = (gap: CalendarGap, suggestions: SmartCalendarSuggestion[]): SmartSuggestionDeckEntry[] => {
+    const futureWindow = resolveFutureGapWindow(gap, new Date());
+    if (!futureWindow) return [];
+
     return suggestions.slice(0, 3).map((suggestion, idx) => {
-      const startAt = gap.startAt;
+      const startAt = futureWindow.startAt;
       const endAt = new Date(startAt.getTime() + suggestion.durationMin * 60000);
       const deck: DeckSuggestion = {
         id: `smart_gap_${gap.id}_${idx}_${suggestion.source}`,
@@ -1016,6 +1056,24 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       showPremiumInfo();
       return;
     }
+
+    const now = new Date();
+    const futureWindow = resolveFutureGapWindow(gap, now);
+    if (!futureWindow) {
+      setGapSuggestions([]);
+      setSuggestionIndex(0);
+      setDeckExhausted(false);
+      Alert.alert('Gap expired', 'This free slot is already in the past. Please choose an upcoming gap.');
+      return;
+    }
+
+    const gapForSuggestions: CalendarGap = {
+      ...gap,
+      startAt: futureWindow.startAt,
+      endAt: futureWindow.endAt,
+      durationMin: futureWindow.durationMin,
+    };
+
     const cacheKey = gapBatchCacheKey(gap, batchIndex);
     const cached = !forceRefresh ? gapSuggestionCache[cacheKey] : undefined;
     if (cached?.length) {
@@ -1027,7 +1085,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     setSuggestionsLoading(true);
     const aiSuggestionCount = aiCountForBatch(batchIndex);
-    buildGapSuggestions(gap, state.habits, state.smartTodos, {
+    buildGapSuggestions(gapForSuggestions, state.habits, state.smartTodos, {
       defaultLocation: {
         lat: state.location.lat ?? undefined,
         lng: state.location.lng ?? undefined,
@@ -1352,8 +1410,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     renderedGapHeight: number,
     todoDurationMin: number,
   ) => {
-    const pickedStartAt = computeManualStartInGap(gap, pressLocationY, renderedGapHeight, todoDurationMin);
-    const pickedEndAt = new Date(pickedStartAt.getTime() + todoDurationMin * 60000);
+    const futureWindow = resolveFutureGapWindow(gap, new Date());
+    if (!futureWindow) {
+      setManualPreview(null);
+      return;
+    }
+    const safeDurationMin = Math.max(15, Math.min(todoDurationMin, futureWindow.durationMin));
+    const pickedStartAt = computeManualStartInGap(futureWindow, pressLocationY, renderedGapHeight, safeDurationMin);
+    const pickedEndAt = new Date(pickedStartAt.getTime() + safeDurationMin * 60000);
     const label = `${formatCalendarTime(pickedStartAt)} - ${formatCalendarTime(pickedEndAt)}`;
     const safeHeight = Math.max(1, renderedGapHeight);
     const topOffset = Math.max(4, Math.min(safeHeight - 28, pressLocationY - 14));
@@ -1362,7 +1426,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       label,
       topOffset,
       startAt: pickedStartAt,
-      durationMin: todoDurationMin,
+      durationMin: safeDurationMin,
     });
   };
 
@@ -1650,7 +1714,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
 
-    const startAt = gap.startAt;
+    const futureWindow = resolveFutureGapWindow(gap, new Date());
+    if (!futureWindow) {
+      Alert.alert('Gap expired', 'This free slot is already in the past. Please choose an upcoming gap.');
+      setSelectedGap(null);
+      return;
+    }
+
+    const startAt = futureWindow.startAt;
     const endAt = new Date(startAt.getTime() + suggestion.durationMin * 60000);
     let title = deckSuggestion.title;
 
@@ -2017,33 +2088,31 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
                     if (segment.kind === 'gap' && segment.gap) {
                       const cellHeight = Math.max(durationMin * pxPerMinute, minSegmentHeight(segment));
+                      const manualTouchEnabled = todoSchedulingMode === 'manual' && !!todoSchedulingTarget;
                       return (
                         <Pressable
                           key={segment.id}
-                          onPressIn={(event) => {
-                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
-                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
+                          onPressIn={manualTouchEnabled ? (event) => {
+                            if (!todoSchedulingTarget) return;
+                            const futureWindow = resolveFutureGapWindow(segment.gap!, new Date());
+                            if (!futureWindow) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, futureWindow.durationMin);
                             updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
-                          }}
-                          onTouchMove={(event) => {
-                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
-                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
+                          } : undefined}
+                          onTouchMove={manualTouchEnabled ? (event) => {
+                            if (!todoSchedulingTarget) return;
+                            const futureWindow = resolveFutureGapWindow(segment.gap!, new Date());
+                            if (!futureWindow) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, futureWindow.durationMin);
                             updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
-                          }}
-                          onPressOut={() => {
-                            if (todoSchedulingMode === 'manual') setManualPreview(null);
-                          }}
-                          onPress={(event) => {
-                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
-                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
-                            const pickedStartAt = computeManualStartInGap(
-                              segment.gap!,
-                              event.nativeEvent.locationY,
-                              cellHeight,
-                              durationMinForTodo,
-                            );
-                            confirmManualTodoSchedule(todoSchedulingTarget, pickedStartAt, durationMinForTodo);
-                          }}
+                          } : undefined}
+                          onPress={manualTouchEnabled ? (event) => {
+                            if (!todoSchedulingTarget) return;
+                            const futureWindow = resolveFutureGapWindow(segment.gap!, new Date());
+                            if (!futureWindow) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, futureWindow.durationMin);
+                            updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
+                          } : undefined}
                           style={[styles.gapBlock, { top, height: cellHeight, zIndex: 5 }]}
                         >
                           <View style={{ flex: 1 }}>
@@ -2085,6 +2154,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                               onPress={() => {
                                 if (!premiumEnabled) {
                                   showPremiumInfo();
+                                  return;
+                                }
+                                if (!resolveFutureGapWindow(segment.gap!, new Date())) {
+                                  Alert.alert('Gap expired', 'This free slot is already in the past. Please choose an upcoming gap.');
                                   return;
                                 }
                                 setSelectedGap(segment.gap!);
