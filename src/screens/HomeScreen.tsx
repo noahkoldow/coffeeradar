@@ -16,7 +16,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 import { deletePlanEvent, getAvailability } from '../services/calendar';
 import { getCurrentLocation } from '../services/location';
-import { formatDuration, formatTime } from '../utils/time';
+import { formatDuration, formatTime, getTimeWindowContext } from '../utils/time';
 import { logEvent } from '../services/analytics';
 import { isBusinessAdmin, upsertUserData } from '../services/user';
 import { fetchWeather, WeatherCondition } from '../services/weather';
@@ -119,6 +119,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const [loading, setLoading] = useState(false);
   const [manualDuration, setManualDuration] = useState(60);
   const [weatherCondition, setWeatherCondition] = useState<WeatherCondition>('unknown');
+  const [wakeWindowNow, setWakeWindowNow] = useState<number>(Date.now());
   const [bannerKey, setBannerKey] = useState(0);
   const [actionIndex, setActionIndex] = useState(0);
   const [bannerPageIndex, setBannerPageIndex] = useState(0);
@@ -186,6 +187,21 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       }
     });
   }, []);
+
+  useEffect(() => {
+    const interval = setInterval(() => setWakeWindowNow(Date.now()), 60_000);
+    return () => clearInterval(interval);
+  }, []);
+
+  const isOutsideWakeWindow = useMemo(() => {
+    const ctx = getTimeWindowContext(
+      new Date(wakeWindowNow),
+      state.location.timeZone,
+      state.prefs.wakeStartTime,
+      state.prefs.wakeEndTime,
+    );
+    return !ctx.isWithinWakeWindow;
+  }, [wakeWindowNow, state.location.timeZone, state.prefs.wakeEndTime, state.prefs.wakeStartTime]);
 
   const ACTION_MODES = useMemo(() => {
     const baseModes: ActionMode[] = [
@@ -867,7 +883,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <View style={styles.skyWrapper}>
                 <SkyBanner weather={weatherCondition} />
               </View>
-              <ActivityBanner weather={weatherCondition} restartKey={bannerKey} />
+              <ActivityBanner weather={weatherCondition} restartKey={bannerKey} sleepMode={isOutsideWakeWindow} />
             </View>
             {badgeProgress.length > 0 && (
               <View style={[styles.bannerPage, styles.badgeBannerPage, { width: screenWidth }]}>
@@ -1410,7 +1426,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingTop: theme.spacing.xxl,
   },
   skyWrapper: {
-    zIndex: 2,
+    zIndex: 0,
     marginBottom: -18,
   },
   hero: {

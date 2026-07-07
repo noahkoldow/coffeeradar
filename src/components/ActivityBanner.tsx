@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Easing, StyleSheet, View } from 'react-native';
+import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle, Ellipse, G, Line, Path, Rect } from 'react-native-svg';
+import { LinearGradient } from 'expo-linear-gradient';
 import { useTheme } from '../theme/ThemeProvider';
 import type { WeatherCondition } from '../services/weather';
 
@@ -202,43 +203,36 @@ const SKY_MAP: Record<WeatherCondition, React.FC<SkyProps>> = {
 
 /* ── Night sky — stars and moon, fading top→bottom ───────── */
 const NightSky = ({ width, height }: SkyProps) => {
-  // Simulate a top-to-bottom fade using horizontal strips with decreasing opacity
-  const STRIPS = 8;
-  const stripH = height / STRIPS;
-
   return (
-    <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
-      {/* Fading dark sky — dark at top, transparent at bottom */}
-      {Array.from({ length: STRIPS }, (_, i) => (
-        <Rect
-          key={`s${i}`}
-          x={0}
-          y={i * stripH}
-          width={width}
-          height={stripH + 1}
-          fill="#0F1B2D"
-          opacity={0.92 - (i / (STRIPS - 1)) * 0.92}
-        />
-      ))}
-      {/* Moon */}
-      <Circle cx={width * 0.78} cy={height * 0.28} r={10} fill="#E8E0C8" opacity={0.85} />
-      <Circle cx={width * 0.81} cy={height * 0.24} r={8} fill="#0F1B2D" opacity={0.7} />
-      {/* Moon glow */}
-      <Circle cx={width * 0.78} cy={height * 0.28} r={18} fill="#E8E0C8" opacity={0.06} />
-      {/* Stars — concentrated toward the top, fading lower */}
-      {[
-        { x: 0.08, y: 0.12, r: 1.2, o: 0.8 }, { x: 0.15, y: 0.3, r: 0.8, o: 0.7 }, { x: 0.22, y: 0.08, r: 1.0, o: 0.85 },
-        { x: 0.32, y: 0.22, r: 0.7, o: 0.65 }, { x: 0.4, y: 0.06, r: 1.1, o: 0.9 }, { x: 0.48, y: 0.35, r: 0.9, o: 0.55 },
-        { x: 0.55, y: 0.14, r: 0.6, o: 0.75 }, { x: 0.62, y: 0.28, r: 1.0, o: 0.6 }, { x: 0.7, y: 0.42, r: 0.7, o: 0.4 },
-        { x: 0.88, y: 0.18, r: 0.9, o: 0.7 }, { x: 0.92, y: 0.1, r: 0.8, o: 0.8 }, { x: 0.35, y: 0.45, r: 0.6, o: 0.35 },
-        { x: 0.18, y: 0.5, r: 0.5, o: 0.3 }, { x: 0.58, y: 0.48, r: 0.5, o: 0.25 }, { x: 0.82, y: 0.38, r: 0.5, o: 0.4 },
-      ].map(({ x, y, r, o }, i) => (
-        <Circle key={i} cx={width * x} cy={height * y} r={r} fill="#FFF" opacity={o} />
-      ))}
-      {/* Subtle cloud wisp near bottom */}
-      <Ellipse cx={width * 0.3} cy={height * 0.75} rx={width * 0.1} ry={height * 0.08} fill="#2A3A5C" opacity={0.2} />
-      <Ellipse cx={width * 0.65} cy={height * 0.8} rx={width * 0.08} ry={height * 0.06} fill="#2A3A5C" opacity={0.15} />
-    </Svg>
+    <View style={{ width, height }}>
+      <LinearGradient
+        colors={['rgba(15,27,45,0.92)', 'rgba(18,35,58,0.46)', 'rgba(18,35,58,0.0)']}
+        locations={[0, 0.55, 1]}
+        start={{ x: 0.5, y: 0 }}
+        end={{ x: 0.5, y: 1 }}
+        style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0 }}
+      />
+      <Svg width={width} height={height} viewBox={`0 0 ${width} ${height}`}>
+        {/* Moon */}
+        <Circle cx={width * 0.78} cy={height * 0.28} r={10} fill="#E8E0C8" opacity={0.85} />
+        <Circle cx={width * 0.81} cy={height * 0.24} r={8} fill="#0F1B2D" opacity={0.7} />
+        {/* Moon glow */}
+        <Circle cx={width * 0.78} cy={height * 0.28} r={18} fill="#E8E0C8" opacity={0.06} />
+        {/* Stars — concentrated toward the top, fading lower */}
+        {[
+          { x: 0.08, y: 0.12, r: 1.2, o: 0.8 }, { x: 0.15, y: 0.3, r: 0.8, o: 0.7 }, { x: 0.22, y: 0.08, r: 1.0, o: 0.85 },
+          { x: 0.32, y: 0.22, r: 0.7, o: 0.65 }, { x: 0.4, y: 0.06, r: 1.1, o: 0.9 }, { x: 0.48, y: 0.35, r: 0.9, o: 0.55 },
+          { x: 0.55, y: 0.14, r: 0.6, o: 0.75 }, { x: 0.62, y: 0.28, r: 1.0, o: 0.6 }, { x: 0.7, y: 0.42, r: 0.7, o: 0.4 },
+          { x: 0.88, y: 0.18, r: 0.9, o: 0.7 }, { x: 0.92, y: 0.1, r: 0.8, o: 0.8 }, { x: 0.35, y: 0.45, r: 0.6, o: 0.35 },
+          { x: 0.18, y: 0.5, r: 0.5, o: 0.3 }, { x: 0.58, y: 0.48, r: 0.5, o: 0.25 }, { x: 0.82, y: 0.38, r: 0.5, o: 0.4 },
+        ].map(({ x, y, r, o }, i) => (
+          <Circle key={i} cx={width * x} cy={height * y} r={r} fill="#FFF" opacity={o} />
+        ))}
+        {/* Subtle cloud wisp near bottom */}
+        <Ellipse cx={width * 0.3} cy={height * 0.75} rx={width * 0.1} ry={height * 0.08} fill="#2A3A5C" opacity={0.2} />
+        <Ellipse cx={width * 0.65} cy={height * 0.8} rx={width * 0.08} ry={height * 0.06} fill="#2A3A5C" opacity={0.15} />
+      </Svg>
+    </View>
   );
 };
 
@@ -624,6 +618,25 @@ const CHARACTER_COMPONENTS: Record<CharacterType, React.FC<{ color: string; pose
   car: CarPose,
 };
 
+const SleepingStickmanInBed = ({ color, muted }: { color: string; muted: string }) => (
+  <Svg width={136} height={52} viewBox="0 0 136 52">
+    <Rect x={31} y={24} width={70} height={13} rx={3} stroke={color} strokeWidth={1.6} fill="none" />
+    <Line x1={31} y1={24} x2={31} y2={13} stroke={color} strokeWidth={1.6} />
+    <Line x1={101} y1={24} x2={101} y2={39} stroke={color} strokeWidth={1.6} />
+    <Line x1={43} y1={23} x2={56} y2={23} stroke={muted} strokeWidth={1.7} opacity={0.95} />
+    <Rect x={43} y={15} width={14} height={8} rx={2} stroke={muted} strokeWidth={1.6} fill={muted} opacity={0.24} />
+
+    <Circle cx={53} cy={20} r={4.2} stroke={color} strokeWidth={1.3} fill="none" />
+    <Line x1={56} y1={21} x2={66} y2={22} stroke={color} strokeWidth={1.3} strokeLinecap="round" />
+    <Line x1={66} y1={22} x2={75} y2={23} stroke={color} strokeWidth={1.3} strokeLinecap="round" />
+    <Line x1={60} y1={21} x2={62} y2={25} stroke={color} strokeWidth={1.1} strokeLinecap="round" />
+    <Line x1={71} y1={22} x2={73} y2={25} stroke={color} strokeWidth={1.1} strokeLinecap="round" />
+
+    <Path d="M58 24 Q70 18 89 25" stroke={muted} strokeWidth={1.6} fill="none" opacity={0.98} />
+    <Path d="M57 27 Q70 22 90 28" stroke={muted} strokeWidth={1.4} fill="none" opacity={0.85} />
+  </Svg>
+);
+
 /* ================================================================
  *  SkyBanner — separate weather sky strip
  * ================================================================ */
@@ -659,9 +672,10 @@ type ActivityBannerProps = {
   weather?: WeatherCondition;
   /** Bump this value to restart the animation from scratch */
   restartKey?: number;
+  sleepMode?: boolean;
 };
 
-export const ActivityBanner: React.FC<ActivityBannerProps> = ({ weather = 'clear', restartKey = 0 }) => {
+export const ActivityBanner: React.FC<ActivityBannerProps> = ({ weather = 'clear', restartKey = 0, sleepMode = false }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const lineColor = theme.colors.textMuted;
@@ -679,20 +693,102 @@ export const ActivityBanner: React.FC<ActivityBannerProps> = ({ weather = 'clear
   const posX = useRef(new Animated.Value(-60)).current;
   const groundX = useRef(new Animated.Value(0)).current;
   const bob = useRef(new Animated.Value(0)).current;
+  const sleepZ1Opacity = useRef(new Animated.Value(0)).current;
+  const sleepZ2Opacity = useRef(new Animated.Value(0)).current;
+  const sleepZ3Opacity = useRef(new Animated.Value(0)).current;
 
   // Toggle leg pose for walk cycle
   useEffect(() => {
+    if (sleepMode) {
+      setPose(0);
+      return undefined;
+    }
     const interval = setInterval(() => {
       setPose((p) => (p === 0 ? 1 : 0));
     }, 300);
     return () => clearInterval(interval);
-  }, []);
+  }, [sleepMode]);
+
+  useEffect(() => {
+    if (!sleepMode) {
+      sleepZ1Opacity.setValue(0);
+      sleepZ2Opacity.setValue(0);
+      sleepZ3Opacity.setValue(0);
+      return undefined;
+    }
+
+    sleepZ1Opacity.setValue(0);
+    sleepZ2Opacity.setValue(0);
+    sleepZ3Opacity.setValue(0);
+
+    const zLoop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(sleepZ1Opacity, {
+          toValue: 1,
+          duration: 220,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.delay(120),
+        Animated.timing(sleepZ2Opacity, {
+          toValue: 1,
+          duration: 220,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.delay(120),
+        Animated.timing(sleepZ3Opacity, {
+          toValue: 1,
+          duration: 220,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+        }),
+        Animated.delay(1000),
+        Animated.parallel([
+          Animated.timing(sleepZ1Opacity, {
+            toValue: 0,
+            duration: 180,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(sleepZ2Opacity, {
+            toValue: 0,
+            duration: 180,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+          Animated.timing(sleepZ3Opacity, {
+            toValue: 0,
+            duration: 180,
+            easing: Easing.in(Easing.quad),
+            useNativeDriver: true,
+          }),
+        ]),
+        Animated.delay(220),
+      ]),
+    );
+
+    zLoop.start();
+    return () => zLoop.stop();
+  }, [sleepMode, sleepZ1Opacity, sleepZ2Opacity, sleepZ3Opacity]);
 
   // Single persistent animation loop — never torn down unless weather/restartKey change
   useEffect(() => {
     let cancelled = false;
     charIndexRef.current = 0;
     setRenderTick(0);
+
+    if (sleepMode) {
+      posX.stopAnimation();
+      groundX.stopAnimation();
+      bob.stopAnimation();
+      posX.setValue(-60);
+      groundX.setValue(0);
+      bob.setValue(0);
+      return () => {
+        cancelled = true;
+      };
+    }
 
     const runCycle = () => {
       if (cancelled) return;
@@ -751,24 +847,67 @@ export const ActivityBanner: React.FC<ActivityBannerProps> = ({ weather = 'clear
       groundX.stopAnimation();
       bob.stopAnimation();
     };
-  }, [weather, restartKey, charCount]);
+  }, [weather, restartKey, charCount, sleepMode, posX, groundX, bob]);
 
   const TerrainSvg = TERRAIN_FOR_CHARACTER[character];
   const CharacterSvg = CHARACTER_COMPONENTS[character];
 
   return (
     <View style={styles.banner}>
-      {/* Scrolling terrain */}
-      <Animated.View style={[styles.groundTrack, { transform: [{ translateX: groundX }] }]}>
-        <TerrainSvg color={lineColor} muted={mutedColor} />
-        <TerrainSvg color={lineColor} muted={mutedColor} />
-        <TerrainSvg color={lineColor} muted={mutedColor} />
-      </Animated.View>
+      {sleepMode ? (
+        <View style={styles.sleepScene}>
+          <View style={styles.sleepSceneBox}>
+            <SleepingStickmanInBed color={lineColor} muted={mutedColor} />
+            <Animated.Text
+              style={[
+                styles.sleepZ,
+                styles.sleepZ1,
+                {
+                  opacity: sleepZ1Opacity,
+                },
+              ]}
+            >
+              z
+            </Animated.Text>
+            <Animated.Text
+              style={[
+                styles.sleepZ,
+                styles.sleepZ2,
+                {
+                  opacity: sleepZ2Opacity,
+                },
+              ]}
+            >
+              z
+            </Animated.Text>
+            <Animated.Text
+              style={[
+                styles.sleepZ,
+                styles.sleepZ3,
+                {
+                  opacity: sleepZ3Opacity,
+                },
+              ]}
+            >
+              z
+            </Animated.Text>
+          </View>
+        </View>
+      ) : (
+        <>
+          {/* Scrolling terrain */}
+          <Animated.View style={[styles.groundTrack, { transform: [{ translateX: groundX }] }]}>
+            <TerrainSvg color={lineColor} muted={mutedColor} />
+            <TerrainSvg color={lineColor} muted={mutedColor} />
+            <TerrainSvg color={lineColor} muted={mutedColor} />
+          </Animated.View>
 
-      {/* Walking character */}
-      <Animated.View style={[styles.figure, { transform: [{ translateX: posX }, { translateY: bob }] }]}>
-        <CharacterSvg color={lineColor} pose={pose} />
-      </Animated.View>
+          {/* Walking character */}
+          <Animated.View style={[styles.figure, { transform: [{ translateX: posX }, { translateY: bob }] }]}>
+            <CharacterSvg color={lineColor} pose={pose} />
+          </Animated.View>
+        </>
+      )}
     </View>
   );
 };
@@ -788,5 +927,42 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     figure: {
       position: 'absolute',
       bottom: 10,
+    },
+    sleepScene: {
+      position: 'absolute',
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    sleepSceneBox: {
+      width: 136,
+      height: 52,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    sleepZ: {
+      position: 'absolute',
+      color: theme.colors.textMuted,
+      fontFamily: theme.fonts.semibold,
+      fontSize: 14,
+      letterSpacing: 0.8,
+    },
+    sleepZ1: {
+      top: 2,
+      left: 62,
+      transform: [{ rotate: '-8deg' }],
+    },
+    sleepZ2: {
+      top: -6,
+      left: 74,
+      transform: [{ rotate: '-14deg' }],
+    },
+    sleepZ3: {
+      top: -2,
+      left: 87,
+      transform: [{ rotate: '-20deg' }],
     },
   });
