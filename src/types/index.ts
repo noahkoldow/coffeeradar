@@ -121,6 +121,21 @@ export type SavedSuggestion = {
   suggestion: DeckSuggestion;
 };
 
+export type SmartTodoItem = {
+  id: string;
+  title: string;
+  notes?: string;
+  deadlineAt?: string | null;
+  hasFixedSchedule?: boolean;
+  scheduledAt?: string | null;
+  scheduledEndAt?: string | null;
+  scheduledMode?: 'manual' | 'smart' | 'fixed' | null;
+  linkedScheduledActivityId?: string | null;
+  completionPromptedAt?: string | null;
+  done: boolean;
+  createdAt: string;
+};
+
 export type PermissionsState = {
   calendarGranted: boolean;
   locationGranted: boolean;
@@ -152,6 +167,8 @@ export type Habit = {
   description: string;
   frequency: HabitFrequency;
   timeOfDay: HabitTimeOfDay;
+  /** Optional weekdays (0=Sun...6=Sat). If set, habit is only due on these days. */
+  scheduledWeekdays?: number[];
   /** Optional exact preferred time as HH:MM (24h). Overrides timeOfDay for scheduling. */
   preferredTime?: string;
   tags?: string[];
@@ -216,6 +233,19 @@ export type ScheduledActivity = {
   commitment: Commitment;
   /** Tracks if calendar sync failed and activity was rescheduled */
   calendarWriteFailed?: boolean;
+};
+
+/** Persisted in-progress PlanScreen state so users can resume exactly where they left off. */
+export type InProgressPlanSession = {
+  key: string;
+  commitment: Commitment;
+  suggestion: DeckSuggestion;
+  manualStartAt: string | null;
+  guideChecks: boolean[];
+  activityLogged: boolean;
+  movementKm: number;
+  createdAt: string;
+  updatedAt: string;
 };
 
 /** Per-tag affinity score learned from swipes & completions */
@@ -319,6 +349,7 @@ export type CommunityIdeaSubmission = {
   type: SuggestionType;
   durationMin: number;
   cta?: string;
+  timeOfDay?: HabitTimeOfDay;
   tags?: string[];
   emojis?: string[];
   place?: Place;
@@ -340,6 +371,7 @@ export type CommunityIdeaSubmissionInput = {
   type: SuggestionType;
   durationMin: number;
   cta?: string;
+  timeOfDay?: HabitTimeOfDay;
   tags?: string[];
   emojis?: string[];
   place?: Place;

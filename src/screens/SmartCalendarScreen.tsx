@@ -1,17 +1,20 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as ImagePicker from 'expo-image-picker';
+import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SwipeDeck, SwipeDeckHandle } from '../components/SwipeDeck';
 import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
-import { isBusinessPremium } from '../services/user';
-import { getUpcomingEvents } from '../services/calendar';
+import { createPlanEvent, deletePlanEvent, getUpcomingEvents } from '../services/calendar';
 import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, buildGapSuggestions, findCalendarGaps } from '../services/smartCalendar';
-import { Commitment, DeckSuggestion, SmartTodoItem } from '../types';
+import { importTodosFromPhoto } from '../services/todoPhotoImport';
+import { Commitment, DeckSuggestion, ScheduledActivity, SmartTodoItem } from '../types';
+import { formatClockMinutes, formatTime } from '../utils/time';
 
 type Props = StackScreenProps<RootStackParamList, 'SmartCalendar'>;
 
@@ -27,7 +30,23 @@ type DayColumn = {
 };
 
 const DAYS_TO_SHOW = 7;
-const TIMELINE_HEIGHT = 520;
+const DAY_TIMELINE_VIEWPORT_HEIGHT = 260;
+const DAY_COLUMN_WIDTH = 280;
+const DAY_COLUMN_GAP = 0;
+const DAY_COLUMN_PADDING_HORIZONTAL = 12;
+const TIMELINE_HORIZONTAL_INSET = 6;
+const TIMELINE_VERTICAL_INSET = TIMELINE_HORIZONTAL_INSET;
+const TIMELINE_LANE_GAP = 4;
+const EVENT_TITLE_LINE_HEIGHT = 14;
+const EVENT_TIME_LINE_HEIGHT = 13;
+const EVENT_VERTICAL_PADDING = 8;
+const GAP_MIN_HEIGHT = 40;
+const BASE_PX_PER_MINUTE = 0.45;
+const HOUR_SEPARATOR_WIDTH = 8;
+const HOUR_AXIS_LABEL_WIDTH = 28;
+const HOUR_SEPARATOR_LABEL_OFFSET_MIN = 70;
+const ALL_DAY_CHIP_ESTIMATED_HEIGHT = 24;
+const ALL_DAY_CHIP_GAP = 4;
 const GAP_CACHE_KEY = 'smart_calendar_gap_cache_v1';
 
 type SmartSuggestionDeckEntry = {
@@ -36,41 +55,190 @@ type SmartSuggestionDeckEntry = {
 };
 
 type StoredGapCache = Record<string, Array<Omit<SmartCalendarSuggestion, 'id'> & { id?: string }>>;
+const PREMIUM_GENERATION_SPEED_FACTOR = 0.9;
+const SMART_CALENDAR_DECK_COLORS = { bg: '#B5EAD7', text: '#1A4A3A' };
+const SMART_TODO_DEFAULT_DURATION_MIN = 30;
+const SMART_TODO_MAX_CANDIDATE_SLOTS = 24;
+const SMART_TODO_GEMINI_MODEL = 'gemini-2.5-flash-lite';
+const SMART_TODO_GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY as string | undefined;
 
-const formatTime = (date: Date): string => {
-  return date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+const normalizeTodoTitleKey = (value: string): string => value
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const mergeTodoNotesWithDueText = (
+  notes?: string,
+  dueText?: string,
+  deadlineAt?: string | null,
+): string | undefined => {
+  const trimmedNotes = String(notes ?? '').trim();
+  const trimmedDueText = String(dueText ?? '').trim();
+  if (!trimmedDueText || !!deadlineAt) return trimmedNotes || undefined;
+
+  if (!trimmedNotes) return `Due: ${trimmedDueText}`;
+  if (trimmedNotes.toLowerCase().includes(trimmedDueText.toLowerCase())) return trimmedNotes;
+  return `${trimmedNotes}\nDue: ${trimmedDueText}`;
 };
 
-const pad2 = (value: number): string => String(value).padStart(2, '0');
+const extractTodoDueHint = (notes?: string): string | null => {
+  if (!notes) return null;
+  const line = notes
+    .split(/\r?\n/)
+    .map((entry) => entry.trim())
+    .find((entry) => entry.toLowerCase().startsWith('due:'));
+  return line || null;
+};
 
-const parseDeadlineInput = (dateValue: string, timeValue: string): Date | null => {
-  if (!dateValue.trim()) return null;
-  const dateMatch = /^(\d{4})-(\d{2})-(\d{2})$/.exec(dateValue.trim());
-  if (!dateMatch) return null;
+type TodoScheduleMode = 'manual' | 'smart';
 
-  const year = Number(dateMatch[1]);
-  const month = Number(dateMatch[2]);
-  const day = Number(dateMatch[3]);
+type TodoCandidateSlot = {
+  id: string;
+  dayId: string;
+  dayLabel: string;
+  startAt: Date;
+  endAt: Date;
+  durationMin: number;
+  beforeTitle?: string;
+  afterTitle?: string;
+};
 
-  const time = timeValue.trim() || '18:00';
-  const timeMatch = /^(\d{2}):(\d{2})$/.exec(time);
-  if (!timeMatch) return null;
-  const hour = Number(timeMatch[1]);
-  const minute = Number(timeMatch[2]);
-  if (hour > 23 || minute > 59) return null;
+type RankedTodoSlot = {
+  id: string;
+  rank: 1 | 2 | 3;
+  reason: string;
+  slot: TodoCandidateSlot;
+  suggestedStartAt: Date;
+  suggestedEndAt: Date;
+};
 
-  const parsed = new Date(year, month - 1, day, hour, minute, 0, 0);
-  if (
-    parsed.getFullYear() !== year
-    || parsed.getMonth() !== month - 1
-    || parsed.getDate() !== day
-    || parsed.getHours() !== hour
-    || parsed.getMinutes() !== minute
-  ) {
-    return null;
+type ManualPreviewState = {
+  gapId: string;
+  label: string;
+  topOffset: number;
+  startAt: Date;
+  durationMin: number;
+};
+
+type TodoSchedulingContext = {
+  isSocialCall: boolean;
+  avoidBeforeMin: number;
+  preferredStartMin: number;
+  preferredEndMin: number;
+  hoursToDeadline: number | null;
+};
+
+const SOCIAL_CALL_INTENT_RE = /\b(call|phone|facetime|video\s*call|ring|chat|catch\s*up|talk)\b/i;
+const PERSONAL_RELATION_RE = /\b(mum|mom|mother|dad|father|parent|brother|sister|grandma|grandpa|friend|family)\b/i;
+
+const overlapMinutes = (aStart: number, aEnd: number, bStart: number, bEnd: number): number => {
+  return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
+};
+
+const resolveTodoSchedulingContext = (todo: SmartTodoItem): TodoSchedulingContext => {
+  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
+  const isSocialCall = SOCIAL_CALL_INTENT_RE.test(text) && PERSONAL_RELATION_RE.test(text);
+
+  const deadlineMs = todo.deadlineAt ? new Date(todo.deadlineAt).getTime() : Number.NaN;
+  const hasDeadline = Number.isFinite(deadlineMs);
+  const hoursToDeadline = hasDeadline ? (deadlineMs - Date.now()) / 3600000 : null;
+
+  let avoidBeforeMin = isSocialCall ? 9 * 60 : 8 * 60;
+  let preferredStartMin = isSocialCall ? 10 * 60 : 9 * 60;
+  let preferredEndMin = isSocialCall ? 21 * 60 : 20 * 60;
+
+  // When deadlines are near, keep flexibility and reduce time-of-day penalties.
+  if (hoursToDeadline != null && hoursToDeadline <= 8) {
+    avoidBeforeMin = 7 * 60;
+    preferredStartMin = 8 * 60;
+    preferredEndMin = 22 * 60;
   }
 
-  return parsed;
+  return {
+    isSocialCall,
+    avoidBeforeMin,
+    preferredStartMin,
+    preferredEndMin,
+    hoursToDeadline,
+  };
+};
+
+const computeTodoCandidateScore = (
+  slot: TodoCandidateSlot,
+  context: TodoSchedulingContext,
+  now: Date,
+): number => {
+  const startMin = minuteOfDay(slot.startAt);
+  const endMin = minuteOfDay(slot.endAt);
+  const hoursFromNow = Math.max(0, (slot.startAt.getTime() - now.getTime()) / 3600000);
+
+  let score = 0;
+  score -= hoursFromNow * 0.04;
+
+  const preferredOverlapMin = overlapMinutes(
+    startMin,
+    endMin,
+    context.preferredStartMin,
+    context.preferredEndMin,
+  );
+  score += (preferredOverlapMin / 60) * 1.25;
+
+  if (startMin < context.avoidBeforeMin) {
+    score -= context.isSocialCall ? 2.2 : 0.8;
+  }
+
+  if (context.hoursToDeadline != null) {
+    if (context.hoursToDeadline <= 6) {
+      score += Math.max(0, 1.8 - hoursFromNow * 0.2);
+    } else if (context.hoursToDeadline <= 24) {
+      score += Math.max(0, 1.2 - hoursFromNow * 0.08);
+    }
+  }
+
+  return score;
+};
+
+const prioritizeTodoCandidateSlots = (
+  slots: TodoCandidateSlot[],
+  context: TodoSchedulingContext,
+  now: Date,
+): TodoCandidateSlot[] => {
+  return slots
+    .map((slot, idx) => ({ slot, idx, score: computeTodoCandidateScore(slot, context, now) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.idx - b.idx;
+    })
+    .map((entry) => entry.slot);
+};
+
+const clampOffsetForTodoContext = (
+  slot: TodoCandidateSlot,
+  durationMin: number,
+  requestedOffsetMin: number,
+  context: TodoSchedulingContext,
+): number => {
+  if (context.hoursToDeadline != null && context.hoursToDeadline <= 8) {
+    return requestedOffsetMin;
+  }
+
+  const slotStartMin = minuteOfDay(slot.startAt);
+  const slotEndMin = slotStartMin + slot.durationMin;
+  const maxOffset = Math.max(0, slot.durationMin - durationMin);
+
+  if (slotStartMin >= context.avoidBeforeMin || slotEndMin <= context.avoidBeforeMin) {
+    return Math.max(0, Math.min(maxOffset, requestedOffsetMin));
+  }
+
+  const minOffsetToAvoidEarly = Math.max(0, context.avoidBeforeMin - slotStartMin);
+  const normalizedRequested = Math.max(0, Math.min(maxOffset, requestedOffsetMin));
+  return Math.max(normalizedRequested, Math.min(maxOffset, snapMinutesToGrid(minOffsetToAvoidEarly, 5)));
+};
+
+const formatMinuteLabel = (minute: number, timeZone?: string | null): string => {
+  const safeMinute = Math.max(0, Math.min(24 * 60 - 1, minute));
+  return formatClockMinutes(safeMinute, timeZone);
 };
 
 const parseHourMinute = (value: string | undefined, fallbackHour: number): number => {
@@ -83,6 +251,12 @@ const parseHourMinute = (value: string | undefined, fallbackHour: number): numbe
 };
 
 const minuteOfDay = (date: Date): number => date.getHours() * 60 + date.getMinutes();
+
+const isSameDay = (a: Date, b: Date): boolean => (
+  a.getFullYear() === b.getFullYear()
+  && a.getMonth() === b.getMonth()
+  && a.getDate() === b.getDate()
+);
 
 const parseGapIdentity = (gap: CalendarGap): { dayId: string; idx: number } => {
   const match = /^gap_(\d{4}-\d{2}-\d{2})_(\d+)$/.exec(gap.id);
@@ -97,6 +271,17 @@ const gapCacheKey = (gap: CalendarGap): string => {
   return `${identity.dayId}_${identity.idx}`;
 };
 
+const gapBatchCacheKey = (gap: CalendarGap, batchIndex: number): string => {
+  return `${gapCacheKey(gap)}::${batchIndex}`;
+};
+
+const aiCountForBatch = (batchIndex: number): number => {
+  if (batchIndex <= 0) return 3;
+  if (batchIndex === 1) return 2;
+  if (batchIndex === 2) return 1;
+  return 0;
+};
+
 const normalizeDeckType = (category: SmartCalendarSuggestion['category']): DeckSuggestion['type'] => {
   if (category === 'Exercise') return 'GO_OUT';
   return 'AT_HOME';
@@ -104,8 +289,8 @@ const normalizeDeckType = (category: SmartCalendarSuggestion['category']): DeckS
 
 const toTagColor = (category: SmartCalendarSuggestion['category']) => {
   if (category === 'Exercise') return { bg: '#DFF4EA', text: '#1D5A3A' };
-  if (category === 'Productivity') return { bg: '#DCEBFF', text: '#1C477A' };
-  return { bg: '#FDE8D7', text: '#7A3E1C' };
+  if (category === 'Productivity') return { bg: '#CFECDD', text: '#1E5A3E' };
+  return { bg: '#EAF6EF', text: '#2A6B4A' };
 };
 
 type DaySegment = {
@@ -118,13 +303,85 @@ type DaySegment = {
   gap?: CalendarGap;
 };
 
-const segmentHeight = (durationMin: number, timelineRangeMin: number): number => {
-  return Math.max(22, (durationMin / Math.max(1, timelineRangeMin)) * TIMELINE_HEIGHT);
+type EventLaneMeta = {
+  laneIndex: number;
+  laneCount: number;
+};
+
+const segmentTrackWidth =
+  DAY_COLUMN_WIDTH - (DAY_COLUMN_PADDING_HORIZONTAL * 2) - (TIMELINE_HORIZONTAL_INSET * 2);
+
+const estimateEventMinHeight = (title: string, laneCount: number): number => {
+  const safeLaneCount = Math.max(1, laneCount);
+  const laneWidth = (segmentTrackWidth - TIMELINE_LANE_GAP * (safeLaneCount - 1)) / safeLaneCount;
+  const textWidth = Math.max(36, laneWidth - 16);
+  const charsPerLine = Math.max(8, Math.floor(textWidth / 6.6));
+  const estimatedTitleLines = Math.max(1, Math.ceil((title || '').trim().length / charsPerLine));
+  return EVENT_VERTICAL_PADDING * 2 + estimatedTitleLines * EVENT_TITLE_LINE_HEIGHT + EVENT_TIME_LINE_HEIGHT + 4;
+};
+
+const minSegmentHeight = (segment: DaySegment, laneMeta?: EventLaneMeta): number => {
+  if (segment.kind === 'event' && segment.block) {
+    return estimateEventMinHeight(segment.block.title, laneMeta?.laneCount ?? 1);
+  }
+  return GAP_MIN_HEIGHT;
+};
+
+const resolveEventLanes = (column: DayColumn): Record<string, EventLaneMeta> => {
+  const events = column.blocks
+    .filter((block) => !block.allDay)
+    .map((block) => ({
+      id: `event_${block.id}`,
+      startMin: minuteOfDay(block.startAt),
+      endMin: Math.max(minuteOfDay(block.startAt) + 1, minuteOfDay(block.endAt)),
+    }))
+    .sort((a, b) => {
+      if (a.startMin !== b.startMin) return a.startMin - b.startMin;
+      return a.endMin - b.endMin;
+    });
+
+  const laneMap: Record<string, { laneIndex: number; clusterId: number }> = {};
+  const clusterMaxLanes: Record<number, number> = {};
+  const active: Array<{ id: string; endMin: number; laneIndex: number }> = [];
+  let clusterSeq = 0;
+  let currentClusterId = 0;
+
+  for (const event of events) {
+    for (let i = active.length - 1; i >= 0; i -= 1) {
+      if (active[i].endMin <= event.startMin) {
+        active.splice(i, 1);
+      }
+    }
+
+    if (active.length === 0) {
+      clusterSeq += 1;
+      currentClusterId = clusterSeq;
+      clusterMaxLanes[currentClusterId] = 0;
+    }
+
+    const usedLanes = new Set(active.map((item) => item.laneIndex));
+    let laneIndex = 0;
+    while (usedLanes.has(laneIndex)) laneIndex += 1;
+
+    active.push({ id: event.id, endMin: event.endMin, laneIndex });
+    laneMap[event.id] = { laneIndex, clusterId: currentClusterId };
+    clusterMaxLanes[currentClusterId] = Math.max(clusterMaxLanes[currentClusterId], active.length);
+  }
+
+  const resolved: Record<string, EventLaneMeta> = {};
+  for (const [eventId, lane] of Object.entries(laneMap)) {
+    resolved[eventId] = {
+      laneIndex: lane.laneIndex,
+      laneCount: clusterMaxLanes[lane.clusterId] ?? 1,
+    };
+  }
+
+  return resolved;
 };
 
 const buildTimelineSegments = (column: DayColumn): DaySegment[] => {
   const segments: DaySegment[] = [
-    ...column.blocks.map((block) => ({
+    ...column.blocks.filter((block) => !block.allDay).map((block) => ({
       id: `event_${block.id}`,
       kind: 'event' as const,
       startAt: block.startAt,
@@ -145,10 +402,156 @@ const buildTimelineSegments = (column: DayColumn): DaySegment[] => {
   return segments.sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
 };
 
+const computeTodoDurationMin = (todo: SmartTodoItem, availableDurationMin: number): number => {
+  const desired = SMART_TODO_DEFAULT_DURATION_MIN;
+  const hardMax = Math.max(15, availableDurationMin);
+  return Math.max(15, Math.min(desired, hardMax));
+};
+
+const normalizeTodoDurationMin = (value: number, fallback = SMART_TODO_DEFAULT_DURATION_MIN): number => {
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(15, Math.min(240, Math.round(value / 5) * 5));
+};
+
+const clampTodoDurationToSlot = (durationMin: number, availableDurationMin: number): number => {
+  const normalized = normalizeTodoDurationMin(durationMin);
+  return Math.max(15, Math.min(normalized, Math.max(15, availableDurationMin)));
+};
+
+const extractExplicitTodoDurationMin = (todo: SmartTodoItem): number | null => {
+  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
+  if (!text.trim()) return null;
+
+  const hourMinuteMatch = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\s*(\d{1,2})?\s*(?:m|min|mins|minute|minutes)?/.exec(text);
+  if (hourMinuteMatch) {
+    const hours = Number(hourMinuteMatch[1]);
+    const mins = Number(hourMinuteMatch[2] ?? 0);
+    if (Number.isFinite(hours) && Number.isFinite(mins)) {
+      return normalizeTodoDurationMin(hours * 60 + mins);
+    }
+  }
+
+  const minuteMatch = /(\d{1,3})\s*(?:m|min|mins|minute|minutes)\b/.exec(text);
+  if (minuteMatch) {
+    const mins = Number(minuteMatch[1]);
+    if (Number.isFinite(mins)) return normalizeTodoDurationMin(mins);
+  }
+
+  return null;
+};
+
+const estimateTodoDurationMinFallback = (todo: SmartTodoItem): number => {
+  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
+  if (/quick|brief|tiny|short|email|reply|call|confirm|book/.test(text)) return 20;
+  if (/deep|project|report|presentation|refactor|research|analy/.test(text)) return 90;
+  if (/clean|organize|study|prepare|write|review|exercise|workout/.test(text)) return 60;
+  return 40;
+};
+
+const buildTodoDeckSuggestion = (todo: SmartTodoItem, startAt: Date, endAt: Date, tag: string): DeckSuggestion => ({
+  id: `todo_sched_${todo.id}_${startAt.getTime()}`,
+  type: 'AT_HOME',
+  source: 'todo',
+  title: todo.title,
+  hook: 'To-do',
+  cta: 'Complete this task',
+  description: todo.notes?.trim() || 'Scheduled to-do task',
+  durationMin: Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60000)),
+  confidence: 0.88,
+  tags: ['todo', 'smart_calendar', tag],
+  meta: {
+    planStartAt: startAt.toISOString(),
+    planEndAt: endAt.toISOString(),
+  },
+});
+
+const buildTodoCandidateSlots = (
+  columns: DayColumn[],
+  now: Date,
+  minDurationMin: number,
+): TodoCandidateSlot[] => {
+  const slots: TodoCandidateSlot[] = [];
+  for (const column of columns) {
+    for (const gap of column.gaps) {
+      if (gap.endAt.getTime() <= now.getTime()) continue;
+      if (gap.durationMin < minDurationMin) continue;
+      slots.push({
+        id: gap.id,
+        dayId: column.id,
+        dayLabel: column.label,
+        startAt: gap.startAt,
+        endAt: gap.endAt,
+        durationMin: gap.durationMin,
+        beforeTitle: gap.before?.title,
+        afterTitle: gap.after?.title,
+      });
+      if (slots.length >= SMART_TODO_MAX_CANDIDATE_SLOTS) return slots;
+    }
+  }
+  return slots;
+};
+
+const snapMinutesToGrid = (value: number, step = 5): number => {
+  if (step <= 1) return Math.round(value);
+  return Math.round(value / step) * step;
+};
+
+const computeManualStartInGap = (
+  gap: CalendarGap,
+  pressLocationY: number,
+  renderedGapHeight: number,
+  todoDurationMin: number,
+): Date => {
+  const safeHeight = Math.max(1, renderedGapHeight);
+  const ratio = Math.max(0, Math.min(1, pressLocationY / safeHeight));
+  const maxOffset = Math.max(0, gap.durationMin - todoDurationMin);
+  const offsetMin = Math.max(0, Math.min(maxOffset, snapMinutesToGrid(ratio * maxOffset, 5)));
+  return new Date(gap.startAt.getTime() + offsetMin * 60000);
+};
+
+const parseSmartSlotJson = (text: string): {
+  estimatedDurationMin?: number;
+  picks?: Array<{ slotIndex?: number; startOffsetMin?: number; reason?: string; durationMin?: number }>;
+} | null => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  const direct = [trimmed, (trimmed.match(/\{[\s\S]*\}/m) || [])[0]].filter(Boolean) as string[];
+  for (const candidate of direct) {
+    try {
+      return JSON.parse(candidate) as {
+        estimatedDurationMin?: number;
+        picks?: Array<{ slotIndex?: number; startOffsetMin?: number; reason?: string; durationMin?: number }>;
+      };
+    } catch {
+      // Continue
+    }
+  }
+  return null;
+};
+
+const formatScheduleActivityLines = (columns: DayColumn[]): string => {
+  const lines: string[] = [];
+  for (const column of columns) {
+    lines.push(`${column.label}:`);
+    const timed = column.blocks
+      .filter((block) => !block.allDay)
+      .sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
+    if (!timed.length) {
+      lines.push('- no planned activities');
+      continue;
+    }
+    for (const block of timed) {
+      lines.push(`- ${formatTime(block.startAt)}-${formatTime(block.endAt)} ${block.title}`);
+    }
+  }
+  return lines.join('\n');
+};
+
 export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
+  const { width: viewportWidth } = useWindowDimensions();
   const { state, actions } = useAppState();
 
   const [columns, setColumns] = useState<DayColumn[]>([]);
@@ -157,15 +560,260 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const [gapSuggestions, setGapSuggestions] = useState<SmartSuggestionDeckEntry[]>([]);
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [gapSuggestionCache, setGapSuggestionCache] = useState<Record<string, SmartCalendarSuggestion[]>>({});
+  const [gapBatchIndexByKey, setGapBatchIndexByKey] = useState<Record<string, number>>({});
   const [suggestionIndex, setSuggestionIndex] = useState(0);
-  const [regenerating, setRegenerating] = useState(false);
+  const [lastSuggestionIndex, setLastSuggestionIndex] = useState<number | null>(null);
+  const [canUndoSuggestion, setCanUndoSuggestion] = useState(false);
+  const [deckExhausted, setDeckExhausted] = useState(false);
   const [todoModalOpen, setTodoModalOpen] = useState(false);
   const [todoTitle, setTodoTitle] = useState('');
-  const [todoDate, setTodoDate] = useState('');
-  const [todoTime, setTodoTime] = useState('');
+  const [todoDeadlineAt, setTodoDeadlineAt] = useState<Date | null>(null);
+  const [todoHasExplicitTime, setTodoHasExplicitTime] = useState(false);
+  const [todoDatePickerVisible, setTodoDatePickerVisible] = useState(false);
+  const [todoTimePickerVisible, setTodoTimePickerVisible] = useState(false);
+  const [todoPhotoImporting, setTodoPhotoImporting] = useState(false);
+  const [showDoneTodos, setShowDoneTodos] = useState(false);
+  const [todoSchedulingMode, setTodoSchedulingMode] = useState<TodoScheduleMode | null>(null);
+  const [todoSchedulingTarget, setTodoSchedulingTarget] = useState<SmartTodoItem | null>(null);
+  const [rankedTodoSlots, setRankedTodoSlots] = useState<RankedTodoSlot[]>([]);
+  const [smartTodoSlotLoading, setSmartTodoSlotLoading] = useState(false);
+  const [manualPreview, setManualPreview] = useState<ManualPreviewState | null>(null);
+  const [selectedScheduledActivity, setSelectedScheduledActivity] = useState<ScheduledActivity | null>(null);
+  const [calendarMinimized, setCalendarMinimized] = useState(false);
+  const [nowMinute, setNowMinute] = useState(minuteOfDay(new Date()));
+  const [currentTimeLabelWidth, setCurrentTimeLabelWidth] = useState(44);
+  const [timelineTopOffsets, setTimelineTopOffsets] = useState<Record<string, number>>({});
   const suggestionDeckRef = useRef<SwipeDeckHandle>(null);
+  const manualScheduleInFlightRef = useRef(false);
+  const previousSuggestionIndexRef = useRef(0);
+  const columnsScrollRef = useRef<ScrollView | null>(null);
+  const calendarVerticalScrollRef = useRef<ScrollView | null>(null);
+  const dayColumnXRef = useRef<Record<string, number>>({});
+  const lastColumnsScrollXRef = useRef(0);
+  const autoScrolledRef = useRef(false);
+  const lastAutoFocusedRankedSlotRef = useRef<string | null>(null);
 
-  const premiumEnabled = isBusinessPremium(state.userEmail);
+  useEffect(() => {
+    const prevIndex = previousSuggestionIndexRef.current;
+    if (suggestionIndex > prevIndex) {
+      setLastSuggestionIndex(prevIndex);
+      setCanUndoSuggestion(true);
+    }
+    previousSuggestionIndexRef.current = suggestionIndex;
+  }, [suggestionIndex]);
+
+  useEffect(() => {
+    setLastSuggestionIndex(null);
+    setCanUndoSuggestion(false);
+    previousSuggestionIndexRef.current = 0;
+  }, [gapSuggestions, selectedGap]);
+
+  const premiumEnabled = state.isPremium;
+  const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
+  const formatCalendarTime = (value: Date): string => formatTime(value, timeZone);
+  const activeTodos = useMemo(() => state.smartTodos.filter((todo) => !todo.done), [state.smartTodos]);
+  const doneTodos = useMemo(() => state.smartTodos.filter((todo) => todo.done), [state.smartTodos]);
+  const schedulingActive = !!todoSchedulingMode && !!todoSchedulingTarget;
+
+  const laneLayoutByDay = useMemo(() => {
+    const map: Record<string, Record<string, EventLaneMeta>> = {};
+    for (const column of columns) {
+      map[column.id] = resolveEventLanes(column);
+    }
+    return map;
+  }, [columns]);
+
+  const smartCalendarScheduledIds = useMemo(
+    () => new Set(
+      state.scheduledActivities
+        .filter((item) => (item.tags ?? []).includes('smart_calendar'))
+        .map((item) => item.id),
+    ),
+    [state.scheduledActivities],
+  );
+
+  const globalTimelineHeight = useMemo(() => {
+    if (!columns.length) return Math.ceil(BASE_PX_PER_MINUTE * 480);
+
+    const globalRangeMin = Math.min(...columns.map((column) => column.timelineStartMin));
+    const globalRangeMax = Math.max(...columns.map((column) => column.timelineEndMin));
+    const globalRangeDuration = Math.max(60, globalRangeMax - globalRangeMin);
+
+    let requiredPxPerMinute = BASE_PX_PER_MINUTE;
+    for (const column of columns) {
+      const laneLayout = laneLayoutByDay[column.id] ?? {};
+
+      for (const segment of buildTimelineSegments(column)) {
+        const segStartMin = Math.max(column.timelineStartMin, Math.min(column.timelineEndMin, minuteOfDay(segment.startAt)));
+        const segEndMin = Math.max(segStartMin + 1, Math.max(column.timelineStartMin, Math.min(column.timelineEndMin, minuteOfDay(segment.endAt))));
+        const durationMin = Math.max(1, segEndMin - segStartMin);
+        const laneMeta = segment.kind === 'event' ? laneLayout[segment.id] : undefined;
+        const minHeight = minSegmentHeight(segment, laneMeta);
+        requiredPxPerMinute = Math.max(requiredPxPerMinute, minHeight / durationMin);
+      }
+    }
+
+    return Math.ceil(requiredPxPerMinute * globalRangeDuration);
+  }, [columns, laneLayoutByDay]);
+
+  const globalTimelineRange = useMemo(() => {
+    if (!columns.length) return { minStartMin: DAY_START_HOUR * 60, maxEndMin: DAY_END_HOUR * 60 };
+    return {
+      minStartMin: Math.min(...columns.map((c) => c.timelineStartMin)),
+      maxEndMin: Math.max(...columns.map((c) => c.timelineEndMin)),
+    };
+  }, [columns]);
+
+  const timelineHeight = useMemo(() => {
+    if (!calendarMinimized) return globalTimelineHeight;
+    const minutesInView = Math.max(60, globalTimelineRange.maxEndMin - globalTimelineRange.minStartMin);
+    const compactPxPerMinute = 0.26;
+    return Math.max(220, Math.ceil(minutesInView * compactPxPerMinute));
+  }, [calendarMinimized, globalTimelineHeight, globalTimelineRange.maxEndMin, globalTimelineRange.minStartMin]);
+
+  const pxPerMinute = useMemo(() => {
+    if (!columns.length) return timelineHeight / 60;
+    const globalRangeMin = Math.min(...columns.map((column) => column.timelineStartMin));
+    const globalRangeMax = Math.max(...columns.map((column) => column.timelineEndMin));
+    const globalRangeDuration = Math.max(60, globalRangeMax - globalRangeMin);
+    return timelineHeight / Math.max(1, globalRangeDuration);
+  }, [columns, timelineHeight]);
+
+  const syncedAllDaySectionHeight = useMemo(() => {
+    const maxAllDayCount = columns.length
+      ? Math.max(0, ...columns.map((column) => column.allDayBlocks.length))
+      : 0;
+    if (!maxAllDayCount) return 0;
+
+    const sectionBottomInset = theme.spacing.xs + 1 + theme.spacing.xs;
+    const chipsHeight = maxAllDayCount * ALL_DAY_CHIP_ESTIMATED_HEIGHT;
+    const gapsHeight = Math.max(0, maxAllDayCount - 1) * ALL_DAY_CHIP_GAP;
+    return sectionBottomInset + chipsHeight + gapsHeight;
+  }, [columns, theme.spacing.xs]);
+
+  const sharedTimelineTopOffset = useMemo(() => {
+    const offsets = Object.values(timelineTopOffsets);
+    return offsets.length ? Math.max(...offsets) : 0;
+  }, [timelineTopOffsets]);
+
+  const horizontalEdgePadding = useMemo(() => {
+    return Math.max(theme.spacing.lg, (viewportWidth - DAY_COLUMN_WIDTH) / 2);
+  }, [theme.spacing.lg, viewportWidth]);
+
+  useEffect(() => {
+    const updateNowMinute = () => setNowMinute(minuteOfDay(new Date()));
+    updateNowMinute();
+    const interval = setInterval(updateNowMinute, 60000);
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    autoScrolledRef.current = false;
+  }, [columns]);
+
+  useEffect(() => {
+    setTimelineTopOffsets({});
+  }, [columns]);
+
+  const snapDaysToNearestCenter = (offsetX: number, animated = true) => {
+    if (!columns.length || viewportWidth <= 0) return;
+
+    const viewportCenterX = offsetX + viewportWidth / 2;
+    let nearest: { centerX: number } | null = null;
+
+    for (const column of columns) {
+      const x = dayColumnXRef.current[column.id];
+      if (!Number.isFinite(x)) continue;
+      const centerX = x + DAY_COLUMN_WIDTH / 2;
+      if (!nearest || Math.abs(centerX - viewportCenterX) < Math.abs(nearest.centerX - viewportCenterX)) {
+        nearest = { centerX };
+      }
+    }
+
+    if (!nearest) return;
+
+    const targetOffsetX = Math.max(0, nearest.centerX - viewportWidth / 2);
+    if (Math.abs(targetOffsetX - offsetX) < 1) return;
+
+    lastColumnsScrollXRef.current = targetOffsetX;
+    columnsScrollRef.current?.scrollTo({ x: targetOffsetX, y: 0, animated });
+  };
+
+  const focusRankedTodoSlot = (slot: RankedTodoSlot, animated: boolean) => {
+    const targetColumn = columns.find((column) => column.id === slot.slot.dayId);
+    if (!targetColumn) return;
+
+    const colX = dayColumnXRef.current[targetColumn.id];
+    if (Number.isFinite(colX)) {
+      columnsScrollRef.current?.scrollTo({ x: Math.max(0, colX - 10), y: 0, animated });
+    }
+
+    const targetMinute = Math.max(
+      globalTimelineRange.minStartMin,
+      Math.min(globalTimelineRange.maxEndMin, minuteOfDay(slot.suggestedStartAt)),
+    );
+    const top = TIMELINE_VERTICAL_INSET + (targetMinute - globalTimelineRange.minStartMin) * pxPerMinute;
+    const offsetY = Math.max(0, top - DAY_TIMELINE_VIEWPORT_HEIGHT * 0.28);
+    calendarVerticalScrollRef.current?.scrollTo({ y: offsetY, animated });
+  };
+
+  useEffect(() => {
+    if (!columns.length || loading) return;
+
+    if (calendarMinimized) {
+      calendarVerticalScrollRef.current?.scrollTo({ y: 0, animated: false });
+      return;
+    }
+
+    const todayColumn = columns.find((column) => isSameDay(column.date, new Date()));
+    if (!todayColumn) return;
+    if (autoScrolledRef.current) return;
+
+    const clampedNowMinute = Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinute));
+    const nowTop = TIMELINE_VERTICAL_INSET + (clampedNowMinute - globalTimelineRange.minStartMin) * pxPerMinute;
+    const targetOffset = Math.max(0, nowTop - DAY_TIMELINE_VIEWPORT_HEIGHT * 0.35);
+
+    calendarVerticalScrollRef.current?.scrollTo({ y: targetOffset, animated: false });
+    autoScrolledRef.current = true;
+  }, [calendarMinimized, columns, loading, nowMinute, pxPerMinute, globalTimelineRange.maxEndMin, globalTimelineRange.minStartMin]);
+
+  useEffect(() => {
+    if (todoSchedulingMode !== 'smart') return;
+    if (smartTodoSlotLoading) return;
+    if (!rankedTodoSlots.length) return;
+
+    const best = [...rankedTodoSlots].sort((a, b) => a.rank - b.rank)[0];
+    const focusId = `${best.slot.dayId}_${best.rank}_${best.suggestedStartAt.getTime()}`;
+    if (lastAutoFocusedRankedSlotRef.current === focusId) return;
+
+    lastAutoFocusedRankedSlotRef.current = focusId;
+    const timer = setTimeout(() => {
+      focusRankedTodoSlot(best, true);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [columns, rankedTodoSlots, smartTodoSlotLoading, todoSchedulingMode, pxPerMinute]);
+
+  const showPremiumInfo = () => {
+    Alert.alert(
+      'Bits Premium required',
+      'You need to be a Bits Premium user to use Smart Calendar auto-planning. Purchase it now to unlock gap suggestions and plan queueing.',
+      [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Purchase now', onPress: () => navigation.navigate('Premium') },
+      ],
+    );
+  };
+
+  const showTodoPhotoImportPremiumInfo = () => {
+    Alert.alert(
+      'Premium photo import',
+      'This is a Premium feature. You are missing:\n\n• Smart extraction from handwritten/printed to-do photos\n• One-tap import of multiple tasks\n• Automatic due-date detection when visible',
+      [
+        { text: 'Not now', style: 'cancel' },
+        { text: 'Buy Premium', onPress: () => navigation.navigate('Premium') },
+      ],
+    );
+  };
 
   useEffect(() => {
     let active = true;
@@ -195,7 +843,6 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   useEffect(() => {
-    if (!premiumEnabled) return;
     let active = true;
 
     const load = async () => {
@@ -234,7 +881,16 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               lng: item.suggestion.place?.lng,
             }));
 
-          const allDayBlocks: CalendarBlock[] = calendarEvents
+          const linkedCalendarEventIds = new Set(
+            state.scheduledActivities
+              .map((item) => item.calendarEventId)
+              .filter((value): value is string => !!value),
+          );
+          const visibleCalendarEvents = calendarEvents.filter(
+            (item) => !(item.id && linkedCalendarEventIds.has(item.id)),
+          );
+
+          const allDayBlocks: CalendarBlock[] = visibleCalendarEvents
             .filter((item) => item.allDay)
             .map((item, idx) => ({
               id: `cal_allday_${i}_${idx}`,
@@ -254,11 +910,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             }));
 
           const blocks: CalendarBlock[] = [
-            ...allDayBlocks,
-            ...calendarEvents
+            ...visibleCalendarEvents
               .filter((item) => !item.allDay)
               .map((item, idx) => ({
-                id: `cal_${i}_${idx}`,
+                id: item.id ? `cal_${item.id}` : `cal_${i}_${idx}`,
                 title: item.title,
                 startAt: item.startDate,
                 endAt: item.endDate,
@@ -267,7 +922,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             ...scheduled,
           ].sort((a, b) => a.startAt.getTime() - b.startAt.getTime());
 
-          const timedBlocks = blocks.filter((block) => !block.allDay);
+          const timedBlocks = blocks;
           const earliestEventMin = timedBlocks.length
             ? Math.min(...timedBlocks.map((block) => minuteOfDay(block.startAt)))
             : wakeStartMin;
@@ -290,7 +945,20 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         }
 
         if (active) {
-          setColumns(built);
+          const sharedTimelineStartMin = built.length
+            ? Math.min(...built.map((column) => column.timelineStartMin))
+            : DAY_START_HOUR * 60;
+          const sharedTimelineEndMin = built.length
+            ? Math.max(...built.map((column) => column.timelineEndMin))
+            : DAY_END_HOUR * 60;
+
+          setColumns(
+            built.map((column) => ({
+              ...column,
+              timelineStartMin: sharedTimelineStartMin,
+              timelineEndMin: sharedTimelineEndMin,
+            })),
+          );
         }
       } finally {
         if (active) setLoading(false);
@@ -299,7 +967,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     load();
     return () => { active = false; };
-  }, [premiumEnabled, state.enabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, state.scheduledActivities]);
+  }, [state.enabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, state.scheduledActivities]);
 
   const toDeckEntries = (gap: CalendarGap, suggestions: SmartCalendarSuggestion[]): SmartSuggestionDeckEntry[] => {
     return suggestions.slice(0, 3).map((suggestion, idx) => {
@@ -343,16 +1011,22 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     AsyncStorage.setItem(GAP_CACHE_KEY, JSON.stringify(serializable)).catch(() => undefined);
   };
 
-  const fetchGapSuggestions = (gap: CalendarGap, forceRefresh = false) => {
-    const cacheKey = gapCacheKey(gap);
+  const fetchGapSuggestions = (gap: CalendarGap, batchIndex: number, forceRefresh = false) => {
+    if (!premiumEnabled) {
+      showPremiumInfo();
+      return;
+    }
+    const cacheKey = gapBatchCacheKey(gap, batchIndex);
     const cached = !forceRefresh ? gapSuggestionCache[cacheKey] : undefined;
     if (cached?.length) {
       setGapSuggestions(toDeckEntries(gap, cached));
       setSuggestionIndex(0);
+      setDeckExhausted(false);
       return;
     }
 
     setSuggestionsLoading(true);
+    const aiSuggestionCount = aiCountForBatch(batchIndex);
     buildGapSuggestions(gap, state.habits, state.smartTodos, {
       defaultLocation: {
         lat: state.location.lat ?? undefined,
@@ -360,11 +1034,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       },
       dayStartMin: parseHourMinute(state.prefs.wakeStartTime, DAY_START_HOUR),
       dayEndMin: parseHourMinute(state.prefs.wakeEndTime, DAY_END_HOUR),
+      generationSpeedFactor: premiumEnabled ? PREMIUM_GENERATION_SPEED_FACTOR : 1,
+      aiTargetCount: aiSuggestionCount,
     })
       .then((result) => {
         const nextSuggestions = result.slice(0, 3);
         setGapSuggestions(toDeckEntries(gap, nextSuggestions));
         setSuggestionIndex(0);
+        setDeckExhausted(false);
         setGapSuggestionCache((prev) => {
           const updated = { ...prev, [cacheKey]: nextSuggestions };
           persistGapCache(updated);
@@ -373,6 +1050,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       })
       .catch(() => {
         setGapSuggestions([]);
+        setDeckExhausted(false);
       })
       .finally(() => {
         setSuggestionsLoading(false);
@@ -383,16 +1061,136 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     if (!selectedGap) {
       setGapSuggestions([]);
       setSuggestionIndex(0);
+      setDeckExhausted(false);
       return;
     }
-    fetchGapSuggestions(selectedGap);
-  }, [selectedGap, gapSuggestionCache, state.habits, state.location.lat, state.location.lng, state.prefs.wakeEndTime, state.prefs.wakeStartTime, state.smartTodos]);
+    if (!premiumEnabled) {
+      setSelectedGap(null);
+      return;
+    }
+    const key = gapCacheKey(selectedGap);
+    const batchIndex = gapBatchIndexByKey[key] ?? 0;
+    fetchGapSuggestions(selectedGap, batchIndex);
+  }, [selectedGap, premiumEnabled, gapBatchIndexByKey, gapSuggestionCache, state.habits, state.location.lat, state.location.lng, state.prefs.wakeEndTime, state.prefs.wakeStartTime, state.smartTodos]);
+
+  useEffect(() => {
+    const now = Date.now();
+    const pending = state.smartTodos.find((todo) => {
+      if (todo.done) return false;
+      if (!todo.scheduledEndAt) return false;
+      const endAt = new Date(todo.scheduledEndAt).getTime();
+      if (Number.isNaN(endAt) || endAt > now) return false;
+      return !todo.completionPromptedAt;
+    });
+
+    if (!pending) return;
+
+    Alert.alert(
+      'To-do follow-up',
+      `Did you complete "${pending.title}"?`,
+      [
+        {
+          text: 'No',
+          style: 'cancel',
+          onPress: () => {
+            actions.updateSmartTodo({
+              ...pending,
+              completionPromptedAt: new Date().toISOString(),
+            });
+          },
+        },
+        {
+          text: 'Yes, done',
+          onPress: () => {
+            actions.updateSmartTodo({
+              ...pending,
+              done: true,
+              completionPromptedAt: new Date().toISOString(),
+            });
+          },
+        },
+      ],
+    );
+  }, [actions, state.smartTodos]);
 
   const setDeadlinePreset = (offsetDays: number, hour: number, minute: number) => {
     const value = new Date();
     value.setDate(value.getDate() + offsetDays);
-    setTodoDate(`${value.getFullYear()}-${pad2(value.getMonth() + 1)}-${pad2(value.getDate())}`);
-    setTodoTime(`${pad2(hour)}:${pad2(minute)}`);
+    value.setHours(hour, minute, 0, 0);
+    setTodoDeadlineAt(value);
+    setTodoHasExplicitTime(true);
+  };
+
+  const handleTodoDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+    setTodoDatePickerVisible(false);
+    if (event.type === 'dismissed' || !selectedDate) return;
+
+    const base = todoDeadlineAt ?? new Date();
+    const next = new Date(base);
+    next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+    setTodoDeadlineAt(next);
+  };
+
+  const handleTodoTimeChange = (event: DateTimePickerEvent, selectedTime?: Date) => {
+    setTodoTimePickerVisible(false);
+    if (event.type === 'dismissed' || !selectedTime) return;
+
+    const base = todoDeadlineAt ?? new Date();
+    const next = new Date(base);
+    next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
+    setTodoDeadlineAt(next);
+    setTodoHasExplicitTime(true);
+  };
+
+  const openTodoDatePicker = () => {
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: todoDeadlineAt ?? new Date(),
+        mode: 'date',
+        onChange: (event, selectedDate) => {
+          if (event.type === 'dismissed' || !selectedDate) return;
+          const base = todoDeadlineAt ?? new Date();
+          const next = new Date(base);
+          next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+          setTodoDeadlineAt(next);
+        },
+      });
+      return;
+    }
+
+    setTodoDatePickerVisible(true);
+  };
+
+  const openTodoTimePicker = () => {
+    if (!todoDeadlineAt) {
+      Alert.alert('Pick a date first', 'Choose a date before selecting a time.');
+      return;
+    }
+
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: todoDeadlineAt,
+        mode: 'time',
+        is24Hour: true,
+        onChange: (event, selectedTime) => {
+          if (event.type === 'dismissed' || !selectedTime) return;
+          const next = new Date(todoDeadlineAt);
+          next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
+          setTodoDeadlineAt(next);
+          setTodoHasExplicitTime(true);
+        },
+      });
+      return;
+    }
+
+    setTodoTimePickerVisible(true);
+  };
+
+  const formatTodoDeadlineSummary = (value: Date | null): string => {
+    if (!value) return 'No deadline set';
+    const datePart = value.toLocaleDateString();
+    if (!todoHasExplicitTime) return `Due ${datePart}`;
+    return `Due ${datePart} ${formatCalendarTime(value)}`;
   };
 
   const addTodo = () => {
@@ -402,28 +1200,448 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
 
-    const parsedDeadline = parseDeadlineInput(todoDate, todoTime);
-    if (todoDate.trim() && !parsedDeadline) {
-      Alert.alert('Invalid deadline', 'Use date format YYYY-MM-DD and time format HH:MM (24h).');
-      return;
-    }
-
     const todo: SmartTodoItem = {
       id: `todo_${Date.now()}`,
       title,
       notes: undefined,
-      deadlineAt: parsedDeadline ? parsedDeadline.toISOString() : null,
+      deadlineAt: todoDeadlineAt ? todoDeadlineAt.toISOString() : null,
+      hasFixedSchedule: !!todoDeadlineAt && todoHasExplicitTime,
+      scheduledAt: null,
+      scheduledEndAt: null,
+      scheduledMode: null,
+      linkedScheduledActivityId: null,
+      completionPromptedAt: null,
       done: false,
       createdAt: new Date().toISOString(),
     };
 
     actions.addSmartTodo(todo);
     setTodoTitle('');
-    setTodoDate('');
-    setTodoTime('');
+    setTodoDeadlineAt(null);
+    setTodoHasExplicitTime(false);
   };
 
-  const scheduleSuggestion = (gap: CalendarGap, entry: SmartSuggestionDeckEntry) => {
+  const importTodosViaPhoto = async () => {
+    if (!premiumEnabled) {
+      showTodoPhotoImportPremiumInfo();
+      return;
+    }
+
+    const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    if (!permission.granted) {
+      Alert.alert('Permission required', 'Allow photo access to import your to-do list from an image.');
+      return;
+    }
+
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      quality: 0.85,
+      allowsEditing: false,
+      base64: true,
+      selectionLimit: 1,
+    });
+
+    if (result.canceled) return;
+    const asset = result.assets?.[0];
+    if (!asset?.base64) {
+      Alert.alert('Import failed', 'Could not read the selected image. Please try another photo.');
+      return;
+    }
+
+    setTodoPhotoImporting(true);
+    try {
+      const extracted = await importTodosFromPhoto(asset.base64, asset.mimeType ?? 'image/jpeg');
+      if (!extracted.length) {
+        Alert.alert('No tasks found', 'No clear to-do items were detected in this image.');
+        return;
+      }
+
+      const now = Date.now();
+      const existingByTitle = new Map(
+        state.smartTodos.map((todo) => [normalizeTodoTitleKey(todo.title), todo] as const),
+      );
+      const seenInBatch = new Set<string>();
+      let addedCount = 0;
+      let mergedCount = 0;
+      let skippedCount = 0;
+
+      extracted.forEach((item, idx) => {
+        const title = String(item.title ?? '').trim();
+        const titleKey = normalizeTodoTitleKey(title);
+        const importedNotes = mergeTodoNotesWithDueText(item.notes, item.dueText, item.deadlineAt ?? null);
+        if (!title || !titleKey) {
+          skippedCount += 1;
+          return;
+        }
+        if (seenInBatch.has(titleKey)) {
+          skippedCount += 1;
+          return;
+        }
+        seenInBatch.add(titleKey);
+
+        const existing = existingByTitle.get(titleKey);
+        if (existing) {
+          const mergedNotes = existing.notes || importedNotes || undefined;
+          const mergedDeadline = existing.deadlineAt ?? item.deadlineAt ?? null;
+          const hasChange = mergedNotes !== existing.notes || mergedDeadline !== (existing.deadlineAt ?? null);
+
+          if (hasChange) {
+            actions.updateSmartTodo({
+              ...existing,
+              notes: mergedNotes,
+              deadlineAt: mergedDeadline,
+              hasFixedSchedule: existing.hasFixedSchedule || !!mergedDeadline,
+            });
+            mergedCount += 1;
+          } else {
+            skippedCount += 1;
+          }
+          return;
+        }
+
+        const todo: SmartTodoItem = {
+          id: `todo_photo_${now}_${idx}`,
+          title,
+          notes: importedNotes,
+          deadlineAt: item.deadlineAt ?? null,
+          hasFixedSchedule: !!item.deadlineAt,
+          scheduledAt: null,
+          scheduledEndAt: null,
+          scheduledMode: null,
+          linkedScheduledActivityId: null,
+          completionPromptedAt: null,
+          done: false,
+          createdAt: new Date().toISOString(),
+        };
+        actions.addSmartTodo(todo);
+        existingByTitle.set(titleKey, todo);
+        addedCount += 1;
+      });
+
+      if (!addedCount && !mergedCount) {
+        Alert.alert('No new tasks', 'All detected tasks already exist in your to-do list.');
+        return;
+      }
+
+      const summaryParts = [];
+      if (addedCount > 0) summaryParts.push(`${addedCount} added`);
+      if (mergedCount > 0) summaryParts.push(`${mergedCount} updated`);
+      if (skippedCount > 0) summaryParts.push(`${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped`);
+
+      Alert.alert('Imported', summaryParts.join(' • '));
+    } catch (error) {
+      console.warn('[TodoPhotoImport] Failed to import todos', error);
+      Alert.alert('Import failed', 'The AI extraction did not complete. Please try again with a clearer photo.');
+    } finally {
+      setTodoPhotoImporting(false);
+    }
+  };
+
+  const clearTodoSchedulingMode = () => {
+    setTodoSchedulingMode(null);
+    setTodoSchedulingTarget(null);
+    setRankedTodoSlots([]);
+    setSmartTodoSlotLoading(false);
+    setManualPreview(null);
+    lastAutoFocusedRankedSlotRef.current = null;
+  };
+
+  const updateManualPreviewForGap = (
+    gap: CalendarGap,
+    pressLocationY: number,
+    renderedGapHeight: number,
+    todoDurationMin: number,
+  ) => {
+    const pickedStartAt = computeManualStartInGap(gap, pressLocationY, renderedGapHeight, todoDurationMin);
+    const pickedEndAt = new Date(pickedStartAt.getTime() + todoDurationMin * 60000);
+    const label = `${formatCalendarTime(pickedStartAt)} - ${formatCalendarTime(pickedEndAt)}`;
+    const safeHeight = Math.max(1, renderedGapHeight);
+    const topOffset = Math.max(4, Math.min(safeHeight - 28, pressLocationY - 14));
+    setManualPreview({
+      gapId: gap.id,
+      label,
+      topOffset,
+      startAt: pickedStartAt,
+      durationMin: todoDurationMin,
+    });
+  };
+
+  const confirmManualTodoSchedule = (todo: SmartTodoItem, startAt: Date, durationMin: number) => {
+    if (manualScheduleInFlightRef.current) return;
+    manualScheduleInFlightRef.current = true;
+    void scheduleTodoAt(todo, startAt, 'manual', durationMin)
+      .then(() => {
+        clearTodoSchedulingMode();
+        Alert.alert('Scheduled', `"${todo.title}" scheduled at ${formatCalendarTime(startAt)}.`);
+      })
+      .finally(() => {
+        manualScheduleInFlightRef.current = false;
+      });
+  };
+
+  const updateTodoAfterSchedule = (
+    todo: SmartTodoItem,
+    activityId: string,
+    startAt: Date,
+    endAt: Date,
+    scheduledMode: 'manual' | 'smart' | 'fixed',
+  ) => {
+    actions.updateSmartTodo({
+      ...todo,
+      done: false,
+      scheduledAt: startAt.toISOString(),
+      scheduledEndAt: endAt.toISOString(),
+      scheduledMode,
+      linkedScheduledActivityId: activityId,
+      completionPromptedAt: null,
+    });
+  };
+
+  const scheduleTodoAt = async (
+    todo: SmartTodoItem,
+    startAt: Date,
+    sourceMode: 'manual' | 'smart' | 'fixed',
+    availableDurationMin?: number,
+  ) => {
+    const durationMin = computeTodoDurationMin(todo, availableDurationMin ?? SMART_TODO_DEFAULT_DURATION_MIN);
+    const endAt = new Date(startAt.getTime() + durationMin * 60000);
+    const deckSuggestion = buildTodoDeckSuggestion(todo, startAt, endAt, `todo_${sourceMode}`);
+    const commitment: Commitment = {
+      suggestionId: deckSuggestion.id,
+      type: deckSuggestion.type,
+      title: todo.title,
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+    };
+
+    let calendarEventId: string | undefined;
+    let calendarWriteFailed = !state.permissions.calendarGranted;
+
+    if (state.permissions.calendarGranted) {
+      try {
+        calendarEventId = await createPlanEvent({
+          title: `To-do: ${todo.title}`,
+          startDate: startAt,
+          endDate: endAt,
+          notes: todo.notes,
+        });
+        calendarWriteFailed = false;
+      } catch (error) {
+        console.warn('[SmartCalendar] Failed to create calendar event for to-do', error);
+      }
+    }
+
+    const scheduledId = `sched_todo_${todo.id}_${Date.now()}`;
+    actions.addScheduledActivity({
+      id: scheduledId,
+      suggestionId: deckSuggestion.id,
+      title: todo.title,
+      description: todo.notes?.trim() || 'Scheduled from to-do list',
+      durationMin,
+      startAt: startAt.toISOString(),
+      endAt: endAt.toISOString(),
+      type: deckSuggestion.type,
+      tags: ['smart_calendar', 'todo', `todo_${sourceMode}`],
+      suggestion: deckSuggestion,
+      commitment: {
+        ...commitment,
+        calendarEventId,
+        calendarWriteFailed,
+      },
+      calendarEventId,
+      calendarWriteFailed,
+    });
+
+    updateTodoAfterSchedule(todo, scheduledId, startAt, endAt, sourceMode);
+  };
+
+  const buildSmartRankedTodoSlots = async (todo: SmartTodoItem): Promise<RankedTodoSlot[]> => {
+    const now = new Date();
+    const candidates = buildTodoCandidateSlots(columns, now, 20);
+    if (!candidates.length) return [];
+    const schedulingContext = resolveTodoSchedulingContext(todo);
+    const prioritizedCandidates = prioritizeTodoCandidateSlots(candidates, schedulingContext, now)
+      .slice(0, SMART_TODO_MAX_CANDIDATE_SLOTS);
+    if (!prioritizedCandidates.length) return [];
+
+    const explicitDurationMin = extractExplicitTodoDurationMin(todo);
+    const fallbackEstimatedDurationMin = explicitDurationMin ?? estimateTodoDurationMinFallback(todo);
+
+    const plannedActivities = formatScheduleActivityLines(columns);
+    const slotLines = prioritizedCandidates.map((slot, idx) => {
+      const slotDuration = clampTodoDurationToSlot(fallbackEstimatedDurationMin, slot.durationMin);
+      const maxOffset = Math.max(0, slot.durationMin - slotDuration);
+      const before = slot.beforeTitle ? ` | before: ${slot.beforeTitle}` : '';
+      const after = slot.afterTitle ? ` | after: ${slot.afterTitle}` : '';
+      return `${idx}. ${slot.dayLabel} ${formatCalendarTime(slot.startAt)}-${formatCalendarTime(slot.endAt)} (${slot.durationMin} min) | todoDuration=${slotDuration} | maxStartOffset=${maxOffset}${before}${after}`;
+    }).join('\n');
+
+    const fallback = prioritizedCandidates.slice(0, 3).map((slot, idx) => {
+      const duration = clampTodoDurationToSlot(fallbackEstimatedDurationMin, slot.durationMin);
+      const adjustedOffset = clampOffsetForTodoContext(slot, duration, 0, schedulingContext);
+      const suggestedStartAt = new Date(slot.startAt.getTime() + adjustedOffset * 60000);
+      const suggestedEndAt = new Date(suggestedStartAt.getTime() + duration * 60000);
+      return {
+      id: slot.id,
+      rank: (idx + 1) as 1 | 2 | 3,
+      reason: idx === 0 ? 'Earliest practical slot.' : 'Fallback slot.',
+      slot,
+      suggestedStartAt,
+      suggestedEndAt,
+      };
+    });
+
+    if (!SMART_TODO_GEMINI_KEY) return fallback;
+
+    const prompt = [
+      'You are an assistant that picks the best calendar slots for one todo.',
+      'Return ONLY JSON with schema: {"estimatedDurationMin":number,"picks":[{"slotIndex":number,"startOffsetMin":number,"durationMin":number,"reason":string}]}',
+      'Constraints:',
+      '- Pick exactly 3 different slotIndex values from the provided slot list.',
+      '- For each pick, choose startOffsetMin within [0, maxStartOffset] for that slot.',
+      '- If todo has explicit duration, use that duration for all picks.',
+      '- If no explicit duration is given, estimate realistic durationMin for this todo.',
+      '- durationMin must be in [15, 240], and cannot exceed slot duration.',
+      '- Prefer realistic, low-friction times around existing plans.',
+      '- Respect urgency when deadline exists.',
+      '- Keep reasons concise (max 12 words).',
+      '',
+      `Todo: ${todo.title}`,
+      `Todo notes: ${todo.notes ?? 'none'}`,
+      `Todo deadline: ${todo.deadlineAt ? new Date(todo.deadlineAt).toISOString() : 'none'}`,
+      `Todo explicit duration (minutes): ${explicitDurationMin ?? 'none'}`,
+      '',
+      'Planned activities by day:',
+      plannedActivities,
+      '',
+      'Candidate slots:',
+      slotLines,
+    ].join('\n');
+
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(SMART_TODO_GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(SMART_TODO_GEMINI_KEY)}`;
+
+    try {
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ role: 'user', parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            responseMimeType: 'application/json',
+            maxOutputTokens: 500,
+          },
+        }),
+      });
+      if (!response.ok) return fallback;
+      const payload = await response.json();
+      const text = payload?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part?.text ?? '')
+        .join('') ?? '';
+      const parsed = parseSmartSlotJson(text);
+      const picks = (parsed?.picks ?? [])
+        .map((pick) => ({
+          slotIndex: Number(pick.slotIndex),
+          startOffsetMin: Number(pick.startOffsetMin ?? 0),
+          durationMin: Number(pick.durationMin ?? Number.NaN),
+          reason: String(pick.reason ?? '').trim() || 'Good fit with your existing schedule.',
+        }))
+        .filter((pick) => Number.isInteger(pick.slotIndex) && pick.slotIndex >= 0 && pick.slotIndex < prioritizedCandidates.length);
+
+      const unique = Array.from(new Map(picks.map((pick) => [pick.slotIndex, pick])).values()).slice(0, 3);
+      if (!unique.length) return fallback;
+
+      const parsedEstimatedDurationMin = Number(parsed?.estimatedDurationMin ?? Number.NaN);
+      const baseEstimatedDurationMin = explicitDurationMin
+        ?? (Number.isFinite(parsedEstimatedDurationMin)
+          ? normalizeTodoDurationMin(parsedEstimatedDurationMin, fallbackEstimatedDurationMin)
+          : fallbackEstimatedDurationMin);
+
+      return unique.map((pick, idx) => {
+        const slot = prioritizedCandidates[pick.slotIndex];
+        const candidateDuration = Number.isFinite(pick.durationMin) ? pick.durationMin : baseEstimatedDurationMin;
+        const duration = clampTodoDurationToSlot(candidateDuration, slot.durationMin);
+        const maxOffset = Math.max(0, slot.durationMin - duration);
+        const normalizedOffset = Math.max(0, Math.min(maxOffset, snapMinutesToGrid(pick.startOffsetMin, 5)));
+        const contextAdjustedOffset = clampOffsetForTodoContext(
+          slot,
+          duration,
+          normalizedOffset,
+          schedulingContext,
+        );
+        const suggestedStartAt = new Date(slot.startAt.getTime() + contextAdjustedOffset * 60000);
+        const suggestedEndAt = new Date(suggestedStartAt.getTime() + duration * 60000);
+        return {
+          id: slot.id,
+          rank: (idx + 1) as 1 | 2 | 3,
+          reason: pick.reason,
+          slot,
+          suggestedStartAt,
+          suggestedEndAt,
+        };
+      });
+    } catch {
+      return fallback;
+    }
+  };
+
+  const beginManualTodoScheduling = (todo: SmartTodoItem) => {
+    setTodoModalOpen(false);
+    setSelectedGap(null);
+    setTodoSchedulingTarget(todo);
+    setTodoSchedulingMode('manual');
+    setRankedTodoSlots([]);
+  };
+
+  const beginSmartTodoScheduling = async (todo: SmartTodoItem) => {
+    setTodoModalOpen(false);
+    setSelectedGap(null);
+    setTodoSchedulingTarget(todo);
+    setTodoSchedulingMode('smart');
+    setSmartTodoSlotLoading(true);
+    const ranked = await buildSmartRankedTodoSlots(todo);
+    setRankedTodoSlots(ranked);
+    setSmartTodoSlotLoading(false);
+    if (!ranked.length) {
+      setTodoSchedulingMode('manual');
+      Alert.alert('No smart slots', 'No good AI slots were found. Switched to manual scheduling mode.');
+    }
+  };
+
+  const startTodoScheduling = (todo: SmartTodoItem) => {
+    if (todo.hasFixedSchedule && todo.deadlineAt) {
+      const fixedStart = new Date(todo.deadlineAt);
+      if (Number.isNaN(fixedStart.getTime())) {
+        Alert.alert('Invalid date', 'This to-do has an invalid fixed date/time.');
+        return;
+      }
+      setTodoModalOpen(false);
+      void scheduleTodoAt(todo, fixedStart, 'fixed', SMART_TODO_DEFAULT_DURATION_MIN)
+        .then(() => Alert.alert('Scheduled', 'Fixed-time to-do added to your calendar.'));
+      return;
+    }
+
+    if (!premiumEnabled) {
+      beginManualTodoScheduling(todo);
+      return;
+    }
+
+    Alert.alert(
+      'Schedule to-do',
+      'Do you want Smart scheduling (AI top 3) or manual scheduling?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Manual', onPress: () => beginManualTodoScheduling(todo) },
+        { text: 'Smart schedule', onPress: () => { void beginSmartTodoScheduling(todo); } },
+      ],
+    );
+  };
+
+  const scheduleSuggestion = async (gap: CalendarGap, entry: SmartSuggestionDeckEntry) => {
+    if (!premiumEnabled) {
+      showPremiumInfo();
+      return;
+    }
     const suggestion = entry.suggestion;
     const deckSuggestion = entry.deck;
 
@@ -434,6 +1652,37 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     const startAt = gap.startAt;
     const endAt = new Date(startAt.getTime() + suggestion.durationMin * 60000);
+    let title = deckSuggestion.title;
+
+    if (deckSuggestion.type === 'AT_HOME') {
+      title = `Plan: ${deckSuggestion.title}`;
+    }
+
+    if (deckSuggestion.type === 'GO_OUT') {
+      title = `Plan: ${deckSuggestion.place?.name ?? deckSuggestion.title}`;
+    }
+
+    if (deckSuggestion.type === 'EVENT') {
+      title = `Event: ${deckSuggestion.title}`;
+    }
+
+    let calendarEventId: string | undefined;
+    let calendarWriteFailed = !state.permissions.calendarGranted;
+
+    if (state.permissions.calendarGranted) {
+      try {
+        calendarEventId = await createPlanEvent({
+          title,
+          startDate: startAt,
+          endDate: endAt,
+          notes: deckSuggestion.description,
+        });
+        calendarWriteFailed = false;
+      } catch (error) {
+        console.warn('[SmartCalendar] Failed to create calendar event', error);
+        calendarWriteFailed = true;
+      }
+    }
 
     const commitment: Commitment = {
       suggestionId: deckSuggestion.id,
@@ -441,7 +1690,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       title: deckSuggestion.title,
       startAt: startAt.toISOString(),
       endAt: endAt.toISOString(),
-      calendarWriteFailed: true,
+      calendarEventId,
+      calendarWriteFailed,
     };
 
     actions.addScheduledActivity({
@@ -456,17 +1706,26 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       tags: deckSuggestion.tags,
       suggestion: deckSuggestion,
       commitment,
-      calendarWriteFailed: true,
+      calendarEventId,
+      calendarWriteFailed,
     });
 
     setSelectedGap(null);
-    Alert.alert('Added to plan', 'The suggestion was added to your scheduled activities and will be used by Plan Ahead.');
+    if (calendarWriteFailed && state.permissions.calendarGranted) {
+      Alert.alert('Added to plan', 'The suggestion was added, but syncing to your device calendar failed.');
+      return;
+    }
+    Alert.alert('Added to plan', 'The suggestion was added to your scheduled activities and your device calendar.');
   };
 
   const handleSuggestionSkip = () => {
+    if (!premiumEnabled) {
+      showPremiumInfo();
+      return;
+    }
     if (!gapSuggestions.length) return;
     if (suggestionIndex >= gapSuggestions.length - 1) {
-      Alert.alert('Last card', 'Use Regenerate 3 to fetch a new set of suggestions.');
+      setDeckExhausted(true);
       return;
     }
     if (!actions.spendSwipe()) {
@@ -476,33 +1735,56 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     setSuggestionIndex((prev) => Math.min(prev + 1, gapSuggestions.length - 1));
   };
 
-  const regenerateSuggestions = () => {
-    if (!selectedGap || regenerating) return;
-    if (!actions.spendSwipe()) {
-      Alert.alert('No swipes left', 'You have no swipes remaining. Complete activities or wait for recharge.');
-      return;
-    }
-    setRegenerating(true);
-    fetchGapSuggestions(selectedGap, true);
-    setTimeout(() => setRegenerating(false), 250);
+  const handleSuggestionBack = () => {
+    if (!canUndoSuggestion || lastSuggestionIndex === null || !gapSuggestions.length) return;
+    const maxIndex = Math.max(gapSuggestions.length - 1, 0);
+    const targetIndex = Math.max(0, Math.min(lastSuggestionIndex, maxIndex));
+    setSuggestionIndex(targetIndex);
+    setCanUndoSuggestion(false);
+    setLastSuggestionIndex(null);
+    setDeckExhausted(false);
   };
 
-  if (!premiumEnabled) {
-    return (
-      <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
-        <View style={[styles.lockedWrap, { paddingTop: insets.top + theme.spacing.xl }]}>
-          <Text style={styles.lockedEmoji}>📅</Text>
-          <Text style={styles.lockedTitle}>Smart Calendar is Premium</Text>
-          <Text style={styles.lockedText}>
-            Add your email to EXPO_PUBLIC_BUSINESS_PREMIUM_EMAILS in .env.local to unlock this feature.
-          </Text>
-          <Pressable style={styles.backButton} onPress={() => navigation.goBack()}>
-            <Text style={styles.backButtonText}>Back</Text>
-          </Pressable>
-        </View>
-      </LinearGradient>
-    );
-  }
+  const queueNewSetForSelectedGap = () => {
+    if (!premiumEnabled) {
+      showPremiumInfo();
+      return;
+    }
+    if (!selectedGap) return;
+    const key = gapCacheKey(selectedGap);
+    const nextBatch = (gapBatchIndexByKey[key] ?? 0) + 1;
+    setGapBatchIndexByKey((prev) => ({
+      ...prev,
+      [key]: nextBatch,
+    }));
+    fetchGapSuggestions(selectedGap, nextBatch);
+  };
+
+  const openScheduledActivity = () => {
+    if (!selectedScheduledActivity) return;
+    navigation.navigate('Plan', {
+      commitment: selectedScheduledActivity.commitment,
+      suggestion: selectedScheduledActivity.suggestion,
+    });
+    setSelectedScheduledActivity(null);
+  };
+
+  const removeScheduledActivity = async () => {
+    if (!selectedScheduledActivity) return;
+    const linkedEventId = selectedScheduledActivity.calendarEventId ?? selectedScheduledActivity.commitment.calendarEventId;
+    if (linkedEventId) {
+      try {
+        await deletePlanEvent(linkedEventId);
+      } catch (error) {
+        console.warn('Failed to delete scheduled activity from calendar', error);
+        Alert.alert('Could not delete', 'Please try again from your calendar app.');
+        return;
+      }
+    }
+
+    actions.removeScheduledActivity(selectedScheduledActivity.id);
+    setSelectedScheduledActivity(null);
+  };
 
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
@@ -510,100 +1792,392 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         <Pressable onPress={() => navigation.goBack()}>
           <Text style={styles.backText}>Back</Text>
         </Pressable>
-        <Text style={styles.title}>Smart Calendar</Text>
-        <Pressable onPress={() => setTodoModalOpen(true)}>
-          <Text style={styles.todoButton}>To-do</Text>
+        <View style={styles.planAheadTitleContainer}>
+          <Text style={styles.planAheadTitle}>PLAN AHEAD</Text>
+        </View>
+        <Pressable
+          onPress={() => {
+            if (schedulingActive) {
+              clearTodoSchedulingMode();
+              return;
+            }
+            setTodoModalOpen(true);
+          }}
+        >
+          <Text style={styles.todoButton}>{schedulingActive ? 'Cancel' : 'To-do'}</Text>
         </Pressable>
       </View>
+
+      {schedulingActive && (
+        <View style={styles.todoScheduleHintWrap}>
+          <Text style={styles.todoScheduleHintText}>
+            {todoSchedulingMode === 'smart'
+              ? smartTodoSlotLoading
+                ? 'Finding top 3 slots with AI...'
+                : `Smart schedule "${todoSchedulingTarget?.title}" by tapping a highlighted slot or choose Other.`
+              : `Manual schedule "${todoSchedulingTarget?.title}" by tapping a + slot.`}
+          </Text>
+        </View>
+      )}
 
       {loading ? (
         <View style={styles.centerWrap}>
           <Text style={styles.subtle}>Analyzing daily timeline...</Text>
         </View>
       ) : (
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.columnsWrap}>
-          {columns.map((column) => (
-            <View key={column.id} style={styles.dayCol}>
+        <ScrollView
+          ref={calendarVerticalScrollRef}
+          style={styles.calendarVerticalScroll}
+          showsVerticalScrollIndicator={false}
+        >
+          <ScrollView
+            ref={columnsScrollRef}
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={[
+              styles.columnsWrap,
+              { paddingLeft: horizontalEdgePadding, paddingRight: horizontalEdgePadding },
+            ]}
+            scrollEventThrottle={16}
+            onScroll={(event) => {
+              lastColumnsScrollXRef.current = event.nativeEvent.contentOffset.x;
+            }}
+            onScrollEndDrag={(event) => {
+              const { x } = event.nativeEvent.contentOffset;
+              lastColumnsScrollXRef.current = x;
+              const velocityX = Math.abs(event.nativeEvent.velocity?.x ?? 0);
+              if (velocityX < 0.05) {
+                snapDaysToNearestCenter(x, true);
+              }
+            }}
+            onMomentumScrollEnd={(event) => {
+              const { x } = event.nativeEvent.contentOffset;
+              lastColumnsScrollXRef.current = x;
+              snapDaysToNearestCenter(x, true);
+            }}
+          >
+          {columns.map((column, colIndex) => (
+            <React.Fragment key={column.id}>
+              {!calendarMinimized && colIndex % 2 === 1 && (() => {
+                const { minStartMin, maxEndMin } = globalTimelineRange;
+                const firstHour = Math.ceil(minStartMin / 60);
+                const lastHour = Math.floor(maxEndMin / 60);
+                const hourLabels: React.ReactNode[] = [];
+                for (let h = firstHour; h <= lastHour; h += 1) {
+                  const topPx = sharedTimelineTopOffset
+                    + TIMELINE_VERTICAL_INSET
+                    + (h * 60 - minStartMin + HOUR_SEPARATOR_LABEL_OFFSET_MIN) * pxPerMinute;
+                  hourLabels.push(
+                    <Text key={h} style={[styles.hourAxisLabel, { top: topPx }]}>
+                      {formatClockMinutes(h * 60, timeZone)}
+                    </Text>,
+                  );
+                }
+                return (
+                  <View
+                    style={[
+                      styles.hourSeparator,
+                      {
+                        width: HOUR_SEPARATOR_WIDTH,
+                        height: sharedTimelineTopOffset + timelineHeight + TIMELINE_VERTICAL_INSET * 2,
+                      },
+                    ]}
+                    pointerEvents="none"
+                  >
+                    {hourLabels}
+                  </View>
+                );
+              })()}
+              <View
+                style={styles.dayCol}
+                onLayout={(event) => {
+                  dayColumnXRef.current[column.id] = event.nativeEvent.layout.x;
+                }}
+              >
               <Text style={styles.dayTitle}>{column.label}</Text>
-              <Text style={styles.dayRangeLabel}>{`${pad2(Math.floor(column.timelineStartMin / 60))}:${pad2(column.timelineStartMin % 60)} - ${pad2(Math.floor(column.timelineEndMin / 60))}:${pad2(column.timelineEndMin % 60)}`}</Text>
-
-              {column.allDayBlocks.length > 0 && (
-                <View style={styles.allDaySection}>
-                  {column.allDayBlocks.map((block) => (
-                    <View key={block.id} style={styles.allDayChip}>
-                      <Text style={styles.allDayIcon}>📅</Text>
-                      <Text style={styles.allDayText} numberOfLines={1} ellipsizeMode="tail">{block.title}</Text>
-                    </View>
-                  ))}
-                </View>
+              {!calendarMinimized && (
+                <Text style={styles.dayRangeLabel}>{`${formatClockMinutes(column.timelineStartMin, timeZone)} - ${formatClockMinutes(column.timelineEndMin, timeZone)}`}</Text>
               )}
 
-              <View style={[styles.timeline, { height: TIMELINE_HEIGHT }]}> 
-                {buildTimelineSegments(column).map((segment) => {
-                  const timelineRange = Math.max(60, column.timelineEndMin - column.timelineStartMin);
-                  const segStartMin = Math.max(column.timelineStartMin, Math.min(column.timelineEndMin, minuteOfDay(segment.startAt)));
-                  const segEndMin = Math.max(segStartMin + 1, Math.max(column.timelineStartMin, Math.min(column.timelineEndMin, minuteOfDay(segment.endAt))));
-                  const top = ((segStartMin - column.timelineStartMin) / timelineRange) * TIMELINE_HEIGHT;
-                  const cellHeight = segmentHeight(segEndMin - segStartMin, timelineRange);
-                  const titleLines = cellHeight < 42 ? 1 : 2;
-                  if (segment.kind === 'event' && segment.block) {
-                    const canOpenPlan = segment.block.source === 'scheduled';
-                    const openPlan = () => {
-                      if (!canOpenPlan) return;
-                      const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
-                      if (!scheduled) return;
-                      navigation.navigate('Plan', {
-                        commitment: scheduled.commitment,
-                        suggestion: scheduled.suggestion,
-                      });
-                    };
-                    return (
-                      <Pressable
-                        key={segment.id}
-                        onPress={openPlan}
-                        style={[styles.eventBlock, canOpenPlan && styles.eventBlockPressable, { top, height: cellHeight }]}
-                      >
-                        <Text style={styles.eventTitle} numberOfLines={titleLines} ellipsizeMode="tail">{segment.block.title}</Text>
-                        <Text style={styles.eventTime}>{formatTime(segment.startAt)} - {formatTime(segment.endAt)}</Text>
-                      </Pressable>
-                    );
-                  }
-
-                  if (segment.kind === 'gap' && segment.gap) {
-                    return (
-                      <View
-                        key={segment.id}
-                        style={[styles.gapBlock, { top, height: cellHeight }]}
-                      >
-                        <View style={{ flex: 1 }}>
-                          <Text style={styles.gapTime}>{formatTime(segment.startAt)} - {formatTime(segment.endAt)}</Text>
-                          <Text style={styles.gapMeta}>{segment.durationMin} min free</Text>
-                        </View>
-                        <Pressable style={styles.plusButton} onPress={() => setSelectedGap(segment.gap!)}>
-                          <Text style={styles.plusText}>+</Text>
-                        </Pressable>
+              <View>
+                {syncedAllDaySectionHeight > 0 && (
+                  <View
+                    style={[
+                      styles.allDaySection,
+                      { height: syncedAllDaySectionHeight },
+                    ]}
+                  >
+                    {column.allDayBlocks.map((block) => (
+                      <View key={block.id} style={styles.allDayChip}>
+                        <Text style={styles.allDayIcon}>📅</Text>
+                        <Text style={styles.allDayText}>{block.title}</Text>
                       </View>
-                    );
-                  }
+                    ))}
+                  </View>
+                )}
 
-                  return null;
-                })}
+                <View
+                  style={[styles.timeline, { height: timelineHeight + TIMELINE_VERTICAL_INSET * 2 }]}
+                  onLayout={(event) => {
+                    const measured = Math.ceil(event.nativeEvent.layout.y);
+                    setTimelineTopOffsets((prev) => {
+                      if (prev[column.id] === measured) return prev;
+                      return { ...prev, [column.id]: measured };
+                    });
+                  }}
+                >
+                  {isSameDay(column.date, new Date()) && (
+                    <>
+                      {!calendarMinimized && (
+                        <View
+                          pointerEvents="none"
+                          style={[
+                            styles.currentTimeLabel,
+                            {
+                              top: TIMELINE_VERTICAL_INSET
+                                + (Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinute)) - globalTimelineRange.minStartMin) * pxPerMinute,
+                            },
+                          ]}
+                          onLayout={(event) => {
+                            const measuredWidth = Math.ceil(event.nativeEvent.layout.width);
+                            if (measuredWidth > 0 && measuredWidth !== currentTimeLabelWidth) {
+                              setCurrentTimeLabelWidth(measuredWidth);
+                            }
+                          }}
+                        >
+                          <Text style={styles.currentTimeLabelText}>{formatMinuteLabel(nowMinute, timeZone)}</Text>
+                        </View>
+                      )}
+                      <View
+                        pointerEvents="none"
+                        style={[
+                          styles.currentTimeBar,
+                          {
+                            left: 8 + (calendarMinimized ? 0 : currentTimeLabelWidth),
+                            top: TIMELINE_VERTICAL_INSET
+                              + (Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinute)) - globalTimelineRange.minStartMin) * pxPerMinute,
+                          },
+                        ]}
+                      />
+                    </>
+                  )}
+
+                  {buildTimelineSegments(column).map((segment) => {
+                    const laneLayout = laneLayoutByDay[column.id] ?? {};
+                    const segStartMin = Math.max(column.timelineStartMin, Math.min(column.timelineEndMin, minuteOfDay(segment.startAt)));
+                    const segEndMin = Math.max(segStartMin + 1, Math.max(column.timelineStartMin, Math.min(column.timelineEndMin, minuteOfDay(segment.endAt))));
+                    const durationMin = Math.max(1, segEndMin - segStartMin);
+                    const top = TIMELINE_VERTICAL_INSET + (segStartMin - globalTimelineRange.minStartMin) * pxPerMinute;
+
+                    if (segment.kind === 'event' && segment.block) {
+                      const laneMeta = laneLayout[segment.id] ?? { laneIndex: 0, laneCount: 1 };
+                      const cellHeight = Math.max(durationMin * pxPerMinute, minSegmentHeight(segment, laneMeta));
+                      const canOpenPlan = segment.block.source === 'scheduled';
+                      const openPlan = () => {
+                        if (!canOpenPlan) return;
+                        const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
+                        if (!scheduled) return;
+                        setSelectedScheduledActivity(scheduled);
+                      };
+
+                      const laneCount = Math.max(1, laneMeta.laneCount);
+                      const insetPct = (TIMELINE_HORIZONTAL_INSET / segmentTrackWidth) * 100;
+                      const gapPct = laneCount > 1 ? (TIMELINE_LANE_GAP / segmentTrackWidth) * 100 : 0;
+                      const laneWidthPct = (100 - insetPct * 2 - gapPct * (laneCount - 1)) / laneCount;
+                      const leftPct = insetPct + laneMeta.laneIndex * (laneWidthPct + gapPct);
+                      const alpha = laneCount > 1 ? Math.max(0.4, 1 - laneMeta.laneIndex * 0.2) : 1;
+                      const isSmartCalendarBlock = segment.block.source === 'scheduled'
+                        && smartCalendarScheduledIds.has(segment.block.id);
+                      const overlapColor = isSmartCalendarBlock
+                        ? `rgba(76,148,111,${alpha})`
+                        : `rgba(37,99,235,${alpha})`;
+
+                      return (
+                        <Pressable
+                          key={segment.id}
+                          onPress={openPlan}
+                          style={[
+                            styles.eventBlock,
+                            canOpenPlan && styles.eventBlockPressable,
+                            {
+                              top,
+                              height: cellHeight,
+                              left: `${leftPct}%`,
+                              width: `${laneWidthPct}%`,
+                              backgroundColor: overlapColor,
+                              zIndex: 20 + laneMeta.laneIndex,
+                            },
+                          ]}
+                        >
+                          <Text style={styles.eventTitle}>{segment.block.title}</Text>
+                          <Text style={styles.eventTime}>{formatCalendarTime(segment.startAt)} - {formatCalendarTime(segment.endAt)}</Text>
+                        </Pressable>
+                      );
+                    }
+
+                    if (segment.kind === 'gap' && segment.gap) {
+                      const cellHeight = Math.max(durationMin * pxPerMinute, minSegmentHeight(segment));
+                      return (
+                        <Pressable
+                          key={segment.id}
+                          onPressIn={(event) => {
+                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
+                            updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
+                          }}
+                          onTouchMove={(event) => {
+                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
+                            updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
+                          }}
+                          onPressOut={() => {
+                            if (todoSchedulingMode === 'manual') setManualPreview(null);
+                          }}
+                          onPress={(event) => {
+                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
+                            const pickedStartAt = computeManualStartInGap(
+                              segment.gap!,
+                              event.nativeEvent.locationY,
+                              cellHeight,
+                              durationMinForTodo,
+                            );
+                            confirmManualTodoSchedule(todoSchedulingTarget, pickedStartAt, durationMinForTodo);
+                          }}
+                          style={[styles.gapBlock, { top, height: cellHeight, zIndex: 5 }]}
+                        >
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.gapTime}>{formatCalendarTime(segment.startAt)} - {formatCalendarTime(segment.endAt)}</Text>
+                            <Text style={styles.gapMeta}>{segment.durationMin} min free</Text>
+                            {todoSchedulingMode === 'manual' && !!todoSchedulingTarget && (
+                              <Text style={styles.manualGapHint}>Tap where this to-do should start</Text>
+                            )}
+                          </View>
+                          {todoSchedulingMode === 'manual' && manualPreview?.gapId === segment.gap!.id && (
+                            <Pressable
+                              onPress={() => {
+                                if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                                confirmManualTodoSchedule(todoSchedulingTarget, manualPreview.startAt, manualPreview.durationMin);
+                              }}
+                              style={[styles.manualPreviewChip, { top: manualPreview.topOffset }]}
+                            >
+                              <View style={styles.manualPreviewCheckCircle}>
+                                <Text style={styles.manualPreviewCheckText}>✓</Text>
+                              </View>
+                              <Text style={styles.manualPreviewText}>{manualPreview.label}</Text>
+                            </Pressable>
+                          )}
+                          {schedulingActive ? (
+                            <View
+                              style={[
+                                styles.plusButton,
+                                styles.plusButtonScheduleMode,
+                              ]}
+                            >
+                              <Text style={styles.plusText}>+</Text>
+                            </View>
+                          ) : (
+                            <Pressable
+                              style={[
+                                styles.plusButton,
+                                !premiumEnabled && styles.plusButtonLocked,
+                              ]}
+                              onPress={() => {
+                                if (!premiumEnabled) {
+                                  showPremiumInfo();
+                                  return;
+                                }
+                                setSelectedGap(segment.gap!);
+                              }}
+                            >
+                              <Text style={[styles.plusText, !premiumEnabled && styles.plusTextLocked]}>
+                                {premiumEnabled ? '+' : '👑'}
+                              </Text>
+                            </Pressable>
+                          )}
+                        </Pressable>
+                      );
+                    }
+
+                    return null;
+                  })}
+
+                  {todoSchedulingMode === 'smart' && rankedTodoSlots
+                    .filter((item) => item.slot.dayId === column.id)
+                    .map((item) => {
+                      const top = TIMELINE_VERTICAL_INSET
+                        + (minuteOfDay(item.suggestedStartAt) - globalTimelineRange.minStartMin) * pxPerMinute;
+                      const segmentDurationMin = Math.max(1, Math.round((item.suggestedEndAt.getTime() - item.suggestedStartAt.getTime()) / 60000));
+                      const gapDurationMin = column.gaps.find((gap) => gap.id === item.slot.id)?.durationMin ?? segmentDurationMin;
+                      const height = Math.max(gapDurationMin * pxPerMinute, 56);
+                      const medal = item.rank === 1 ? '🥇' : item.rank === 2 ? '🥈' : '🥉';
+                      return (
+                        <Pressable
+                          key={`smart_todo_${item.id}_${item.rank}`}
+                          style={[styles.smartTodoSlot, { top, height }]}
+                          onPress={() => {
+                            if (!todoSchedulingTarget) return;
+                            void scheduleTodoAt(todoSchedulingTarget, item.suggestedStartAt, 'smart', segmentDurationMin)
+                              .then(() => {
+                                clearTodoSchedulingMode();
+                                Alert.alert('Scheduled', `"${todoSchedulingTarget.title}" scheduled at ${formatCalendarTime(item.suggestedStartAt)}.`);
+                              });
+                          }}
+                        >
+                          <View style={styles.smartTodoSlotLeft}>
+                            <Text style={styles.smartTodoMedal}>{medal}</Text>
+                            <View style={styles.smartTodoPlusCircle}>
+                              <Text style={styles.smartTodoPlusText}>+</Text>
+                            </View>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.smartTodoGhostTitle} numberOfLines={1}>
+                              {todoSchedulingTarget?.title ?? 'To-do slot'}
+                            </Text>
+                            <Text style={styles.smartTodoGhostTime}>
+                              {formatCalendarTime(item.suggestedStartAt)} - {formatCalendarTime(item.suggestedEndAt)}
+                            </Text>
+                            <Text style={styles.smartTodoReason} numberOfLines={1}>{item.reason}</Text>
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                </View>
               </View>
             </View>
+            </React.Fragment>
           ))}
+          </ScrollView>
         </ScrollView>
       )}
+
+      {todoSchedulingMode === 'smart' && !!todoSchedulingTarget && (
+        <View style={styles.smartTodoBottomBar}>
+          <Pressable
+            style={styles.smartTodoOtherBtn}
+            onPress={() => {
+              setTodoSchedulingMode('manual');
+              setRankedTodoSlots([]);
+            }}
+          >
+            <Text style={styles.smartTodoOtherBtnText}>Other</Text>
+          </Pressable>
+        </View>
+      )}
+
+      <View style={[styles.calendarMinimizeWrap, { bottom: insets.bottom + theme.spacing.md }]}> 
+        <Pressable
+          style={styles.calendarMinimizeButton}
+          onPress={() => setCalendarMinimized((prev) => !prev)}
+        >
+          <Text style={styles.calendarMinimizeButtonText}>{calendarMinimized ? 'Expand' : 'Minimize'}</Text>
+        </Pressable>
+      </View>
 
       <Modal visible={!!selectedGap} transparent animationType="slide" onRequestClose={() => setSelectedGap(null)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>Gap Suggestions</Text>
-            <Text style={styles.modalMeta}>
-              {selectedGap ? `${selectedGap.dayLabel} · ${formatTime(selectedGap.startAt)} - ${formatTime(selectedGap.endAt)}` : ''}
-            </Text>
-
-            <Text style={styles.subtle}>Finding best fitting activities for your schedule.</Text>
-
             {suggestionsLoading ? (
               <View style={styles.centerWrap}>
                 <Text style={styles.subtle}>Building 3 fitting cards...</Text>
@@ -627,44 +2201,97 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                       {gapSuggestions[suggestionIndex]?.suggestion.category ?? 'Self-care'}
                     </Text>
                   </View>
-                  <Text style={styles.suggestionMetaSmall}>
-                    {`Card ${Math.min(suggestionIndex + 1, gapSuggestions.length)} / ${gapSuggestions.length} · Bank ${state.swipeBank.current}`}
-                  </Text>
+                  <View style={styles.deckCounterStack}>
+                    <Pressable
+                      onPress={handleSuggestionBack}
+                      disabled={!canUndoSuggestion || suggestionsLoading}
+                      style={({ pressed }) => [
+                        styles.deckUndoButton,
+                        (!canUndoSuggestion || suggestionsLoading) && styles.deckUndoButtonDisabled,
+                        pressed && canUndoSuggestion && !suggestionsLoading && styles.deckUndoButtonPressed,
+                      ]}
+                      hitSlop={8}
+                    >
+                      <Text style={[styles.deckUndoText, (!canUndoSuggestion || suggestionsLoading) && styles.deckUndoTextDisabled]}>↶</Text>
+                    </Pressable>
+                    <Text style={styles.deckCounterText}>{Math.min(suggestionIndex + 1, gapSuggestions.length)} / {gapSuggestions.length}</Text>
+                  </View>
                 </View>
 
-                <View style={styles.deckWrapModal}>
-                  <SwipeDeck
-                    ref={suggestionDeckRef}
-                    current={gapSuggestions[suggestionIndex]?.deck ?? null}
-                    next={gapSuggestions[suggestionIndex + 1]?.deck ?? null}
-                    onSwipeLeft={handleSuggestionSkip}
-                    onSwipeRight={() => selectedGap && gapSuggestions[suggestionIndex] && scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex])}
-                    disabled={false}
-                  />
-                </View>
+                {deckExhausted ? (
+                  <View style={styles.emptyDeckWrap}>
+                    <Text style={styles.emptyDeckTitle}>Nothing clicked.</Text>
+                    <Text style={styles.emptyDeckSubtitle}>Want a new set?</Text>
+                    <Pressable style={styles.newSetBtn} onPress={queueNewSetForSelectedGap}>
+                      <Text style={styles.newSetBtnText}>New set</Text>
+                    </Pressable>
+                  </View>
+                ) : (
+                  <>
+                    <View style={styles.deckWrapModal}>
+                      <SwipeDeck
+                        ref={suggestionDeckRef}
+                        current={gapSuggestions[suggestionIndex]?.deck ?? null}
+                        next={gapSuggestions[suggestionIndex + 1]?.deck ?? null}
+                        onSwipeLeft={handleSuggestionSkip}
+                        onSwipeRight={() => {
+                          if (!selectedGap || !gapSuggestions[suggestionIndex]) return;
+                          void scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex]);
+                        }}
+                        disabled={false}
+                        deckColors={SMART_CALENDAR_DECK_COLORS}
+                      />
+                    </View>
 
-                <View style={styles.modalActionRow}>
-                  <Pressable style={styles.modalTinyBtn} onPress={handleSuggestionSkip}>
-                    <Text style={styles.modalTinyBtnText}>Skip</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.modalTinyBtn, regenerating && { opacity: 0.5 }]}
-                    onPress={regenerateSuggestions}
-                    disabled={regenerating}
-                  >
-                    <Text style={styles.modalTinyBtnText}>Regenerate 3</Text>
-                  </Pressable>
-                  <Pressable
-                    style={[styles.scheduleBtn, { flex: 1 }]}
-                    onPress={() => selectedGap && gapSuggestions[suggestionIndex] && scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex])}
-                  >
-                    <Text style={styles.scheduleBtnText}>Add to plan</Text>
-                  </Pressable>
-                </View>
+                    <View style={styles.modalActionRow}>
+                      <Pressable style={styles.modalTinyBtn} onPress={handleSuggestionSkip}>
+                        <Text style={styles.modalTinyBtnText}>Skip</Text>
+                      </Pressable>
+                      <Pressable
+                        style={[styles.scheduleBtn, { flex: 1 }]}
+                        onPress={() => {
+                          if (!selectedGap || !gapSuggestions[suggestionIndex]) return;
+                          void scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex]);
+                        }}
+                      >
+                        <Text style={styles.scheduleBtnText}>Add to plan</Text>
+                      </Pressable>
+                    </View>
+                  </>
+                )}
               </>
             )}
 
             <Pressable style={styles.closeBtn} onPress={() => setSelectedGap(null)}>
+              <Text style={styles.closeBtnText}>Close</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal visible={!!selectedScheduledActivity} transparent animationType="fade" onRequestClose={() => setSelectedScheduledActivity(null)}>
+        <View style={styles.modalBackdrop}>
+          <View style={styles.modalCard}>
+            <Text style={styles.modalTitle}>{selectedScheduledActivity?.title ?? 'Scheduled activity'}</Text>
+            <Text style={styles.modalMeta}>
+              {selectedScheduledActivity
+                ? `${new Date(selectedScheduledActivity.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatCalendarTime(new Date(selectedScheduledActivity.startAt))} - ${formatCalendarTime(new Date(selectedScheduledActivity.endAt))}`
+                : ''}
+            </Text>
+            {!!selectedScheduledActivity?.description && (
+              <Text style={styles.suggestionReason}>{selectedScheduledActivity.description}</Text>
+            )}
+
+            <View style={styles.modalActionRow}>
+              <Pressable style={styles.modalTinyBtn} onPress={removeScheduledActivity}>
+                <Text style={styles.modalTinyBtnText}>Remove</Text>
+              </Pressable>
+              <Pressable style={[styles.scheduleBtn, { flex: 1 }]} onPress={openScheduledActivity}>
+                <Text style={styles.scheduleBtnText}>Start now</Text>
+              </Pressable>
+            </View>
+
+            <Pressable style={styles.closeBtn} onPress={() => setSelectedScheduledActivity(null)}>
               <Text style={styles.closeBtnText}>Close</Text>
             </Pressable>
           </View>
@@ -682,27 +2309,48 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               placeholderTextColor={theme.colors.textMuted}
               style={styles.input}
             />
-            <TextInput
-              value={todoDate}
-              onChangeText={setTodoDate}
-              placeholder="Date (optional, YYYY-MM-DD)"
-              placeholderTextColor={theme.colors.textMuted}
-              style={styles.input}
-            />
-            <TextInput
-              value={todoTime}
-              onChangeText={setTodoTime}
-              placeholder="Time (HH:MM, 24h)"
-              placeholderTextColor={theme.colors.textMuted}
-              style={styles.input}
-            />
+
+            <View style={styles.deadlinePickerRow}>
+              <Pressable style={styles.deadlinePickerButton} onPress={openTodoDatePicker}>
+                <Text style={styles.deadlinePickerButtonText}>
+                  {todoDeadlineAt ? todoDeadlineAt.toLocaleDateString() : 'Pick date'}
+                </Text>
+              </Pressable>
+              <Pressable
+                style={styles.deadlinePickerButton}
+                onPress={openTodoTimePicker}
+              >
+                <Text style={styles.deadlinePickerButtonText}>
+                  {todoDeadlineAt && todoHasExplicitTime ? formatCalendarTime(todoDeadlineAt) : 'Pick time'}
+                </Text>
+              </Pressable>
+            </View>
+            <Text style={styles.deadlineSummaryText}>{formatTodoDeadlineSummary(todoDeadlineAt)}</Text>
+
+            {todoDatePickerVisible && (
+              <DateTimePicker
+                value={todoDeadlineAt ?? new Date()}
+                mode="date"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={handleTodoDateChange}
+              />
+            )}
+
+            {todoTimePickerVisible && (
+              <DateTimePicker
+                value={todoDeadlineAt ?? new Date()}
+                mode="time"
+                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                onChange={handleTodoTimeChange}
+              />
+            )}
 
             <View style={styles.deadlinePresetRow}>
               <Pressable style={styles.deadlineChip} onPress={() => setDeadlinePreset(0, 18, 0)}>
-                <Text style={styles.deadlineChipText}>Today 18:00</Text>
+                <Text style={styles.deadlineChipText}>Today {formatClockMinutes(18 * 60, timeZone)}</Text>
               </Pressable>
               <Pressable style={styles.deadlineChip} onPress={() => setDeadlinePreset(1, 9, 0)}>
-                <Text style={styles.deadlineChipText}>Tomorrow 09:00</Text>
+                <Text style={styles.deadlineChipText}>Tomorrow {formatClockMinutes(9 * 60, timeZone)}</Text>
               </Pressable>
               <Pressable style={styles.deadlineChip} onPress={() => setDeadlinePreset(7, 18, 0)}>
                 <Text style={styles.deadlineChipText}>+7 days</Text>
@@ -710,8 +2358,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               <Pressable
                 style={[styles.deadlineChip, styles.deadlineChipMuted]}
                 onPress={() => {
-                  setTodoDate('');
-                  setTodoTime('');
+                  setTodoDeadlineAt(null);
+                  setTodoHasExplicitTime(false);
                 }}
               >
                 <Text style={styles.deadlineChipText}>Clear</Text>
@@ -722,17 +2370,75 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={styles.scheduleBtnText}>Add task</Text>
             </Pressable>
 
+            <Pressable
+              style={[
+                styles.photoImportBtn,
+                (!premiumEnabled || todoPhotoImporting) && styles.photoImportBtnDisabled,
+              ]}
+              onPress={() => {
+                void importTodosViaPhoto();
+              }}
+              disabled={todoPhotoImporting}
+            >
+              <Text style={styles.photoImportBtnText}>
+                {todoPhotoImporting
+                  ? 'Reading photo...'
+                  : premiumEnabled
+                    ? 'Import from photo (AI)'
+                    : 'Import from photo (Premium)'}
+              </Text>
+            </Pressable>
+
             <ScrollView style={styles.modalList}>
-              {state.smartTodos.map((todo) => (
-                <View key={todo.id} style={styles.todoRow}>
+              {activeTodos.map((todo) => {
+                const dueHint = extractTodoDueHint(todo.notes);
+                return (
+                  <View key={todo.id} style={styles.todoRow}>
+                    <Pressable onPress={() => actions.toggleSmartTodoDone(todo.id)}>
+                      <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
+                    </Pressable>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
+                      {!!todo.deadlineAt && (
+                        <Text style={styles.todoDeadline}>
+                          Due {new Date(todo.deadlineAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.deadlineAt))}
+                        </Text>
+                      )}
+                      {!todo.deadlineAt && !!dueHint && (
+                        <Text style={styles.todoDueHint}>{dueHint}</Text>
+                      )}
+                      {!!todo.scheduledAt && !todo.done && (
+                        <Text style={styles.todoScheduledMeta}>
+                          Scheduled {todo.scheduledMode ? `(${todo.scheduledMode})` : ''}: {new Date(todo.scheduledAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.scheduledAt))}
+                        </Text>
+                      )}
+                      {todo.hasFixedSchedule && !!todo.deadlineAt && (
+                        <Text style={styles.todoFixedMeta}>Fixed time/date to-do</Text>
+                      )}
+                    </View>
+                    <Pressable onPress={() => startTodoScheduling(todo)}>
+                      <Text style={styles.todoSchedule}>Schedule</Text>
+                    </Pressable>
+                    <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
+                      <Text style={styles.todoDelete}>Delete</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+
+              <Pressable style={styles.doneTodosHeader} onPress={() => setShowDoneTodos((prev) => !prev)}>
+                <Text style={styles.doneTodosHeaderText}>
+                  {showDoneTodos ? '▾' : '▸'} Done to-dos ({doneTodos.length})
+                </Text>
+              </Pressable>
+
+              {showDoneTodos && doneTodos.map((todo) => (
+                <View key={todo.id} style={styles.todoRowDoneCollapsed}>
                   <Pressable onPress={() => actions.toggleSmartTodoDone(todo.id)}>
-                    <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
+                    <Text style={styles.todoCheck}>☑</Text>
                   </Pressable>
                   <View style={{ flex: 1 }}>
-                    <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
-                    {!!todo.deadlineAt && (
-                      <Text style={styles.todoDeadline}>Due {new Date(todo.deadlineAt).toLocaleString()}</Text>
-                    )}
+                    <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
                   </View>
                   <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
                     <Text style={styles.todoDelete}>Delete</Text>
@@ -762,6 +2468,17 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'space-between',
     marginBottom: theme.spacing.md,
   },
+  planAheadTitleContainer: {
+    borderRadius: theme.radius.lg,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    backgroundColor: theme.isDark ? '#2E4F45' : '#B5EAD7',
+  },
+  planAheadTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.isDark ? '#D9F6EA' : '#1A4A3A',
+  },
   backText: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
@@ -781,18 +2498,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'center',
   },
   columnsWrap: {
-    paddingHorizontal: theme.spacing.lg,
     paddingBottom: theme.spacing.xl,
-    gap: theme.spacing.md,
+    gap: DAY_COLUMN_GAP,
   },
   dayCol: {
     width: 280,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.md,
-    backgroundColor: theme.colors.backgroundAlt,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    backgroundColor: 'transparent',
+    borderWidth: 0,
     gap: theme.spacing.sm,
+  },
+  calendarVerticalScroll: {
+    flex: 1,
   },
   dayTitle: {
     fontFamily: theme.fonts.semibold,
@@ -807,6 +2525,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   allDaySection: {
     gap: 4,
     paddingBottom: theme.spacing.xs,
+    marginBottom: theme.spacing.xs,
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
@@ -838,18 +2557,45 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: theme.radius.md,
     borderWidth: 1,
     borderColor: theme.colors.border,
-    backgroundColor: '#F6F4EE',
+    backgroundColor: 'transparent',
     overflow: 'hidden',
+  },
+  currentTimeBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    height: 6,
+    marginTop: -3,
+    backgroundColor: 'rgba(252, 165, 165, 0.5)',
+    borderTopWidth: 1,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+    zIndex: 40,
+  },
+  currentTimeLabel: {
+    position: 'absolute',
+    left: 6,
+    marginTop: -12,
+    borderRadius: 6,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(252, 165, 165, 0.5)',
+    borderWidth: 1,
+    borderColor: 'rgba(239, 68, 68, 0.5)',
+    zIndex: 41,
+  },
+  currentTimeLabelText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: '#7F1D1D',
   },
   eventBlock: {
     position: 'absolute',
-    left: 6,
-    right: 6,
     borderRadius: theme.radius.md,
     paddingHorizontal: theme.spacing.sm,
     paddingVertical: theme.spacing.xs,
-    backgroundColor: theme.colors.accent,
-    justifyContent: 'space-between',
+    justifyContent: 'flex-start',
+    minHeight: 32,
   },
   eventBlockPressable: {
     opacity: 0.98,
@@ -858,11 +2604,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.accentText,
     fontSize: 12,
+    lineHeight: EVENT_TITLE_LINE_HEIGHT,
   },
   eventTime: {
     fontFamily: theme.fonts.body,
     color: theme.colors.accentText,
     fontSize: 11,
+    lineHeight: EVENT_TIME_LINE_HEIGHT,
     opacity: 0.95,
   },
   blockCard: {
@@ -922,6 +2670,48 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: 12,
   },
+  manualGapHint: {
+    marginTop: 2,
+    fontFamily: theme.fonts.semibold,
+    color: '#166534',
+    fontSize: 10,
+  },
+  manualPreviewChip: {
+    position: 'absolute',
+    left: 8,
+    right: 8,
+    minHeight: 34,
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    backgroundColor: '#DCFCE7',
+    borderWidth: 1,
+    borderColor: '#4ADE80',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  manualPreviewCheckCircle: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  manualPreviewCheckText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#F0FDF4',
+    fontSize: 12,
+    lineHeight: 12,
+  },
+  manualPreviewText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#14532D',
+    fontSize: 12,
+    flexShrink: 1,
+  },
   plusButton: {
     width: 30,
     height: 30,
@@ -930,16 +2720,151 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'center',
     backgroundColor: theme.colors.accent,
   },
+  plusButtonLocked: {
+    backgroundColor: '#FACC15',
+    borderWidth: 1,
+    borderColor: '#EAB308',
+  },
+  plusButtonScheduleMode: {
+    backgroundColor: '#22C55E',
+  },
   plusText: {
     fontFamily: theme.fonts.heading,
     color: theme.colors.accentText,
     fontSize: 22,
     lineHeight: 22,
   },
+  plusTextLocked: {
+    color: '#7C2D12',
+    fontSize: 16,
+    lineHeight: 18,
+  },
   subtle: {
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
     fontSize: 12,
+  },
+  todoScheduleHintWrap: {
+    marginHorizontal: theme.spacing.xl,
+    marginBottom: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: '#86EFAC',
+    backgroundColor: 'rgba(187,247,208,0.55)',
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: theme.spacing.xs,
+  },
+  todoScheduleHintText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#14532D',
+    fontSize: 12,
+  },
+  smartTodoSlot: {
+    position: 'absolute',
+    left: 6,
+    right: 6,
+    borderRadius: theme.radius.md,
+    borderWidth: 2,
+    borderColor: '#22C55E',
+    backgroundColor: 'rgba(220,252,231,0.5)',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    paddingHorizontal: theme.spacing.xs,
+    zIndex: 30,
+  },
+  smartTodoSlotLeft: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    width: 28,
+    gap: 2,
+  },
+  smartTodoMedal: {
+    fontSize: 14,
+  },
+  smartTodoPlusCircle: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#16A34A',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  smartTodoPlusText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#FFFFFF',
+    lineHeight: 14,
+    fontSize: 12,
+  },
+  smartTodoGhostTitle: {
+    fontFamily: theme.fonts.semibold,
+    color: '#166534',
+    opacity: 0.78,
+    fontSize: 12,
+  },
+  smartTodoGhostTime: {
+    fontFamily: theme.fonts.body,
+    color: '#166534',
+    opacity: 0.7,
+    fontSize: 11,
+  },
+  smartTodoReason: {
+    fontFamily: theme.fonts.body,
+    color: '#14532D',
+    fontSize: 10,
+  },
+  hourSeparator: {
+    position: 'relative',
+    marginHorizontal: 0,
+    alignSelf: 'stretch',
+    overflow: 'visible',
+  },
+  hourAxisLabel: {
+    position: 'absolute',
+    left: (HOUR_SEPARATOR_WIDTH - HOUR_AXIS_LABEL_WIDTH) / 2,
+    width: HOUR_AXIS_LABEL_WIDTH,
+    textAlign: 'center',
+    fontFamily: theme.fonts.body,
+    fontSize: 9,
+    color: 'rgba(150,150,150,0.6)',
+  },
+  smartTodoBottomBar: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: 16,
+    alignItems: 'center',
+  },
+  calendarMinimizeWrap: {
+    position: 'absolute',
+    right: 16,
+    alignItems: 'flex-end',
+  },
+  calendarMinimizeButton: {
+    borderRadius: 999,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    backgroundColor: 'rgba(15, 23, 42, 0.82)',
+    borderWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.4)',
+  },
+  calendarMinimizeButtonText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#F8FAFC',
+    fontSize: 12,
+  },
+  smartTodoOtherBtn: {
+    borderRadius: 999,
+    paddingHorizontal: 18,
+    paddingVertical: 9,
+    borderWidth: 1,
+    borderColor: '#4ADE80',
+    backgroundColor: '#DCFCE7',
+  },
+  smartTodoOtherBtnText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#14532D',
+    fontSize: 13,
   },
   modalBackdrop: {
     flex: 1,
@@ -981,6 +2906,37 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
   },
+  deckCounterStack: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  deckUndoButton: {
+    minHeight: 24,
+    minWidth: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  deckUndoButtonDisabled: {
+    opacity: 0.35,
+  },
+  deckUndoButtonPressed: {
+    transform: [{ scale: 0.94 }],
+  },
+  deckUndoText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 18,
+    color: theme.colors.textMuted,
+    lineHeight: 20,
+  },
+  deckUndoTextDisabled: {
+    color: theme.colors.border,
+  },
+  deckCounterText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+    fontSize: 12,
+  },
   deckTag: {
     borderRadius: 999,
     borderWidth: 1,
@@ -991,14 +2947,39 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     fontSize: 11,
   },
-  suggestionMetaSmall: {
-    fontFamily: theme.fonts.body,
-    fontSize: 11,
-    color: theme.colors.textMuted,
-  },
   deckWrapModal: {
     marginTop: theme.spacing.xs,
     marginBottom: theme.spacing.sm,
+  },
+  emptyDeckWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: theme.spacing.sm,
+    paddingVertical: theme.spacing.md,
+  },
+  emptyDeckTitle: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 22,
+    color: theme.colors.text,
+  },
+  emptyDeckSubtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+  },
+  newSetBtn: {
+    marginTop: theme.spacing.xs,
+    borderRadius: theme.radius.md,
+    paddingVertical: 10,
+    paddingHorizontal: 18,
+    backgroundColor: '#B5EAD7',
+    borderWidth: 1,
+    borderColor: '#8CC9B3',
+  },
+  newSetBtnText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#1A4A3A',
+    fontSize: 13,
   },
   modalActionRow: {
     flexDirection: 'row',
@@ -1052,6 +3033,24 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.accentText,
   },
+  photoImportBtn: {
+    marginTop: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    borderWidth: 1,
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.card,
+    paddingVertical: theme.spacing.sm,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  photoImportBtnDisabled: {
+    opacity: 0.6,
+  },
+  photoImportBtnText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accent,
+    fontSize: 14,
+  },
   closeBtn: {
     marginTop: theme.spacing.sm,
     alignItems: 'center',
@@ -1074,6 +3073,29 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexDirection: 'row',
     flexWrap: 'wrap',
     gap: theme.spacing.xs,
+  },
+  deadlinePickerRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+  },
+  deadlinePickerButton: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    paddingHorizontal: 10,
+    paddingVertical: 10,
+    backgroundColor: theme.colors.card,
+  },
+  deadlinePickerButtonText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.text,
+    fontSize: 13,
+  },
+  deadlineSummaryText: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 12,
   },
   deadlineChip: {
     borderWidth: 1,
@@ -1117,40 +3139,49 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     fontSize: 11,
   },
+  todoDueHint: {
+    fontFamily: theme.fonts.body,
+    color: '#7C3AED',
+    fontSize: 11,
+  },
+  todoScheduledMeta: {
+    fontFamily: theme.fonts.body,
+    color: '#15803D',
+    fontSize: 11,
+  },
+  todoFixedMeta: {
+    fontFamily: theme.fonts.body,
+    color: '#0F766E',
+    fontSize: 11,
+  },
+  todoSchedule: {
+    fontFamily: theme.fonts.semibold,
+    color: '#15803D',
+  },
   todoDelete: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.danger,
   },
-  lockedWrap: {
-    flex: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 28,
-    gap: theme.spacing.sm,
+  doneTodosHeader: {
+    marginTop: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
   },
-  lockedEmoji: {
-    fontSize: 42,
-  },
-  lockedTitle: {
-    fontFamily: theme.fonts.heading,
-    fontSize: 24,
-    color: theme.colors.text,
-  },
-  lockedText: {
-    fontFamily: theme.fonts.body,
-    color: theme.colors.textMuted,
-    textAlign: 'center',
-  },
-  backButton: {
-    marginTop: theme.spacing.md,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
-    borderRadius: theme.radius.md,
-    paddingVertical: 10,
-    paddingHorizontal: 20,
-  },
-  backButtonText: {
+  doneTodosHeaderText: {
     fontFamily: theme.fonts.semibold,
-    color: theme.colors.text,
+    color: theme.colors.textMuted,
+    fontSize: 13,
+  },
+  todoRowDoneCollapsed: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginBottom: theme.spacing.xs,
+    paddingBottom: theme.spacing.xs,
+    borderBottomWidth: 1,
+    borderBottomColor: theme.colors.border,
+    opacity: 0.88,
   },
 });

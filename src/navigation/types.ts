@@ -21,10 +21,12 @@ export type RootStackParamList = {
     previewImageUri?: string | null;
   };
   Bank: undefined;
+  Premium: undefined;
   Deck: { durationOverride?: number | null; filter?: string; planDate?: 'today' | 'tomorrow' } | undefined;
   Plan: {
     commitment: Commitment;
     suggestion: DeckSuggestion;
+    fromDoSomethingNow?: boolean;
   };
   ActivityChat: {
     threadId: string;

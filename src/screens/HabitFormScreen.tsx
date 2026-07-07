@@ -6,9 +6,11 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { Chip } from '../components/Chip';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { TimePickerScroll } from '../components/TimePickerScroll';
 import { useTheme } from '../theme/ThemeProvider';
 import { Habit, HabitFrequency, HabitTimeOfDay, HabitType } from '../types';
 import { useAppState } from '../state/AppState';
+import { normalizeClockTime } from '../utils/time';
 
 type Props = StackScreenProps<RootStackParamList, 'HabitForm'>;
 
@@ -29,6 +31,16 @@ const timeOptions: { id: HabitTimeOfDay; label: string }[] = [
   { id: 'morning', label: 'Morning' },
   { id: 'afternoon', label: 'Afternoon' },
   { id: 'evening', label: 'Evening' },
+];
+
+const weekdayOptions = [
+  { id: 1, label: 'Mon' },
+  { id: 2, label: 'Tue' },
+  { id: 3, label: 'Wed' },
+  { id: 4, label: 'Thu' },
+  { id: 5, label: 'Fri' },
+  { id: 6, label: 'Sat' },
+  { id: 0, label: 'Sun' },
 ];
 
 const tagOptions = [
@@ -61,12 +73,20 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const [description, setDescription] = useState(existing?.description ?? '');
   const [frequency, setFrequency] = useState<HabitFrequency>(existing?.frequency ?? 'daily');
   const [timeOfDay, setTimeOfDay] = useState<HabitTimeOfDay>(existing?.timeOfDay ?? 'any');
-  const [preferredTime, setPreferredTime] = useState(existing?.preferredTime ?? '');
+  const [preferredTime, setPreferredTime] = useState(normalizeClockTime(existing?.preferredTime, '07:30'));
+  const [usePreferredTime, setUsePreferredTime] = useState(Boolean(existing?.preferredTime));
+  const [scheduledWeekdays, setScheduledWeekdays] = useState<number[]>(existing?.scheduledWeekdays ?? []);
   const [selectedTags, setSelectedTags] = useState<string[]>(existing?.tags ?? []);
 
   const toggleTag = (tag: string) => {
     setSelectedTags((prev) =>
       prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
+  };
+
+  const toggleWeekday = (weekday: number) => {
+    setScheduledWeekdays((prev) =>
+      prev.includes(weekday) ? prev.filter((d) => d !== weekday) : [...prev, weekday].sort((a, b) => a - b),
     );
   };
 
@@ -85,7 +105,8 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         description: description.trim(),
         frequency,
         timeOfDay,
-        preferredTime: preferredTime.trim() || undefined,
+        preferredTime: usePreferredTime ? preferredTime : undefined,
+        scheduledWeekdays,
         tags: selectedTags,
       });
     } else {
@@ -97,7 +118,8 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         description: description.trim(),
         frequency,
         timeOfDay,
-        preferredTime: preferredTime.trim() || undefined,
+        preferredTime: usePreferredTime ? preferredTime : undefined,
+        scheduledWeekdays,
         tags: selectedTags,
         createdAt: new Date().toISOString(),
         lastCompletedAt: null,
@@ -197,25 +219,38 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Preferred time (optional)</Text>
-          <Text style={styles.hint}>Set an exact time like 07:30 or 18:00. The reminder will be scheduled around this time based on your calendar availability.</Text>
-          <TextInput
-            style={styles.input}
-            placeholder="e.g. 07:30"
-            placeholderTextColor={theme.colors.textMuted}
-            value={preferredTime}
-            onChangeText={(t) => {
-              // Auto-format: allow digits and colon, insert colon after 2 digits
-              const cleaned = t.replace(/[^0-9:]/g, '');
-              if (cleaned.length === 2 && !cleaned.includes(':') && preferredTime.length < t.length) {
-                setPreferredTime(cleaned + ':');
-              } else {
-                setPreferredTime(cleaned.slice(0, 5));
-              }
-            }}
-            keyboardType="numbers-and-punctuation"
-            maxLength={5}
-          />
+          <Text style={styles.label}>Weekdays (optional)</Text>
+          <Text style={styles.hint}>If selected, this habit is only due on those days.</Text>
+          <View style={styles.rowWrap}>
+            {weekdayOptions.map((day) => (
+              <Chip
+                key={day.id}
+                label={day.label}
+                selected={scheduledWeekdays.includes(day.id)}
+                onPress={() => toggleWeekday(day.id)}
+              />
+            ))}
+          </View>
+        </View>
+
+        <View style={styles.field}>
+          <Text style={styles.label}>Exact time (optional)</Text>
+          <Text style={styles.hint}>Use the picker instead of typing time manually.</Text>
+          <View style={styles.rowWrap}>
+            <Chip
+              label="No exact time"
+              selected={!usePreferredTime}
+              onPress={() => setUsePreferredTime(false)}
+            />
+            <Chip
+              label="Set exact time"
+              selected={usePreferredTime}
+              onPress={() => setUsePreferredTime(true)}
+            />
+          </View>
+          {usePreferredTime && (
+            <TimePickerScroll value={preferredTime} onChange={setPreferredTime} />
+          )}
         </View>
 
         <View style={styles.field}>

@@ -1,5 +1,5 @@
 import { Habit, HabitFrequency, HabitTimeOfDay, Suggestion } from '../types';
-import { getTimeZoneParts } from './time';
+import { getTimeZoneParts, isSameCalendarDayInTimeZone } from './time';
 
 const frequencyDays: Record<HabitFrequency, number> = {
   daily: 1,
@@ -10,7 +10,32 @@ const frequencyDays: Record<HabitFrequency, number> = {
 
 export const getFrequencyDays = (frequency: HabitFrequency): number => frequencyDays[frequency];
 
-export const isHabitDue = (habit: Habit, now = new Date()): boolean => {
+const weekdayMap: Record<string, number> = {
+  Sunday: 0,
+  Monday: 1,
+  Tuesday: 2,
+  Wednesday: 3,
+  Thursday: 4,
+  Friday: 5,
+  Saturday: 6,
+};
+
+const getWeekdayInTimeZone = (now: Date, timeZone?: string | null): number => {
+  const weekday = getTimeZoneParts(now, timeZone).weekday;
+  return weekdayMap[weekday] ?? now.getDay();
+};
+
+export const isHabitDue = (habit: Habit, now = new Date(), timeZone?: string | null): boolean => {
+  const scheduledWeekdays = habit.scheduledWeekdays ?? [];
+  if (scheduledWeekdays.length > 0) {
+    const today = getWeekdayInTimeZone(now, timeZone);
+    if (!scheduledWeekdays.includes(today)) return false;
+    if (!habit.lastCompletedAt) return true;
+    const last = new Date(habit.lastCompletedAt);
+    if (Number.isNaN(last.getTime())) return true;
+    return !isSameCalendarDayInTimeZone(last, now, timeZone);
+  }
+
   if (!habit.lastCompletedAt) return true;
   const last = new Date(habit.lastCompletedAt);
   const days = Math.floor((now.getTime() - last.getTime()) / (1000 * 60 * 60 * 24));
@@ -142,7 +167,7 @@ const getScheduledHour = (habit: Habit): number | null => {
 export type HabitUrgency = 'approaching' | 'overdue' | 'normal';
 
 export const getHabitUrgency = (habit: Habit, now = new Date(), timeZone?: string | null): HabitUrgency => {
-  if (!isHabitDue(habit, now)) return 'normal';
+  if (!isHabitDue(habit, now, timeZone)) return 'normal';
   const scheduledHour = getScheduledHour(habit);
   if (scheduledHour === null) return 'normal';
 
@@ -205,6 +230,14 @@ export const formatHabitTimeOfDay = (time: HabitTimeOfDay): string => {
     default:
       return 'Any time';
   }
+};
+
+export const formatHabitWeekdays = (weekdays?: number[]): string | null => {
+  if (!weekdays || weekdays.length === 0) return null;
+  const labels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+  const unique = Array.from(new Set(weekdays)).sort((a, b) => a - b);
+  if (unique.length === 7) return 'Every day';
+  return unique.map((idx) => labels[idx] ?? '').filter(Boolean).join(', ');
 };
 
 /** Emoji for streak milestones */
@@ -311,5 +344,6 @@ export const migrateHabit = (h: Habit): Habit => ({
   currentStreak: h.currentStreak ?? 0,
   longestStreak: h.longestStreak ?? 0,
   completionHistory: h.completionHistory ?? [],
+  scheduledWeekdays: Array.isArray(h.scheduledWeekdays) ? h.scheduledWeekdays : [],
   // preferredTime is optional — no default needed
 });

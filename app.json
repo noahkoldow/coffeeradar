@@ -44,7 +44,8 @@
     },
     "plugins": [
       "expo-web-browser",
-      "expo-apple-authentication"
+      "expo-apple-authentication",
+      "@react-native-community/datetimepicker"
     ],
     "scheme": "bits",
     "extra": {

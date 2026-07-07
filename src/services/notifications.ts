@@ -224,14 +224,38 @@ export async function rescheduleHabitReminders(habits: Habit[]) {
   const now = new Date();
   const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
 
+  const mapWeekdayToExpo = (weekday: number): number => {
+    // Expo uses 1=Sunday ... 7=Saturday
+    const normalized = ((weekday % 7) + 7) % 7;
+    return normalized === 0 ? 1 : normalized + 1;
+  };
+
   for (const habit of habits) {
     const streakBody = habit.currentStreak > 0
       ? `🔥 ${habit.currentStreak}-day streak — keep it going!`
       : 'Start building your streak today!';
 
     const best = findBestTime(habit, tomorrow, events);
+    const scheduledWeekdays = Array.from(new Set(habit.scheduledWeekdays ?? [])).filter((d) => d >= 0 && d <= 6);
 
-    if (habit.frequency === 'daily') {
+    if (scheduledWeekdays.length > 0) {
+      for (const day of scheduledWeekdays) {
+        await Notifications.scheduleNotificationAsync({
+          content: {
+            title: `Time for: ${habit.name}`,
+            body: streakBody,
+            sound: 'default',
+            data: { habitId: habit.id },
+          },
+          trigger: {
+            type: Notifications.SchedulableTriggerInputTypes.WEEKLY,
+            weekday: mapWeekdayToExpo(day),
+            hour: best.hour,
+            minute: best.minute,
+          },
+        });
+      }
+    } else if (habit.frequency === 'daily') {
       await Notifications.scheduleNotificationAsync({
         content: {
           title: `Time for: ${habit.name}`,

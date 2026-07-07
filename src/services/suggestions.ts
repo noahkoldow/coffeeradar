@@ -14,6 +14,7 @@ import {
   Suggestion,
   SuggestionMeta,
   SuggestionType,
+  SmartTodoItem,
   TagAffinities,
   UserPrefs,
 } from '../types';
@@ -34,6 +35,8 @@ import {
   shouldSuggestHabitConversion,
 } from './activityRepetitionService';
 import { calculateBusinessHabitAlignment, findAlignedBusinesses, businessToSuggestion } from './businessService';
+import { Campaign } from '../types/business';
+import { getCampaignsByStatus } from './business';
 
 const BUFFER_MIN = 10;
 const GEMINI_SOURCE_BOOST = 0.08;
@@ -371,6 +374,80 @@ const inferTags = (suggestion: Suggestion): Suggestion => {
   return suggestion;
 };
 
+const SMART_TODO_MIN_DURATION_MIN = 15;
+const SMART_TODO_MAX_CANDIDATES = 2;
+
+const parseSmartTodoDurationMin = (todo: SmartTodoItem): number | null => {
+  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
+  if (!text.trim()) return null;
+
+  const hourMinuteMatch = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\s*(\d{1,2})?\s*(?:m|min|mins|minute|minutes)?/.exec(text);
+  if (hourMinuteMatch) {
+    const hours = Number(hourMinuteMatch[1]);
+    const mins = Number(hourMinuteMatch[2] ?? 0);
+    if (Number.isFinite(hours) && Number.isFinite(mins)) {
+      return Math.max(SMART_TODO_MIN_DURATION_MIN, Math.round(hours * 60 + mins));
+    }
+  }
+
+  const minuteMatch = /(\d{1,3})\s*(?:m|min|mins|minute|minutes)\b/.exec(text);
+  if (minuteMatch) {
+    const mins = Number(minuteMatch[1]);
+    if (Number.isFinite(mins)) {
+      return Math.max(SMART_TODO_MIN_DURATION_MIN, Math.round(mins));
+    }
+  }
+
+  return null;
+};
+
+const estimateSmartTodoDurationMin = (todo: SmartTodoItem): number => {
+  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
+  if (/quick|brief|tiny|short|email|reply|call|confirm|book/.test(text)) return 20;
+  if (/deep|project|report|presentation|refactor|research|analy/.test(text)) return 90;
+  if (/clean|organize|study|prepare|write|review|exercise|workout/.test(text)) return 60;
+  return 40;
+};
+
+const scoreSmartTodoUrgency = (todo: SmartTodoItem, now: Date): number => {
+  if (!todo.deadlineAt) return 0.2;
+  const deadlineMs = new Date(todo.deadlineAt).getTime();
+  if (Number.isNaN(deadlineMs)) return 0.2;
+  const deltaHours = (deadlineMs - now.getTime()) / 3600000;
+  if (deltaHours <= 0) return 2.2;
+  if (deltaHours <= 24) return 1.8;
+  if (deltaHours <= 72) return 1.2;
+  return 0.6;
+};
+
+const buildSmartTodoSuggestion = (todo: SmartTodoItem, availability: Availability): DeckSuggestion | null => {
+  if (todo.done || todo.scheduledAt || todo.scheduledEndAt || todo.hasFixedSchedule) return null;
+
+  const title = todo.title.trim();
+  if (!title) return null;
+
+  const explicitDuration = parseSmartTodoDurationMin(todo);
+  const estimatedDuration = explicitDuration ?? estimateSmartTodoDurationMin(todo);
+  if (estimatedDuration > availability.durationMin) return null;
+
+  const suggestion: Suggestion = {
+    id: `todo_${todo.id}`,
+    type: 'AT_HOME',
+    source: 'todo',
+    title,
+    hook: todo.deadlineAt ? 'Priority to-do' : 'To-do',
+    cta: 'Start this task',
+    description: todo.notes?.trim() || 'Pending to-do task',
+    durationMin: Math.max(SMART_TODO_MIN_DURATION_MIN, Math.min(estimatedDuration, availability.durationMin)),
+    confidence: 0.9,
+    whyNow: todo.deadlineAt
+      ? `Pending task due ${new Date(todo.deadlineAt).toLocaleString()}.`
+      : 'Pending task that fits this free window.',
+  };
+
+  return attachEmojis(inferTags(suggestion)) as DeckSuggestion;
+};
+
 const attachEmojis = (suggestion: Suggestion): Suggestion => {
   if (suggestion.emojis?.length) return suggestion;
   const emojis: string[] = [];
@@ -416,6 +493,167 @@ const TAG_PARENTS: Record<string, string[]> = {
   beaches: ['nature', 'explore'],
   parks: ['nature'],
   street_food: ['food'],
+};
+
+const normalizeTag = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, '_');
+
+const buildUserTagSet = (prefs: UserPrefs): Set<string> => {
+  const expanded = new Set<string>();
+  for (const tag of [...(prefs.interestTags ?? []), ...(prefs.customInterests ?? [])]) {
+    const normalized = normalizeTag(tag);
+    if (!normalized) continue;
+    expanded.add(normalized);
+    const parents = TAG_PARENTS[normalized];
+    if (parents) {
+      for (const parent of parents) expanded.add(parent);
+    }
+  }
+  return expanded;
+};
+
+const parseClockMinutes = (clock: string): number | null => {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(clock.trim());
+  if (!match) return null;
+  const hours = Number.parseInt(match[1], 10);
+  const minutes = Number.parseInt(match[2], 10);
+  if (hours < 0 || hours > 23 || minutes < 0 || minutes > 59) return null;
+  return hours * 60 + minutes;
+};
+
+const matchesTimeWindow = (campaign: Campaign, now: Date, timeZone?: string | null): boolean => {
+  const windows = campaign.targeting?.timeWindows ?? [];
+  if (!windows.length) return true;
+
+  const parts = getTimeZoneParts(now, timeZone);
+  const dayName = (parts.weekday ?? '').trim().toLowerCase();
+  const nowMinutes = parts.hour * 60 + parts.minute;
+
+  return windows.some((window) => {
+    const day = (window.day ?? '').trim().toLowerCase();
+    if (day && day !== dayName && day !== 'any') return false;
+    const startMin = parseClockMinutes(window.startTime);
+    const endMin = parseClockMinutes(window.endTime);
+    if (startMin == null || endMin == null) return true;
+    if (endMin < startMin) {
+      // Overnight window, e.g. 22:00–02:00
+      return nowMinutes >= startMin || nowMinutes <= endMin;
+    }
+    return nowMinutes >= startMin && nowMinutes <= endMin;
+  });
+};
+
+const matchesCampaignTargeting = (
+  campaign: Campaign,
+  business: Business,
+  prefs: UserPrefs,
+  availability: Availability,
+  location: LocationState,
+  now: Date,
+): boolean => {
+  const targeting = campaign.targeting ?? {};
+  const userTags = buildUserTagSet(prefs);
+
+  // Must match all selected campaign audience tags.
+  const requiredTags = Array.from(new Set([...(targeting.requiredTags ?? []), ...(targeting.interests ?? [])]))
+    .map(normalizeTag)
+    .filter(Boolean);
+  if (requiredTags.length && !requiredTags.every((tag) => userTags.has(tag))) {
+    return false;
+  }
+
+  if (typeof targeting.requiredDurationMin === 'number' && availability.durationMin < targeting.requiredDurationMin) {
+    return false;
+  }
+
+  if (!matchesTimeWindow(campaign, now, location.timeZone)) {
+    return false;
+  }
+
+  const availabilityStart = fromISO(availability.start) ?? now;
+  const availabilityEnd = fromISO(availability.end) ?? addMinutes(availabilityStart, availability.durationMin);
+  if (targeting.isOneTimeEvent) {
+    const startAt = targeting.oneTimeStartAt ? fromISO(targeting.oneTimeStartAt) : null;
+    if (!startAt) return false;
+    if (startAt.getTime() < now.getTime()) return false;
+    if (startAt.getTime() < availabilityStart.getTime() || startAt.getTime() > availabilityEnd.getTime()) return false;
+  }
+
+  const targetLocation = targeting.targetLocation;
+  if (targetLocation) {
+    if (location.lat == null || location.lng == null) return false;
+    const distKm = haversineKm(location.lat, location.lng, targetLocation.lat, targetLocation.lng);
+    if (distKm > targetLocation.radiusKm) return false;
+  }
+
+  if (targeting.locations?.length) {
+    if (location.lat == null || location.lng == null) return false;
+    const inAny = targeting.locations.some((loc) => {
+      const distKm = haversineKm(location.lat!, location.lng!, loc.lat, loc.lng);
+      return distKm <= loc.radiusKm;
+    });
+    if (!inAny) return false;
+  }
+
+  if (typeof targeting.locationRadius === 'number') {
+    if (location.lat == null || location.lng == null || business.place.lat == null || business.place.lng == null) {
+      return false;
+    }
+    const distKm = haversineKm(location.lat, location.lng, business.place.lat, business.place.lng);
+    if (distKm > targeting.locationRadius) return false;
+  }
+
+  return true;
+};
+
+const campaignToSuggestion = (campaign: Campaign, business: Business): Suggestion => {
+  const tags = Array.from(new Set([
+    ...(campaign.targeting?.requiredTags ?? []),
+    ...(campaign.targeting?.interests ?? []),
+    ...(business.targetTags ?? []),
+  ])).map(normalizeTag).filter(Boolean);
+
+  return {
+    id: `campaign_${campaign.id}`,
+    type: 'GO_OUT',
+    source: 'business',
+    businessId: business.id,
+    title: campaign.title,
+    hook: campaign.hook || 'Promoted',
+    cta: campaign.cta?.text || `Visit ${business.name}`,
+    description: campaign.description,
+    durationMin: campaign.targeting?.requiredDurationMin ?? 60,
+    tags,
+    place: campaign.targeting?.targetLocation
+      ? {
+          name: campaign.targeting.targetLocation.name || business.place.name,
+          address: campaign.targeting.locationName || business.place.address,
+          lat: campaign.targeting.targetLocation.lat,
+          lng: campaign.targeting.targetLocation.lng,
+        }
+      : business.place,
+    rating: business.rating,
+    ratingCount: business.ratingCount,
+    confidence: 0.78,
+    emojis: campaign.emojis,
+    instructions: [
+      campaign.cta?.value ? `${campaign.cta.text}: ${campaign.cta.value}` : `Visit ${business.name}`,
+      ...(campaign.retrieveOffer?.value
+        ? [`Retrieve offer (${campaign.retrieveOffer.type.toUpperCase()}): ${campaign.retrieveOffer.value}`]
+        : []),
+    ],
+    whyNow: campaign.targeting?.isOneTimeEvent ? 'You match this one-time offer and time window.' : 'You match this promoted audience targeting.',
+  };
+};
+
+const loadActiveCampaignsForBusinesses = async (businesses: Business[]): Promise<Campaign[]> => {
+  const limited = businesses.slice(0, 25);
+  const results = await Promise.all(
+    limited.map(async (business) => {
+      const campaigns = await getCampaignsByStatus(business.id, 'active').catch(() => [] as Campaign[]);
+      return campaigns.map((campaign) => ({ ...campaign, businessId: campaign.businessId || business.id }));
+    }),
+  );
+  return results.flat();
 };
 
 const matchesInterest = (suggestion: Suggestion, prefs: UserPrefs): boolean => {
@@ -660,6 +898,7 @@ const scoreSuggestion = (
   const confidence = suggestion.confidence;
   const habitBoost = suggestion.source === 'habit' ? 0.12 : 0;
   const geminiBoost = suggestion.source === 'gemini' ? GEMINI_SOURCE_BOOST : 0;
+  const todoBoost = suggestion.source === 'todo' ? 0.08 : 0;
 
   // ── Late-night penalty for outdoor / go-out activities ──
   const now = new Date();
@@ -702,6 +941,7 @@ const scoreSuggestion = (
     typeAff * 0.05 +
     openNowBonus +
     habitBoost +
+    todoBoost +
     geminiBoost +
     nightPenalty +
     locationBoost +
@@ -890,7 +1130,7 @@ const seedSuggestions = async (
 ): Promise<Suggestion[]> => {
   const now = nowOverride ?? new Date();
   const habitSuggestions = habits
-    .filter((habit) => isHabitDue(habit, now) && matchesTimeOfDay(habit, now, location.timeZone))
+    .filter((habit) => isHabitDue(habit, now, location.timeZone) && matchesTimeOfDay(habit, now, location.timeZone))
     .map((habit) => attachEmojis(habitToSuggestion(habit)))
     .map((item) => markRepetitionFriendly(item)); // Mark habits as repetition-friendly
 
@@ -956,11 +1196,13 @@ export const buildDeck = async (
   prefs: UserPrefs,
   history: HistoryState,
   habits: Habit[],
+  smartTodos: SmartTodoItem[] = [],
   apiTimeoutMs = API_TIMEOUT_MS,
   tagAff: TagAffinities = {},
   locProfile: LocationProfile | null = null,
   filter?: string,
   savedSuggestions: SavedSuggestion[] = [],
+  userId?: string | null,
   nowOverride?: Date,
   geminiOverride?: Suggestion[],
   maxGeminiCards?: number,
@@ -974,9 +1216,18 @@ export const buildDeck = async (
   const businessCatalogPromise = location.lat && location.lng
     ? withTimeout(loadFirebaseBusinesses(40).catch(() => []), Math.min(apiTimeoutMs, 1800), [] as Business[])
     : Promise.resolve([] as Business[]);
+  const activeCampaignsPromise = businessCatalogPromise.then((businesses) =>
+    withTimeout(loadActiveCampaignsForBusinesses(businesses).catch(() => []), Math.min(apiTimeoutMs, 1800), [] as Campaign[]),
+  );
   const communityIdeasPromise = withTimeout(loadApprovedCommunityIdeas().catch(() => []), Math.min(apiTimeoutMs, 1800), []);
 
   const baseCandidatesPromise = seedSuggestions(availability, location, prefs, habits, apiTimeoutMs, now);
+  const todoCandidates = smartTodos
+    .map((todo) => ({ todo, suggestion: buildSmartTodoSuggestion(todo, availability) }))
+    .filter((entry) => !!entry.suggestion)
+    .sort((a, b) => scoreSmartTodoUrgency(b.todo, now) - scoreSmartTodoUrgency(a.todo, now))
+    .slice(0, SMART_TODO_MAX_CANDIDATES)
+    .map((entry) => entry.suggestion as DeckSuggestion);
   const topPositiveTags = Object.entries(tagAff)
     .filter(([tag, score]) => !tag.startsWith('__type_') && score > 0.25)
     .sort((a, b) => b[1] - a[1])
@@ -997,16 +1248,17 @@ export const buildDeck = async (
   const geminiCandidatesPromise: Promise<Suggestion[]> = geminiOverride !== undefined
     ? Promise.resolve(geminiOverride)
     : weatherPromise.then((weather) => withTimeout(
-        fetchGeminiSuggestions(location, prefs, availability, weather, learning).catch(() => []),
+        fetchGeminiSuggestions(location, prefs, availability, weather, learning, userId).catch(() => []),
         apiTimeoutMs,
         [],
       ));
 
-  const [baseCandidates, weather, geminiCandidates, firebaseBusinesses, approvedCommunityIdeas] = await Promise.all([
+  const [baseCandidates, weather, geminiCandidates, firebaseBusinesses, activeCampaigns, approvedCommunityIdeas] = await Promise.all([
     baseCandidatesPromise,
     weatherPromise,
     geminiCandidatesPromise,
     businessCatalogPromise,
+    activeCampaignsPromise,
     communityIdeasPromise,
   ]);
 
@@ -1016,7 +1268,7 @@ export const buildDeck = async (
   }
   console.log('[buildDeck] gemini candidates:', geminiCandidates.length, '| override?', geminiOverride !== undefined);
   const communityCandidates = approvedCommunityIdeas.map((idea) => communityIdeaToSuggestion(idea));
-  const candidates = [...baseCandidates, ...geminiCandidates, ...communityCandidates];
+  const candidates = [...baseCandidates, ...geminiCandidates, ...communityCandidates, ...todoCandidates];
   console.log('[buildDeck] candidates:', candidates.length, 'weather:', weather ? 'yes' : 'no');
 
   const enriched = candidates.map((item) => enrichSuggestion(item, availability, location));
@@ -1158,43 +1410,39 @@ export const buildDeck = async (
   }
   console.log('[buildDeck] final deck size:', deck.length);
 
-  // ── Business ad injection ──
-  // Inject at most one aligned promoted business in lower deck positions.
+  // ── Campaign injection ──
+  // Inject at most one active campaign that strictly matches user criteria.
   if (location.lat && location.lng && deck.length > 0) {
     const businessCatalog = firebaseBusinesses.length ? firebaseBusinesses : buildLocalBusinessCatalog(location);
-    const aligned = findAlignedBusinesses(
-      businessCatalog,
-      location,
-      habits,
-      Math.max(2, prefs.radiusKm),
-      0.45,
-      2,
-    );
+    const businessById = new Map(businessCatalog.map((business) => [business.id, business]));
+    const strictMatches = activeCampaigns
+      .map((campaign) => {
+        const business = businessById.get(campaign.businessId);
+        if (!business) return null;
+        if (!matchesCampaignTargeting(campaign, business, prefs, availability, location, now)) return null;
+        const alignmentScore = calculateBusinessHabitAlignment(business, habits);
+        return { campaign, business, alignmentScore };
+      })
+      .filter((item): item is { campaign: Campaign; business: Business; alignmentScore: number } => item != null)
+      .sort((a, b) => b.alignmentScore - a.alignmentScore);
 
-    if (aligned.length) {
+    if (strictMatches.length) {
       const existingPlaces = new Set(
         deck
           .map((item) => `${(item.place?.name ?? '').toLowerCase()}_${(item.place?.address ?? '').toLowerCase()}`)
           .filter((value) => value !== '_'),
       );
 
-      const candidate = aligned.find((biz) => {
-        const key = `${biz.name.toLowerCase()}_${(biz.place.address ?? '').toLowerCase()}`;
+      const candidate = strictMatches.find(({ campaign, business }) => {
+        const locationName = campaign.targeting?.targetLocation?.name || business.place.name;
+        const locationAddress = campaign.targeting?.locationName || business.place.address;
+        const key = `${locationName.toLowerCase()}_${(locationAddress ?? '').toLowerCase()}`;
         return !existingPlaces.has(key);
       });
 
       if (candidate) {
-        let matchingHabit: Habit | undefined;
-        let bestScore = 0;
-        for (const habit of habits) {
-          const score = calculateBusinessHabitAlignment(candidate, [habit]);
-          if (score > bestScore) {
-            bestScore = score;
-            matchingHabit = habit;
-          }
-        }
         const promoted = enrichSuggestion(
-          attachEmojis(inferTags(businessToSuggestion(candidate, matchingHabit, bestScore))),
+          attachEmojis(inferTags(campaignToSuggestion(candidate.campaign, candidate.business))),
           availability,
           location,
         );
@@ -1202,6 +1450,50 @@ export const buildDeck = async (
         deck.splice(insertAt, 0, promoted);
         if (deck.length > DECK_SIZE) {
           deck.length = DECK_SIZE;
+        }
+      }
+    } else {
+      // Legacy fallback: if no strict campaign qualifies, keep one aligned generic business card.
+      const aligned = findAlignedBusinesses(
+        businessCatalog,
+        location,
+        habits,
+        Math.max(2, prefs.radiusKm),
+        0.45,
+        2,
+      );
+      if (aligned.length) {
+        const existingPlaces = new Set(
+          deck
+            .map((item) => `${(item.place?.name ?? '').toLowerCase()}_${(item.place?.address ?? '').toLowerCase()}`)
+            .filter((value) => value !== '_'),
+        );
+
+        const candidate = aligned.find((biz) => {
+          const key = `${biz.name.toLowerCase()}_${(biz.place.address ?? '').toLowerCase()}`;
+          return !existingPlaces.has(key);
+        });
+
+        if (candidate) {
+          let matchingHabit: Habit | undefined;
+          let bestScore = 0;
+          for (const habit of habits) {
+            const score = calculateBusinessHabitAlignment(candidate, [habit]);
+            if (score > bestScore) {
+              bestScore = score;
+              matchingHabit = habit;
+            }
+          }
+          const promoted = enrichSuggestion(
+            attachEmojis(inferTags(businessToSuggestion(candidate, matchingHabit, bestScore))),
+            availability,
+            location,
+          );
+          const insertAt = Math.min(3, Math.max(1, deck.length - 1));
+          deck.splice(insertAt, 0, promoted);
+          if (deck.length > DECK_SIZE) {
+            deck.length = DECK_SIZE;
+          }
         }
       }
     }

@@ -10,6 +10,12 @@ import { enableScreens } from 'react-native-screens';
 import { AppStateProvider, useAppState } from './src/state/AppState';
 import { RootStackParamList } from './src/navigation/types';
 import { AuthScreen } from './src/screens/AuthScreen';
+import { WelcomeScreen } from './src/screens/WelcomeScreen';
+import { CalendarPermissionScreen } from './src/screens/CalendarPermissionScreen';
+import { CalendarSelectScreen } from './src/screens/CalendarSelectScreen';
+import { LocationPermissionScreen } from './src/screens/LocationPermissionScreen';
+import { PreferencesScreen } from './src/screens/PreferencesScreen';
+import { OnboardingCompleteScreen } from './src/screens/OnboardingCompleteScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { CommunityIdeaFormScreen } from './src/screens/CommunityIdeaFormScreen';
 import { CommunityIdeaSuccessScreen } from './src/screens/CommunityIdeaSuccessScreen';
@@ -27,6 +33,7 @@ import { LibraryScreen } from './src/screens/LibraryScreen';
 import { BadgeDetailScreen } from './src/screens/BadgeDetailScreen';
 import { CompletionScreen } from './src/screens/CompletionScreen';
 import { BankScreen } from './src/screens/BankScreen';
+import { PremiumScreen } from './src/screens/PremiumScreen';
 import { BusinessCampaignFormScreen } from './src/screens/BusinessCampaignFormScreen';
 import { BusinessCampaignsListScreen } from './src/screens/BusinessCampaignsListScreen';
 import { BusinessAnalyticsScreen } from './src/screens/BusinessAnalyticsScreen';
@@ -82,6 +89,7 @@ const AppNavigator = () => {
   };
 
   const businessScreenOptions = state.isBusinessOnly ? { gestureEnabled: false } : undefined;
+  const smartCalendarScreenOptions = { gestureEnabled: false };
 
   const businessOnlyNavigator = (
     <Stack.Navigator
@@ -96,7 +104,7 @@ const AppNavigator = () => {
       <Stack.Screen name="BusinessAnalytics" component={BusinessAnalyticsScreen} options={businessScreenOptions} />
       <Stack.Screen name="BusinessAudience" component={BusinessAudienceScreen} options={businessScreenOptions} />
       <Stack.Screen name="BusinessSettings" component={BusinessSettingsScreen} options={businessScreenOptions} />
-      <Stack.Screen name="SmartCalendar" component={SmartCalendarScreen} options={businessScreenOptions} />
+      <Stack.Screen name="SmartCalendar" component={SmartCalendarScreen} options={smartCalendarScreenOptions} />
     </Stack.Navigator>
   );
 
@@ -107,13 +115,20 @@ const AppNavigator = () => {
       ) : (
         <Stack.Navigator
           key={navigatorKey}
-          initialRouteName="Home"
+          initialRouteName={state.onboardingComplete ? 'Home' : 'Welcome'}
           screenOptions={{ headerShown: false, cardStyle: { backgroundColor: appBackground } }}
         >
+          <Stack.Screen name="Welcome" component={WelcomeScreen} options={{ gestureEnabled: false }} />
+          <Stack.Screen name="CalendarPermission" component={CalendarPermissionScreen} options={{ gestureEnabled: false }} />
+          <Stack.Screen name="CalendarSelect" component={CalendarSelectScreen} options={{ gestureEnabled: false }} />
+          <Stack.Screen name="LocationPermission" component={LocationPermissionScreen} options={{ gestureEnabled: false }} />
+          <Stack.Screen name="Preferences" component={PreferencesScreen} options={{ gestureEnabled: false }} />
+          <Stack.Screen name="OnboardingComplete" component={OnboardingCompleteScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="Home" component={HomeScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="CommunityIdeaForm" component={CommunityIdeaFormScreen} />
           <Stack.Screen name="CommunityIdeaSuccess" component={CommunityIdeaSuccessScreen} />
           <Stack.Screen name="Bank" component={BankScreen} />
+          <Stack.Screen name="Premium" component={PremiumScreen} />
           <Stack.Screen name="Deck" component={DeckScreen} />
           <Stack.Screen name="Plan" component={PlanScreen} />
           <Stack.Screen name="ActivityChat" component={ActivityChatScreen} />
@@ -125,9 +140,10 @@ const AppNavigator = () => {
           <Stack.Screen name="BusinessCampaignsList" component={BusinessCampaignsListScreen} options={businessScreenOptions} />
           <Stack.Screen name="BusinessAnalytics" component={BusinessAnalyticsScreen} options={businessScreenOptions} />
           <Stack.Screen name="BusinessAudience" component={BusinessAudienceScreen} options={businessScreenOptions} />
+          <Stack.Screen name="BusinessSettings" component={BusinessSettingsScreen} options={businessScreenOptions} />
           <Stack.Screen name="HabitForm" component={HabitFormScreen} />
           <Stack.Screen name="Habits" component={HabitsScreen} />
-          <Stack.Screen name="SmartCalendar" component={SmartCalendarScreen} />
+          <Stack.Screen name="SmartCalendar" component={SmartCalendarScreen} options={smartCalendarScreenOptions} />
           <Stack.Screen name="Library" component={LibraryScreen} />
           <Stack.Screen name="BadgeDetail" component={BadgeDetailScreen} />
           <Stack.Screen name="Completion" component={CompletionScreen} />

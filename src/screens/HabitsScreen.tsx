@@ -12,6 +12,7 @@ import { Habit } from '../types';
 import {
   formatHabitFrequency,
   formatHabitTimeOfDay,
+  formatHabitWeekdays,
   isHabitDue,
   weeklyDots,
   weeklyCompletionCount,
@@ -22,6 +23,7 @@ import {
   getHabitUrgency,
 } from '../utils/habits';
 import { Commitment, DeckSuggestion } from '../types';
+import { formatClockTime } from '../utils/time';
 
 type Props = StackScreenProps<RootStackParamList, 'Habits'>;
 
@@ -175,14 +177,17 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
   }, [navigation]);
 
   const renderHabitCard = (habit: Habit) => {
-    const due = isHabitDue(habit);
+    const due = isHabitDue(habit, new Date(), state.location.timeZone);
     const dots = weeklyDots(habit);
     const weekCount = weeklyCompletionCount(habit);
     const streak = habit.currentStreak ?? 0;
     const longest = habit.longestStreak ?? 0;
     const isFlipped = flippedCards.has(habit.id);
     const weeklyHistory = buildWeeklyHistory(habit);
-      const urgency = getHabitUrgency(habit, new Date(), state.location.timeZone);
+    const urgency = getHabitUrgency(habit, new Date(), state.location.timeZone);
+    const weekdayLabel = formatHabitWeekdays(habit.scheduledWeekdays);
+    const timeLabel = habit.preferredTime ? `at ${formatClockTime(habit.preferredTime)}` : formatHabitTimeOfDay(habit.timeOfDay);
+    const scheduleLabel = weekdayLabel ? `${weekdayLabel} · ${timeLabel}` : `${formatHabitFrequency(habit.frequency)} · ${timeLabel}`;
 
     const front = (
       <View style={styles.habitCard}>
@@ -196,7 +201,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
               <Text style={styles.habitName}>{habit.name}</Text>
             </View>
             <Text style={styles.habitMeta}>
-              {formatHabitFrequency(habit.frequency)} · {formatHabitTimeOfDay(habit.timeOfDay)} · {habit.lengthMin}m
+              {scheduleLabel} · {habit.lengthMin}m
             </Text>
           </View>
           {streak > 0 && (
@@ -326,7 +331,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
         <View style={styles.headerContainer}>
           <View style={styles.headerTopRow}>
             <Pressable onPress={() => navigation.goBack()}>
-              <Text style={styles.back}>← Back</Text>
+              <Text style={styles.back}>Back</Text>
             </Pressable>
             <Pressable onPress={() => navigation.navigate('HabitForm')}>
               <View style={styles.addButtonSmall}>

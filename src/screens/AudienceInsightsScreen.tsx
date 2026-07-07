@@ -12,6 +12,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
+import { formatClockMinutes } from '../utils/time';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -56,7 +57,7 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>← Back</Text>
+            <Text style={styles.back}>Back</Text>
           </Pressable>
           <Text style={styles.title}>Audience Insights</Text>
           <View style={styles.spacer} />
@@ -81,7 +82,7 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
           </View>
           <View style={styles.card}>
             <Text style={styles.cardLabel}>Peak Activity</Text>
-            <Text style={styles.cardValue}>10:00 AM</Text>
+            <Text style={styles.cardValue}>{formatClockMinutes(10 * 60)}</Text>
             <Text style={styles.cardChange}>Weekday mornings</Text>
           </View>
         </View>

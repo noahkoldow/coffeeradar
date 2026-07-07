@@ -10,6 +10,7 @@ import {
   Alert,
   Image,
 } from 'react-native';
+import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeProvider';
 import { BusinessProfile, BusinessCategory } from '../types/business';
 import { BusinessHeader } from '../components/BusinessHeader';
@@ -39,10 +40,12 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const [loading, setLoading] = useState(false);
+  const [logoUploading, setLogoUploading] = useState(false);
 
   const [formData, setFormData] = useState({
     businessName: '',
     category: 'restaurant' as BusinessCategory,
+    logoUri: '',
     email: '',
     phone: '',
     website: '',
@@ -61,6 +64,33 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
   });
 
   const [errors, setErrors] = useState<Record<string, string>>({});
+
+  const handlePickLogo = async () => {
+    setLogoUploading(true);
+    try {
+      const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!permission.granted) {
+        Alert.alert('Permission required', 'Please allow photo access to upload your business logo.');
+        return;
+      }
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: true,
+        aspect: [1, 1],
+        quality: 0.9,
+      });
+
+      if (result.canceled || !result.assets.length) return;
+      const asset = result.assets[0];
+      setFormData((prev) => ({ ...prev, logoUri: asset.uri }));
+    } catch (error) {
+      console.error('Failed to pick business logo:', error);
+      Alert.alert('Error', 'Could not select a logo right now. Please try again.');
+    } finally {
+      setLogoUploading(false);
+    }
+  };
 
   const validate = () => {
     const newErrors: Record<string, string> = {};
@@ -85,6 +115,12 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
       onComplete({
         businessName: formData.businessName,
         category: formData.category,
+        logo: formData.logoUri
+          ? {
+              url: formData.logoUri,
+              uploadedAt: new Date().toISOString(),
+            }
+          : undefined,
         email: formData.email,
         phone: formData.phone,
         website: formData.website,
@@ -115,6 +151,28 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
       {/* Business Basics */}
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>Business Basics</Text>
+
+        <View style={styles.formGroup}>
+          <Text style={styles.label}>General Business Logo (Optional)</Text>
+          <View style={styles.logoPickerRow}>
+            <View style={styles.logoPreviewBox}>
+              {formData.logoUri ? (
+                <Image source={{ uri: formData.logoUri }} style={styles.logoPreviewImage} />
+              ) : (
+                <Text style={styles.logoPreviewPlaceholder}>LOGO</Text>
+              )}
+            </View>
+            <Pressable
+              onPress={handlePickLogo}
+              style={styles.logoPickerButton}
+              disabled={logoUploading}
+            >
+              <Text style={styles.logoPickerButtonText}>
+                {logoUploading ? 'Opening...' : formData.logoUri ? 'Change logo' : 'Upload logo'}
+              </Text>
+            </Pressable>
+          </View>
+        </View>
 
         <View style={styles.formGroup}>
           <Text style={styles.label}>Business Name *</Text>
@@ -368,6 +426,46 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     },
     formGroup: {
       marginBottom: 16,
+    },
+    logoPickerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 12,
+    },
+    logoPreviewBox: {
+      width: 56,
+      height: 56,
+      borderRadius: 12,
+      backgroundColor: theme.colors.backgroundAlt,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      alignItems: 'center',
+      justifyContent: 'center',
+      overflow: 'hidden',
+    },
+    logoPreviewImage: {
+      width: '100%',
+      height: '100%',
+      resizeMode: 'cover',
+    },
+    logoPreviewPlaceholder: {
+      fontFamily: theme.fonts.semibold,
+      fontSize: 11,
+      color: theme.colors.textMuted,
+      letterSpacing: 0.5,
+    },
+    logoPickerButton: {
+      paddingHorizontal: 12,
+      paddingVertical: 10,
+      borderRadius: 10,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.card,
+    },
+    logoPickerButtonText: {
+      fontFamily: theme.fonts.semibold,
+      fontSize: 13,
+      color: theme.colors.text,
     },
     label: {
       fontFamily: theme.fonts.semibold,

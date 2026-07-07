@@ -289,7 +289,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>← Back</Text>
+          <Text style={styles.back}>Back</Text>
         </Pressable>
       </View>
 

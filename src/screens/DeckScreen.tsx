@@ -42,12 +42,15 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
+  const [lastSlideIndex, setLastSlideIndex] = useState<number | null>(null);
+  const [canUndoSlide, setCanUndoSlide] = useState(false);
   const [confettiEmojis, setConfettiEmojis] = useState<string[]>([]);
   const [fallbackUsed, setFallbackUsed] = useState(false);
   const [gridUsed, setGridUsed] = useState(false);
   const [inspectedGridCard, setInspectedGridCard] = useState<DeckSuggestion | null>(null);
   const [showLoadingBackButton, setShowLoadingBackButton] = useState(false);
   const [timerNow, setTimerNow] = useState<number>(Date.now());
+  const planDate = route.params?.planDate ?? 'today';
 
   const INTERVAL_MIN = 30;
   const overlayVisible = !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow';
@@ -128,6 +131,22 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const uiAppear = useRef(new Animated.Value(0)).current;
   const schedulePreviewAnim = useRef(new Animated.Value(0)).current;
   const savedPopupAnim = useRef(new Animated.Value(0)).current;
+  const prevIndexRef = useRef(0);
+
+  useEffect(() => {
+    const prevIndex = prevIndexRef.current;
+    if (index > prevIndex) {
+      setLastSlideIndex(prevIndex);
+      setCanUndoSlide(true);
+    }
+    prevIndexRef.current = index;
+  }, [index]);
+
+  useEffect(() => {
+    setLastSlideIndex(null);
+    setCanUndoSlide(false);
+    prevIndexRef.current = 0;
+  }, [deck]);
 
   const withTimeout = async <T,>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> => {
     return Promise.race([
@@ -142,8 +161,6 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
     }
   };
-
-  const planDate = route.params?.planDate ?? 'today';
 
   const buildTomorrowFallbackAvailability = useCallback((): Availability => {
     const tomorrow = new Date();
@@ -305,39 +322,42 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
     let cursor = windowStart;
     let previous: DayEvent | undefined;
-    let best: {
+    type FitCandidate = {
       slotStart: Date;
       slotEnd: Date;
       slackMin: number;
       before?: DayEvent;
       after?: DayEvent;
       score: number;
-    } | null = null;
+    };
 
-    const considerGap = (gapStart: number, gapEnd: number, before?: DayEvent, after?: DayEvent) => {
+    let best: FitCandidate | null = null;
+
+    const buildCandidate = (gapStart: number, gapEnd: number, before?: DayEvent, after?: DayEvent): FitCandidate | null => {
       const gapMs = gapEnd - gapStart;
-      if (gapMs < requiredMs) return;
+      if (gapMs < requiredMs) return null;
       const slotStartMs = gapStart;
       const slotEndMs = slotStartMs + requiredMs;
       const slackMin = Math.round((gapMs - requiredMs) / 60000);
       const offsetMin = Math.round((slotStartMs - windowStart) / 60000);
       const score = slackMin * 1.5 + offsetMin * 0.08;
 
-      if (!best || score < best.score) {
-        best = {
-          slotStart: new Date(slotStartMs),
-          slotEnd: new Date(slotEndMs),
-          slackMin,
-          before,
-          after,
-          score,
-        };
-      }
+      return {
+        slotStart: new Date(slotStartMs),
+        slotEnd: new Date(slotEndMs),
+        slackMin,
+        before,
+        after,
+        score,
+      };
     };
 
     for (const event of events) {
       if (event.start > cursor) {
-        considerGap(cursor, event.start, previous, event);
+        const candidate = buildCandidate(cursor, event.start, previous, event);
+        if (candidate && (!best || candidate.score < best.score)) {
+          best = candidate;
+        }
       }
       if (event.end > cursor) {
         cursor = event.end;
@@ -346,16 +366,20 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
 
     if (cursor < windowEnd) {
-      considerGap(cursor, windowEnd, previous, undefined);
+      const candidate = buildCandidate(cursor, windowEnd, previous, undefined);
+      if (candidate && (!best || candidate.score < best.score)) {
+        best = candidate;
+      }
     }
 
     if (!best) return null;
+    const bestFit = best;
     return {
-      slotStart: best.slotStart,
-      slotEnd: best.slotEnd,
-      slackMin: best.slackMin,
-      before: best.before,
-      after: best.after,
+      slotStart: bestFit.slotStart,
+      slotEnd: bestFit.slotEnd,
+      slackMin: bestFit.slackMin,
+      before: bestFit.before,
+      after: bestFit.after,
     };
   }, [planDate, availability.start, availability.end, tomorrowContextEvents]);
 
@@ -417,7 +441,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     for (const item of businessShown) {
       logEvent('business_impression', {
         suggestion_id: item.id,
-        business_id: item.businessId,
+        business_id: item.businessId ?? null,
         title: item.title,
       });
       void syncBusinessMetric(item.businessId, 'impressions', 1);
@@ -454,11 +478,13 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         state.prefs,
         historyRef.current,
         state.habits,
+        state.smartTodos,
         undefined,
         state.tagAffinities,
         state.locationProfile,
         route.params?.filter,
         state.savedSuggestions,
+        state.userId,
         planDate === 'tomorrow' ? new Date(availability.start) : undefined,
       );
 
@@ -729,11 +755,11 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     setInspectedGridCard(null);
 
     if (navigation.canGoBack()) {
-      navigation.navigate('Plan', { commitment, suggestion: card });
+      navigation.navigate('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow' });
     } else {
-      navigation.replace('Plan', { commitment, suggestion: card });
+      navigation.replace('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow' });
     }
-  }, [gridUsed, navigation]);
+  }, [gridUsed, navigation, planDate]);
 
   const declineInspectedCard = useCallback(() => {
     setInspectedGridCard(null);
@@ -758,15 +784,6 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       setIndex((prev) => prev + 1);
     }
   };
-
-  // When the user runs out of cards, start preloading the next deck
-  // in the background so it's ready if they tap "New set"
-  useEffect(() => {
-    if (deck.length > 0 && index >= deck.length && !state.deckLoading) {
-      actions.preloadDeck(availability);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index, deck.length]);
 
   const handleSwipeLeft = () => {
     if (!current) return;
@@ -798,6 +815,15 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     logEvent('swipe_left', { suggestion_id: swiped.id, type: swiped.type });
   };
 
+  const handleUndoSlide = () => {
+    if (!canUndoSlide || lastSlideIndex === null || confirming || swipeLockRef.current) return;
+    const maxIndex = Math.max(deck.length - 1, 0);
+    const targetIndex = Math.max(0, Math.min(lastSlideIndex, maxIndex));
+    setIndex(targetIndex);
+    setCanUndoSlide(false);
+    setLastSlideIndex(null);
+  };
+
   // Quick-save the current suggestion to the library and advance the deck
   const handleSaveQuick = () => {
     if (!current) return;
@@ -808,7 +834,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     setHeartAnimIds((prev) => new Set([...prev, current.id]));
     
     // Use existing save flow which records affinities and analytics
-    saveCurrentSuggestion('saved_quick', false);
+    saveCurrentSuggestion('interest_signal', false);
     
     // Show saved popup
     setSavedPopupVisible(true);
@@ -831,7 +857,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
     if (suggestion.type === 'GO_OUT') {
       return `${suggestion.description}\n${suggestion.place?.address ?? ''}\nLeave by: ${
-        leaveBy ? new Date(leaveBy).toLocaleTimeString() : 'soon'
+        leaveBy ? formatTime(new Date(leaveBy)) : 'soon'
       } (public transport)`;
     }
     if (suggestion.type === 'EVENT' && suggestion.event) {
@@ -868,7 +894,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       if (picked.source === 'business') {
         await withTimeout(logEvent('business_click', {
           suggestion_id: picked.id,
-          business_id: picked.businessId,
+          business_id: picked.businessId ?? null,
           action: mode === 'later' ? 'schedule_later' : 'commit',
         }), 1200, undefined);
         void syncBusinessMetric(picked.businessId, 'clicks', 1);
@@ -1020,9 +1046,9 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         setIndex((prev) => prev + 1);
       } else {
         if (navigation.canGoBack()) {
-          navigation.navigate('Plan', { commitment, suggestion: picked });
+          navigation.navigate('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow' });
         } else {
-          navigation.replace('Plan', { commitment, suggestion: picked });
+          navigation.replace('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow' });
         }
       }
     } catch (error) {
@@ -1222,8 +1248,8 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                 {ranOutEarly ? '⚙️  Expand your interests' : 'Refine what to do'}
               </Text>
             </Pressable>
-            <Pressable onPress={goBack}>
-              <Text style={styles.backLink}>Back</Text>
+            <Pressable onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Home' }] })}>
+              <Text style={styles.backLink}>Home</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -1273,7 +1299,21 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
         <View style={styles.headerMetaRow}>
           <Text style={styles.headerText}>{freeLabel} {planDate === 'tomorrow' ? '' : area}</Text>
-          <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
+          <View style={styles.counterStack}>
+            <Pressable
+              onPress={handleUndoSlide}
+              disabled={!canUndoSlide || confirming}
+              style={({ pressed }) => [
+                styles.counterUndoButton,
+                (!canUndoSlide || confirming) && styles.counterUndoButtonDisabled,
+                pressed && canUndoSlide && !confirming && styles.counterUndoPressed,
+              ]}
+              hitSlop={8}
+            >
+              <Text style={[styles.counterUndoText, (!canUndoSlide || confirming) && styles.counterUndoTextDisabled]}>↶</Text>
+            </Pressable>
+            <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
+          </View>
         </View>
       </View>
 
@@ -1679,6 +1719,32 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     textAlign: 'right',
     alignSelf: 'center',
   },
+  counterStack: {
+    alignItems: 'flex-end',
+    justifyContent: 'center',
+  },
+  counterUndoButton: {
+    minHeight: 24,
+    minWidth: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 2,
+  },
+  counterUndoButtonDisabled: {
+    opacity: 0.35,
+  },
+  counterUndoPressed: {
+    transform: [{ scale: 0.94 }],
+  },
+  counterUndoText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 18,
+    color: theme.colors.textMuted,
+    lineHeight: 20,
+  },
+  counterUndoTextDisabled: {
+    color: theme.colors.border,
+  },
   headerMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1778,7 +1844,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: theme.radius.md,
     padding: theme.spacing.sm,
     minHeight: 72,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
   },
   previewBlockMuted: {
     backgroundColor: theme.colors.backgroundAlt,

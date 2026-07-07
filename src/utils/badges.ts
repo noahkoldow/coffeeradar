@@ -9,13 +9,19 @@ export type BadgeProgress = BadgeDefinition & {
   nextTarget: number | null;
 };
 
+const MINUTES_PER_ACTIVITY_UNIT = 50;
+
+export const badgeLevelThresholdMinutes = (levels: number[]): number[] =>
+  levels.map((level) => level * MINUTES_PER_ACTIVITY_UNIT);
+
 const computeLevel = (count: number, levels: number[]) => {
+  const minuteThresholds = badgeLevelThresholdMinutes(levels);
   let level = 0;
-  for (const threshold of levels) {
+  for (const threshold of minuteThresholds) {
     if (count >= threshold) level += 1;
   }
-  const currentTarget = level === 0 ? 0 : levels[level - 1];
-  const nextTarget = level < levels.length ? levels[level] : null;
+  const currentTarget = level === 0 ? 0 : minuteThresholds[level - 1];
+  const nextTarget = level < minuteThresholds.length ? minuteThresholds[level] : null;
   const progress = nextTarget
     ? (count - currentTarget) / Math.max(1, nextTarget - currentTarget)
     : 1;
@@ -26,12 +32,17 @@ export const buildBadgeProgress = (activityLog: ActivityLog[], habits?: Habit[])
   return badgeDefinitions.map((badge) => {
     let count: number;
     if (badge.id === 'habits') {
-      // Count total habit completions across all habits
-      count = (habits ?? []).reduce((sum, h) => sum + (h.completionHistory?.length ?? 0), 0);
+      // Track total time spent on habits.
+      count = (habits ?? []).reduce((sum, h) => {
+        const completionCount = h.completionHistory?.length ?? 0;
+        return sum + completionCount * (h.lengthMin ?? 0);
+      }, 0);
     } else {
-      count = activityLog.filter((entry) => (
-        entry.tags?.some((tag) => badge.tags.includes(tag))
-      )).length;
+      count = activityLog.reduce((sum, entry) => {
+        const matchesBadge = entry.tags?.some((tag) => badge.tags.includes(tag));
+        if (!matchesBadge) return sum;
+        return sum + (entry.durationMin ?? 0);
+      }, 0);
     }
     const { level, currentTarget, nextTarget, progress } = computeLevel(count, badge.levels);
     return {

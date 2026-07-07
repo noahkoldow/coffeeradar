@@ -10,7 +10,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { submitCommunityIdea } from '../services/communityIdeas';
 import { useAppState } from '../state/AppState';
 import { DeckSuggestion } from '../types';
-import { SuggestionType } from '../types';
+import { HabitTimeOfDay, SuggestionType } from '../types';
 
 type Props = StackScreenProps<RootStackParamList, 'CommunityIdeaForm'>;
 
@@ -18,6 +18,13 @@ const IDEA_TYPES: Array<{ label: string; value: SuggestionType }> = [
   { label: 'At home', value: 'AT_HOME' },
   { label: 'Go out', value: 'GO_OUT' },
   { label: 'Event', value: 'EVENT' },
+];
+
+const TIME_OF_DAY_OPTIONS: Array<{ label: string; value: HabitTimeOfDay }> = [
+  { label: 'Any time', value: 'any' },
+  { label: 'Morning', value: 'morning' },
+  { label: 'Afternoon', value: 'afternoon' },
+  { label: 'Evening', value: 'evening' },
 ];
 
 export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
@@ -31,7 +38,7 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
   const [description, setDescription] = useState('');
   const [type, setType] = useState<SuggestionType>('AT_HOME');
   const [durationMin, setDurationMin] = useState('30');
-  const [cta, setCta] = useState('Try it');
+  const [timeOfDay, setTimeOfDay] = useState<HabitTimeOfDay>('any');
   const [tags, setTags] = useState('');
   const [emojiLine, setEmojiLine] = useState('');
   const [placeName, setPlaceName] = useState('');
@@ -81,9 +88,10 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
         source: 'community',
         title: cleanTitle,
         hook: cleanHook,
-        cta: cta.trim() || 'Try it now',
+        cta: 'Try it now',
         description: cleanDescription,
         durationMin: parsedDuration,
+        timeOfDay,
         tags: tags.split(',').map((item) => item.trim()).filter((item) => item.length > 0),
         emojis: emojiLine.split(' ').map((item) => item.trim()).filter((item) => item.length > 0),
         place: cleanPlaceName ? {
@@ -104,7 +112,7 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
         description: cleanDescription,
         type,
         durationMin: parsedDuration,
-        cta: cta.trim() || undefined,
+        timeOfDay,
         tags: tags.split(',').map((item) => item.trim()).filter((item) => item.length > 0),
         emojis: emojiLine.split(' ').map((item) => item.trim()).filter((item) => item.length > 0),
         place: cleanPlaceName ? {
@@ -143,7 +151,7 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
       <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={styles.flex}>
         <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.lg, paddingBottom: insets.bottom + theme.spacing.xl }]}>
           <Pressable onPress={() => navigation.goBack()} style={styles.backLink}>
-            <Text style={styles.backText}>← Back</Text>
+            <Text style={styles.backText}>Back</Text>
           </Pressable>
 
           <Text style={styles.title}>Share your idea</Text>
@@ -195,8 +203,21 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
               <TextInput value={durationMin} onChangeText={setDurationMin} keyboardType="numeric" placeholder="30" placeholderTextColor={theme.colors.textMuted} style={styles.input} />
             </View>
             <View style={[styles.section, styles.half]}> 
-              <Text style={styles.label}>CTA</Text>
-              <TextInput value={cta} onChangeText={setCta} placeholder="Try it" placeholderTextColor={theme.colors.textMuted} style={styles.input} />
+              <Text style={styles.label}>Best time of day</Text>
+              <View style={styles.typeRow}>
+                {TIME_OF_DAY_OPTIONS.map((option) => {
+                  const selected = timeOfDay === option.value;
+                  return (
+                    <Pressable
+                      key={option.value}
+                      onPress={() => setTimeOfDay(option.value)}
+                      style={[styles.typeChip, selected && styles.typeChipActive]}
+                    >
+                      <Text style={[styles.typeChipText, selected && styles.typeChipTextActive]}>{option.label}</Text>
+                    </Pressable>
+                  );
+                })}
+              </View>
             </View>
           </View>
 

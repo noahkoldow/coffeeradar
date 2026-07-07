@@ -216,7 +216,7 @@ export const BusinessCampaignsListScreen: React.FC<Props> = ({ navigation }) => 
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>← Back</Text>
+          <Text style={styles.backButton}>Back</Text>
         </Pressable>
         <Text style={styles.headerTitle}>Manage Campaigns</Text>
         <Pressable onPress={() => navigation.navigate('BusinessCampaignForm')}>

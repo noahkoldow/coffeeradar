@@ -85,6 +85,7 @@ export const PrimaryButton: React.FC<Props> = ({ label, onPress, disabled, style
 const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   button: {
     backgroundColor: theme.colors.accent,
+    paddingHorizontal: theme.spacing.xl,
     paddingVertical: theme.spacing.lg,
     borderRadius: theme.radius.lg,
     alignItems: 'center',

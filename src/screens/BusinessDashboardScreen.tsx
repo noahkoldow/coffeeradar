@@ -96,8 +96,25 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
   const handleReviewIdeas = () => {
     navigation.navigate('ApprovalQueue');
   };
+  const navigateInParentChain = (routeName: keyof RootStackParamList): boolean => {
+    let currentNav: any = navigation;
+
+    while (currentNav) {
+      const state = currentNav.getState?.();
+      if (state?.routeNames?.includes(routeName)) {
+        currentNav.navigate(routeName);
+        return true;
+      }
+      currentNav = currentNav.getParent?.();
+    }
+
+    return false;
+  };
+
   const handleOpenBusinessSettings = () => {
-    navigation.navigate('BusinessSettings');
+    if (!navigateInParentChain('BusinessSettings')) {
+      Alert.alert('Navigation error', 'Business settings are currently unavailable.');
+    }
   };
 
   const kpiData = [

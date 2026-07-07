@@ -1,11 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Animated, Image, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Animated, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { Chip } from '../components/Chip';
 import WakeWindowRange from '../components/WakeWindowRange';
+import { BrandCollabLockup } from '../components/BrandCollabLockup';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
@@ -13,7 +14,6 @@ import { normalizeClockTime } from '../utils/time';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
-const bitsLogo = require('../../assets/logo.png');
 
 type Props = StackScreenProps<RootStackParamList, 'Preferences'>;
 
@@ -135,7 +135,7 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
     >
       <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <Animated.View style={[styles.content, { opacity: contentOpacity, transform: [{ translateY: contentTranslate }] }]}>
-          <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+          <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
           <Text style={styles.stepLabel}>Step {step + 1} of 2</Text>
           <Text style={styles.title}>{step === 0 ? 'Pick your interests' : 'Shape the rest'}</Text>
           <Text style={styles.subtitle}>
@@ -271,8 +271,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: theme.spacing.xxl,
   },
   logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
+    alignSelf: 'flex-start',
     marginBottom: theme.spacing.lg,
   },
   stepLabel: {

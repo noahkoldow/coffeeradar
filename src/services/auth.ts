@@ -3,6 +3,7 @@ import {
   GoogleAuthProvider,
   OAuthProvider,
   createUserWithEmailAndPassword,
+  getAdditionalUserInfo,
   onAuthStateChanged,
   signInWithCredential,
   signInWithEmailAndPassword,
@@ -39,6 +40,10 @@ const APPLE_DISCOVERY: AuthSession.DiscoveryDocument = {
 const FIREBASE_REDIRECT_URI =
   'https://coffeeradar-415f2.firebaseapp.com/__/auth/handler';
 
+type AuthFlowResult = {
+  isNewUser: boolean;
+};
+
 export const isAuthReady = (): boolean => firebaseEnabled && !!auth;
 
 export const subscribeAuthState = (
@@ -54,17 +59,19 @@ export const subscribeAuthState = (
 export const signInWithEmail = async (
   email: string,
   password: string,
-): Promise<void> => {
+): Promise<{ isNewUser: false }> => {
   if (!auth) throw new Error('Firebase not configured');
   await signInWithEmailAndPassword(auth, email.trim(), password);
+  return { isNewUser: false };
 };
 
 export const signUpWithEmail = async (
   email: string,
   password: string,
-): Promise<void> => {
+): Promise<{ isNewUser: true }> => {
   if (!auth) throw new Error('Firebase not configured');
   await createUserWithEmailAndPassword(auth, email.trim(), password);
+  return { isNewUser: true };
 };
 
 export const signOutUser = async (): Promise<void> => {
@@ -73,7 +80,7 @@ export const signOutUser = async (): Promise<void> => {
 };
 
 /* ── Google Sign-In ────────────────────────────────────── */
-export const signInWithGoogle = async (): Promise<void> => {
+export const signInWithGoogle = async (): Promise<AuthFlowResult> => {
   if (!auth) throw new Error('Firebase not configured');
 
   const redirectUri = AuthSession.makeRedirectUri({ scheme: 'bits' });
@@ -106,7 +113,9 @@ export const signInWithGoogle = async (): Promise<void> => {
   );
 
   const credential = GoogleAuthProvider.credential(tokenResult.idToken);
-  await signInWithCredential(auth, credential);
+  const userCredential = await signInWithCredential(auth, credential);
+  const isNewUser = getAdditionalUserInfo(userCredential)?.isNewUser === true;
+  return { isNewUser };
 };
 
 /* ── Apple Sign-In ─────────────────────────────────────── */
@@ -126,7 +135,7 @@ const generateNonce = async () => {
  * Falls back to a web-based OAuth flow that works inside Expo Go
  * (where the native audience doesn't match your Firebase project).
  */
-export const signInWithApple = async (): Promise<void> => {
+export const signInWithApple = async (): Promise<AuthFlowResult> => {
   if (!auth) throw new Error('Firebase not configured');
 
   const rawNonce = await generateNonce();
@@ -153,8 +162,9 @@ export const signInWithApple = async (): Promise<void> => {
       idToken: appleCredential.identityToken,
       rawNonce,
     });
-    await signInWithCredential(auth, oauthCredential);
-    return; // success — done!
+    const userCredential = await signInWithCredential(auth, oauthCredential);
+    const isNewUser = getAdditionalUserInfo(userCredential)?.isNewUser === true;
+    return { isNewUser }; // success — done!
   } catch (nativeErr: any) {
     // If the user cancelled, just re-throw
     if (nativeErr?.code === 'ERR_REQUEST_CANCELED') throw nativeErr;
@@ -190,7 +200,9 @@ export const signInWithApple = async (): Promise<void> => {
       idToken,
       rawNonce,
     });
-    await signInWithCredential(auth, oauthCredential);
+    const userCredential = await signInWithCredential(auth, oauthCredential);
+    const isNewUser = getAdditionalUserInfo(userCredential)?.isNewUser === true;
+    return { isNewUser };
   } else {
     throw new Error(
       'Apple web sign-in did not return an identity token. ' +

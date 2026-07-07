@@ -1,8 +1,9 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Image, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { BrandCollabLockup } from '../components/BrandCollabLockup';
 import { useTheme } from '../theme/ThemeProvider';
 import {
   signInWithEmail,
@@ -16,7 +17,6 @@ import { firebaseEnabled } from '../services/firebase';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
-const bitsLogo = require('../../assets/logo.png');
 
 type Mode = 'signup' | 'login';
 
@@ -47,11 +47,11 @@ export const AuthScreen: React.FC = () => {
     try {
       if (mode === 'signup') {
         await signUpWithEmail(email, password);
+        // New accounts must complete onboarding to set preferences and permissions.
+        await persistOnboardingComplete(false);
       } else {
         await signInWithEmail(email, password);
       }
-      // Mark onboarding as complete so user goes directly to Home
-      await persistOnboardingComplete(true);
     } catch (error: any) {
         Alert.alert(mode === 'signup' ? 'Sign up failed' : 'Log in failed', error?.message ?? 'Try again.');
     } finally {
@@ -62,8 +62,8 @@ export const AuthScreen: React.FC = () => {
   const handleGoogle = async () => {
     setLoading(true);
     try {
-      await signInWithGoogle();
-      await persistOnboardingComplete(true);
+      const { isNewUser } = await signInWithGoogle();
+      await persistOnboardingComplete(!isNewUser);
     } catch (error: any) {
       if (!error?.message?.includes('cancelled')) {
         Alert.alert('Google sign-in failed', error?.message ?? 'Try again.');
@@ -76,8 +76,8 @@ export const AuthScreen: React.FC = () => {
   const handleApple = async () => {
     setLoading(true);
     try {
-      await signInWithApple();
-      await persistOnboardingComplete(true);
+      const { isNewUser } = await signInWithApple();
+      await persistOnboardingComplete(!isNewUser);
     } catch (error: any) {
       if ((error as any)?.code !== 'ERR_REQUEST_CANCELED') {
         Alert.alert('Apple sign-in failed', error?.message ?? 'Try again.');
@@ -93,7 +93,7 @@ export const AuthScreen: React.FC = () => {
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
       <View style={styles.content}>
-        <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+        <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
         <Text style={styles.title}>Welcome</Text>
         <Text style={styles.subtitle}>Create an account to personalize what you do next.</Text>
 
@@ -162,14 +162,21 @@ export const AuthScreen: React.FC = () => {
             </Pressable>
           )}
 
-          <Pressable
-            style={[styles.socialButton, styles.googleButton]}
-            onPress={handleGoogle}
-            disabled={loading}
+          <LinearGradient
+            colors={['#4285F44D', '#EA43354D', '#FBBC054D', '#34A8534D']}
+            start={{ x: 0, y: 0.5 }}
+            end={{ x: 1, y: 0.5 }}
+            style={styles.googleBorder}
           >
-            <Text style={styles.googleIcon}>G</Text>
-            <Text style={[styles.socialLabel, styles.googleLabel]}>Continue with Google</Text>
-          </Pressable>
+            <Pressable
+              style={[styles.socialButton, styles.googleButton]}
+              onPress={handleGoogle}
+              disabled={loading}
+            >
+              <Text style={styles.googleIcon}>G</Text>
+              <Text style={[styles.socialLabel, styles.googleLabel]}>Continue with Google</Text>
+            </Pressable>
+          </LinearGradient>
         </View>
 
         {!firebaseEnabled && (
@@ -190,8 +197,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: theme.spacing.lg,
   },
   logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
+    alignSelf: 'flex-start',
   },
   title: {
     fontFamily: theme.fonts.heading,
@@ -220,9 +226,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     backgroundColor: '#000000',
   },
   googleButton: {
-    backgroundColor: theme.colors.card,
-    borderWidth: 1,
-    borderColor: theme.colors.border,
+    backgroundColor: '#FFFFFF',
+  },
+  googleBorder: {
+    padding: 1,
+    borderRadius: theme.radius.md,
   },
   socialLabel: {
     fontFamily: theme.fonts.semibold,
@@ -271,6 +279,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: 10,
     borderRadius: theme.radius.md,
     alignItems: 'center',
+    backgroundColor: 'transparent',
   },
   toggleActive: {
     backgroundColor: theme.colors.accent,
@@ -293,7 +302,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: theme.spacing.sm,
     fontFamily: theme.fonts.body,
     color: theme.colors.text,
-    backgroundColor: theme.colors.card,
+    backgroundColor: '#FFFFFF',
   },
   notice: {
     fontFamily: theme.fonts.body,

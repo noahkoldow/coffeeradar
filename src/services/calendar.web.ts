@@ -57,10 +57,14 @@ export const updatePlanEventEnd = async (_eventId: string, _newEndDate: Date): P
   return;
 };
 
+export const updatePlanEventTimeRange = async (_eventId: string, _newStartDate: Date, _newEndDate: Date): Promise<void> => {
+  return;
+};
+
 export const deletePlanEvent = async (): Promise<void> => {
   return;
 };
 
-export const getUpcomingEvents = async (): Promise<Array<{ title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
+export const getUpcomingEvents = async (): Promise<Array<{ id?: string; title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
   return [];
 };

@@ -1,6 +1,8 @@
 const MINUTE_MS = 60 * 1000;
 let preferredTimeZone: string | null = null;
 let deviceTimezoneInitialized = false;
+const TWELVE_HOUR_TIMEZONE_PREFIXES = ['America/', 'Australia/', 'Pacific/'];
+const TWENTY_FOUR_HOUR_TIMEZONE_PREFIXES = ['Europe/', 'Africa/', 'Asia/', 'Atlantic/', 'Etc/', 'Indian/', 'Antarctica/', 'UTC'];
 
 export type Daypart = 'morning' | 'afternoon' | 'evening' | 'night';
 
@@ -33,6 +35,10 @@ export const initializeDeviceTimeZone = (): void => {
 };
 
 export const setPreferredTimeZone = (timeZone?: string | null): void => {
+  if (timeZone == null) {
+    preferredTimeZone = null;
+    return;
+  }
   if (timeZone && timeZone.trim().length > 0) {
     preferredTimeZone = timeZone;
   }
@@ -89,17 +95,56 @@ const getTimeZoneFormatter = (timeZone?: string | null, options: Intl.DateTimeFo
   return new Intl.DateTimeFormat('en-AU', { timeZone: resolved, ...options });
 };
 
+const clockModeFromTimeZone = (resolvedTimeZone: string): boolean | null => {
+  if (TWENTY_FOUR_HOUR_TIMEZONE_PREFIXES.some((prefix) => resolvedTimeZone.startsWith(prefix))) {
+    return true;
+  }
+  if (TWELVE_HOUR_TIMEZONE_PREFIXES.some((prefix) => resolvedTimeZone.startsWith(prefix))) {
+    return false;
+  }
+  return null;
+};
+
 const prefers24HourClock = (timeZone?: string | null): boolean => {
   const resolved = resolveTimeZone(timeZone);
-  return resolved.startsWith('Europe/');
+  const regionalPreference = clockModeFromTimeZone(resolved);
+  if (regionalPreference != null) return regionalPreference;
+
+  const localePreference = new Intl.DateTimeFormat(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  }).resolvedOptions().hour12;
+  return localePreference === false;
 };
 
 export const formatTime = (date: Date, timeZone?: string | null): string => {
   return getTimeZoneFormatter(timeZone, {
     hour: 'numeric',
     minute: '2-digit',
-    hour12: prefers24HourClock(timeZone) ? false : undefined,
+    hour12: !prefers24HourClock(timeZone),
   }).format(date);
+};
+
+export const formatClockMinutes = (minutes: number, timeZone?: string | null): string => {
+  const safeMinutes = ((Math.round(minutes) % (24 * 60)) + (24 * 60)) % (24 * 60);
+  const hour24 = Math.floor(safeMinutes / 60);
+  const minute = safeMinutes % 60;
+
+  if (prefers24HourClock(timeZone)) {
+    return `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
+  }
+
+  const hour12 = hour24 % 12 || 12;
+  const meridiem = hour24 >= 12 ? 'PM' : 'AM';
+  return `${hour12}:${String(minute).padStart(2, '0')} ${meridiem}`;
+};
+
+export const formatClockTime = (value?: string | null, timeZone?: string | null, fallback = '07:00'): string => {
+  const minutes = parseClockTime(value ?? fallback);
+  if (minutes == null) {
+    return formatClockMinutes(parseClockTime(fallback) ?? 7 * 60, timeZone);
+  }
+  return formatClockMinutes(minutes, timeZone);
 };
 
 export const getTimeZoneParts = (date: Date, timeZone?: string | null): {

@@ -1,0 +1,288 @@
+export type TodoPhotoImportItem = {
+  title: string;
+  notes?: string;
+  deadlineAt?: string | null;
+  dueText?: string;
+};
+
+type GeminiTodoItem = {
+  title?: string;
+  notes?: string;
+  dueAt?: string | null;
+  dueText?: string | null;
+};
+
+type GeminiTodoPayload = {
+  todos?: GeminiTodoItem[];
+};
+
+const GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY;
+const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
+const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+const MAX_IMPORTED_TODOS = 20;
+
+const normalizeTodoTitleKey = (value: string): string => value
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const to24Hour = (hourRaw: number, meridiem?: string): number => {
+  const boundedHour = Math.max(0, Math.min(23, hourRaw));
+  if (!meridiem) return boundedHour;
+
+  const normalized = meridiem.toLowerCase();
+  if (normalized === 'am') {
+    return hourRaw === 12 ? 0 : boundedHour;
+  }
+  if (normalized === 'pm') {
+    return hourRaw === 12 ? 12 : Math.max(0, Math.min(23, hourRaw + 12));
+  }
+  return boundedHour;
+};
+
+const parseDueTextFallback = (value?: string | null): string | null => {
+  const input = String(value ?? '').trim();
+  if (!input) return null;
+
+  const hasExplicitTime = /(?:\d{1,2}:\d{2}(?:\s*[AaPp][Mm])?|\d{1,2}\s*[AaPp][Mm]|\d{1,2}\s*[Hh](?:\s|$))/.test(input);
+  if (!hasExplicitTime) return null;
+
+  const isoLike = /(\d{4})[\/.\-](\d{1,2})[\/.\-](\d{1,2})(?:[\s,T]+(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?)?/;
+  const euroLike = /(\d{1,2})[\/.\-](\d{1,2})(?:[\/.\-](\d{2,4}))?(?:[\s,T]+(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?)?/;
+  const timeOnlyLike = /(\d{1,2})(?::(\d{2}))?\s*([AaPp][Mm])?/;
+
+  const fromParts = (
+    year: number,
+    month: number,
+    day: number,
+    hour?: number,
+    minute?: number,
+  ): string | null => {
+    const parsed = new Date(
+      year,
+      month - 1,
+      day,
+      Number.isFinite(hour) ? Number(hour) : 0,
+      Number.isFinite(minute) ? Number(minute) : 0,
+      0,
+      0,
+    );
+    if (
+      Number.isNaN(parsed.getTime())
+      || parsed.getFullYear() !== year
+      || parsed.getMonth() !== month - 1
+      || parsed.getDate() !== day
+    ) {
+      return null;
+    }
+    return parsed.toISOString();
+  };
+
+  const isoMatch = isoLike.exec(input);
+  if (isoMatch) {
+    const year = Number(isoMatch[1]);
+    const month = Number(isoMatch[2]);
+    const day = Number(isoMatch[3]);
+    const hour = isoMatch[4] ? to24Hour(Number(isoMatch[4]), isoMatch[6]) : undefined;
+    const minute = isoMatch[5] ? Number(isoMatch[5]) : undefined;
+    return fromParts(year, month, day, hour, minute);
+  }
+
+  const euroMatch = euroLike.exec(input);
+  if (euroMatch) {
+    const day = Number(euroMatch[1]);
+    const month = Number(euroMatch[2]);
+    const now = new Date();
+    const yearRaw = euroMatch[3] ? Number(euroMatch[3]) : now.getFullYear();
+    let year = yearRaw < 100 ? 2000 + yearRaw : yearRaw;
+    const hour = euroMatch[4] ? to24Hour(Number(euroMatch[4]), euroMatch[6]) : undefined;
+    const minute = euroMatch[5] ? Number(euroMatch[5]) : undefined;
+    let parsed = fromParts(year, month, day, hour, minute);
+    if (!euroMatch[3] && parsed) {
+      const parsedMs = new Date(parsed).getTime();
+      const yesterdayMs = Date.now() - (24 * 60 * 60 * 1000);
+      if (parsedMs < yesterdayMs) {
+        year += 1;
+        parsed = fromParts(year, month, day, hour, minute);
+      }
+    }
+    if (parsed) return parsed;
+  }
+
+  const timeOnlyMatch = timeOnlyLike.exec(input);
+  if (timeOnlyMatch) {
+    const now = new Date();
+    const hour = to24Hour(Number(timeOnlyMatch[1]), timeOnlyMatch[3]);
+    const minute = timeOnlyMatch[2] ? Number(timeOnlyMatch[2]) : 0;
+    const parsed = fromParts(
+      now.getFullYear(),
+      now.getMonth() + 1,
+      now.getDate(),
+      hour,
+      minute,
+    );
+    if (parsed) return parsed;
+  }
+
+  const normalizedInput = input.replace(/(\d{1,2})\s*[Hh]\b/g, '$1:00');
+  const parsed = new Date(normalizedInput);
+  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  return null;
+};
+
+const normalizeDeadline = (value?: string | null): string | null => {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return null;
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const hasExplicitTime = /(?:T\d{2}:\d{2}|\s\d{1,2}:\d{2}|\d{1,2}\s*[AaPp][Mm]|\d{1,2}\s*[Hh](?:\s|$))/.test(trimmed);
+  return hasExplicitTime ? parsed.toISOString() : null;
+};
+
+const parseJsonPayload = (text: string): GeminiTodoPayload | null => {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+
+  const withoutFence = trimmed
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+
+  const attempts = [
+    withoutFence,
+    (withoutFence.match(/\{[\s\S]*\}/m) || [])[0],
+  ].filter((candidate): candidate is string => Boolean(candidate));
+
+  for (const candidate of attempts) {
+    try {
+      return JSON.parse(candidate) as GeminiTodoPayload;
+    } catch {
+      // Try next candidate
+    }
+  }
+
+  return null;
+};
+
+const buildVisionUrl = (model: string): string => (
+  `${GEMINI_BASE_URL}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY ?? '')}`
+);
+
+const normalizeTodos = (payload: GeminiTodoPayload | null): TodoPhotoImportItem[] => {
+  const seenTitles = new Set<string>();
+
+  return (payload?.todos ?? [])
+    .map((todo) => {
+      const title = String(todo.title ?? '').trim();
+      const notes = String(todo.notes ?? '').trim();
+      const dueText = String(todo.dueText ?? '').trim();
+      const dueAtRaw = String(todo.dueAt ?? '').trim();
+      const dueAt = normalizeDeadline(dueAtRaw || null);
+      const dueFromDueAtText = dueAt ? null : parseDueTextFallback(dueAtRaw || null);
+      const combinedDueText = [dueText, title, notes]
+        .filter((part) => part.trim().length > 0)
+        .join(' ');
+      const dueFromCombinedText = (dueAt || dueFromDueAtText) ? null : parseDueTextFallback(combinedDueText);
+      return {
+        title,
+        notes: notes || undefined,
+        deadlineAt: dueAt ?? dueFromDueAtText ?? dueFromCombinedText,
+        dueText: dueText || undefined,
+      };
+    })
+    .filter((todo) => {
+      if (!todo.title) return false;
+      const key = normalizeTodoTitleKey(todo.title);
+      if (!key) return false;
+      if (seenTitles.has(key)) return false;
+      seenTitles.add(key);
+      return true;
+    })
+    .slice(0, MAX_IMPORTED_TODOS);
+};
+
+const buildPrompt = (): string => [
+  'Extract every TODO item from this photo.',
+  'Return only JSON with this exact schema:',
+  '{"todos":[{"title":"string","notes":"string|null","dueAt":"ISO datetime|null","dueText":"string|null"}]}',
+  'Rules:',
+  '- Do not include markdown or explanations.',
+  '- Keep titles short and actionable.',
+  '- If exact date and time are visible, set dueAt using full ISO datetime.',
+  '- If only date is visible without a time, keep dueAt null and put the raw text in dueText.',
+  '- If only time is visible and date is unknown, keep dueAt null and fill dueText.',
+  '- If no due date is visible, set both dueAt and dueText to null.',
+  '- Never invent midnight when a time is missing.',
+  '- Ignore non-task decorative text.',
+].join('\n');
+
+const callGeminiTodoVision = async (imageBase64: string, mimeType: string): Promise<TodoPhotoImportItem[]> => {
+  let lastError: Error | null = null;
+
+  for (const model of GEMINI_MODELS) {
+    try {
+      const response = await fetch(buildVisionUrl(model), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [
+            {
+              role: 'user',
+              parts: [
+                { text: buildPrompt() },
+                {
+                  inlineData: {
+                    mimeType,
+                    data: imageBase64,
+                  },
+                },
+              ],
+            },
+          ],
+          generationConfig: {
+            temperature: 0.1,
+            responseMimeType: 'application/json',
+            maxOutputTokens: 1600,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const body = await response.text();
+        throw new Error(`Gemini vision request failed (${response.status}): ${body.slice(0, 220)}`);
+      }
+
+      const payload = await response.json();
+      const text = payload?.candidates?.[0]?.content?.parts
+        ?.map((part: { text?: string }) => part?.text ?? '')
+        .join('') ?? '';
+      const parsed = parseJsonPayload(text);
+      const todos = normalizeTodos(parsed);
+      if (todos.length > 0) return todos;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error('Failed to extract todos from photo.');
+    }
+  }
+
+  if (lastError) throw lastError;
+  return [];
+};
+
+export const importTodosFromPhoto = async (
+  imageBase64: string,
+  mimeType = 'image/jpeg',
+): Promise<TodoPhotoImportItem[]> => {
+  if (!GEMINI_KEY) {
+    throw new Error('Missing EXPO_PUBLIC_GEMINI_API_KEY.');
+  }
+  if (!imageBase64?.trim()) {
+    return [];
+  }
+
+  return callGeminiTodoVision(imageBase64, mimeType);
+};

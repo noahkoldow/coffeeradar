@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { View, Text, StyleSheet, LayoutChangeEvent, PanResponder } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
+import { formatClockMinutes, formatClockTime } from '../utils/time';
 
 interface Props {
   start: string; // HH:MM
@@ -136,12 +137,12 @@ export const WakeWindowRange: React.FC<Props> = ({ start, end, onChange, step = 
   const left = width ? (displayStartM / total) * width : 0;
   const right = width ? (displayEndM / total) * width : 0;
   const fillWidth = Math.max(8, right - left);
-  const sleepLabel = `${toClock(roundToStep(endM >= DAY_MINUTES ? endM - DAY_MINUTES : endM, step))}${endM >= DAY_MINUTES ? ' next day' : ''}`;
+  const sleepLabel = `${formatClockTime(toClock(roundToStep(endM >= DAY_MINUTES ? endM - DAY_MINUTES : endM, step)))}${endM >= DAY_MINUTES ? ' next day' : ''}`;
 
   return (
     <View onLayout={handleLayout} style={styles.container}>
       <View style={styles.labelsRow}>
-        <Text style={styles.label}>Wake: {toClock(roundToStep(startM, step))}</Text>
+        <Text style={styles.label}>Wake: {formatClockTime(toClock(roundToStep(startM, step)))}</Text>
         <Text style={styles.label}>Sleep: {sleepLabel}</Text>
       </View>
 
@@ -170,10 +171,10 @@ export const WakeWindowRange: React.FC<Props> = ({ start, end, onChange, step = 
       </View>
 
       <View style={styles.rangeLabels}>
-        <Text style={styles.rangeLabel}>00:00</Text>
-        <Text style={styles.rangeLabel}>12:00</Text>
-        <Text style={styles.rangeLabel}>24:00</Text>
-        <Text style={styles.rangeLabel}>04:00 next day</Text>
+        <Text style={styles.rangeLabel}>{formatClockMinutes(0)}</Text>
+        <Text style={styles.rangeLabel}>{formatClockMinutes(12 * 60)}</Text>
+        <Text style={styles.rangeLabel}>{formatClockMinutes(0)}</Text>
+        <Text style={styles.rangeLabel}>{formatClockMinutes(4 * 60)} next day</Text>
       </View>
       <Text style={styles.helperText}>
         Set a sleep time after midnight, up to 04:00 the next day.

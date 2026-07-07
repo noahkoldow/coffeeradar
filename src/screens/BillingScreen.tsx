@@ -33,7 +33,7 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>← Back</Text>
+            <Text style={styles.back}>Back</Text>
           </Pressable>
           <Text style={styles.title}>Billing</Text>
           <View style={styles.spacer} />

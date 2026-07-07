@@ -75,7 +75,7 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>← Back</Text>
+          <Text style={styles.backButton}>Back</Text>
         </Pressable>
         <Text style={styles.headerTitle}>Audience Targeting</Text>
       </View>

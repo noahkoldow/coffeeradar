@@ -1,15 +1,15 @@
 import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, Dimensions, Easing, Image, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { Animated, Dimensions, Easing, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackScreenProps } from '@react-navigation/stack';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { BrandCollabLockup } from '../components/BrandCollabLockup';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
-const bitsLogo = require('../../assets/logo.png');
 
 type Props = StackScreenProps<RootStackParamList, 'Welcome'>;
 
@@ -197,7 +197,7 @@ export const WelcomeScreen: React.FC<Props> = ({ navigation }) => {
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
       <View style={styles.content}>
-        <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+        <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
         <Text style={styles.title}>Bored? Stuck? Let’s fix that.</Text>
         <Text style={styles.subtitle}>Discover bite-sized ideas you can act on right now. No planning required.</Text>
       </View>
@@ -226,8 +226,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: theme.spacing.md,
   },
   logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
+    alignSelf: 'flex-start',
     marginBottom: theme.spacing.sm,
   },
   title: {

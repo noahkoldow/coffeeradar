@@ -247,6 +247,18 @@ export const updatePlanEventEnd = async (eventId: string, newEndDate: Date): Pro
   });
 };
 
+/** Replace an existing calendar event time window with the real activity window. */
+export const updatePlanEventTimeRange = async (
+  eventId: string,
+  newStartDate: Date,
+  newEndDate: Date,
+): Promise<void> => {
+  await Calendar.updateEventAsync(eventId, {
+    startDate: newStartDate,
+    endDate: newEndDate,
+  });
+};
+
 export const deletePlanEvent = async (eventId: string): Promise<void> => {
   await Calendar.deleteEventAsync(eventId);
 };
@@ -256,7 +268,7 @@ export const getUpcomingEvents = async (
   startDate: Date,
   endDate: Date,
   enabledCalendarIds?: string[],
-): Promise<Array<{ title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
+): Promise<Array<{ id?: string; title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
   const calendars = await getCalendars();
   const calendarIds = enabledCalendarIds && enabledCalendarIds.length
     ? enabledCalendarIds
@@ -276,6 +288,7 @@ export const getUpcomingEvents = async (
     }
 
     return {
+      id: e.id,
       title: e.title ?? 'Untitled',
       startDate: start,
       endDate: end,

@@ -7,7 +7,8 @@ import {
   View,
   Pressable,
   Alert,
-  ActivityIndicator,
+  Linking,
+  Image,
 } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -21,6 +22,16 @@ import { updateBusinessProfile } from '../services/business';
 import * as ImagePicker from 'expo-image-picker';
 
 type Props = StackScreenProps<RootStackParamList, 'BusinessSettings'>;
+
+const SUPPORT_ADMIN_EMAILS: string[] = String(
+  process.env.EXPO_PUBLIC_SUPPORT_EMAILS
+    ?? process.env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS
+    ?? process.env.EXPO_PUBLIC_ADMIN_EMAILS
+    ?? '',
+)
+  .split(',')
+  .map((entry) => entry.trim())
+  .filter((entry) => entry.length > 0);
 
 export const BusinessSettingsScreen: React.FC<Props> = ({
   navigation,
@@ -47,6 +58,34 @@ export const BusinessSettingsScreen: React.FC<Props> = ({
   const [localLogo, setLocalLogo] = useState<string | undefined>(business?.logo?.url);
   const [uploadingLogo, setUploadingLogo] = useState(false);
 
+  const handleContactSupport = async () => {
+    if (SUPPORT_ADMIN_EMAILS.length === 0) {
+      Alert.alert('Support unavailable', 'No support recipients are configured yet.');
+      return;
+    }
+
+    const sender = state.userEmail?.trim() || email.trim() || 'unknown sender';
+    const businessLabel = businessName.trim() || business.businessName;
+    const subject = encodeURIComponent(`Support request - ${businessLabel}`);
+    const body = encodeURIComponent(
+      `Business: ${businessLabel}\nSender: ${sender}\n\nPlease describe your issue:`,
+    );
+    const bcc = encodeURIComponent(SUPPORT_ADMIN_EMAILS.join(','));
+    const mailto = `mailto:?bcc=${bcc}&subject=${subject}&body=${body}`;
+
+    try {
+      const supported = await Linking.canOpenURL(mailto);
+      if (!supported) {
+        Alert.alert('Mail app unavailable', 'No email client is available on this device.');
+        return;
+      }
+      await Linking.openURL(mailto);
+    } catch (error) {
+      console.error('Failed to open support email composer', error);
+      Alert.alert('Error', 'Could not open your email app. Please try again.');
+    }
+  };
+
   const handleSave = async () => {
     if (!business) return;
 
@@ -57,6 +96,13 @@ export const BusinessSettingsScreen: React.FC<Props> = ({
 
     setSaving(true);
     try {
+      const trimmedInstagram = instagram.trim();
+      const trimmedFacebook = facebook.trim();
+
+      const socialLinksPayload: { instagram?: string; facebook?: string } = {};
+      if (trimmedInstagram.length > 0) socialLinksPayload.instagram = trimmedInstagram;
+      if (trimmedFacebook.length > 0) socialLinksPayload.facebook = trimmedFacebook;
+
       await updateBusinessProfile(business.id, {
         businessName: businessName.trim(),
         description: description.trim(),
@@ -69,14 +115,11 @@ export const BusinessSettingsScreen: React.FC<Props> = ({
           city: city.trim(),
           country: country.trim(),
         },
-        socialLinks: {
-          instagram: instagram.trim() || undefined,
-          facebook: facebook.trim() || undefined,
-        },
-        logo: localLogo ? { url: localLogo, uploadedAt: new Date().toISOString() } : undefined,
+        socialLinks: socialLinksPayload,
+        ...(localLogo ? { logo: { url: localLogo, uploadedAt: new Date().toISOString() } } : {}),
       });
       Alert.alert('Success', 'Profile updated');
-      navigation.goBack();
+      navigation.reset({ index: 0, routes: [{ name: 'BusinessHub' }] });
     } catch (error) {
       console.error('Error saving profile:', error);
       Alert.alert('Error', 'Failed to save profile');
@@ -107,7 +150,7 @@ export const BusinessSettingsScreen: React.FC<Props> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>← Back</Text>
+            <Text style={styles.back}>Back</Text>
           </Pressable>
         </View>
 
@@ -365,11 +408,8 @@ export const BusinessSettingsScreen: React.FC<Props> = ({
         {/* Support */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Support</Text>
-          <Pressable style={styles.supportLink}>
+          <Pressable style={styles.supportLink} onPress={handleContactSupport}>
             <Text style={styles.supportLinkText}>📧 Contact support</Text>
-          </Pressable>
-          <Pressable style={styles.supportLink}>
-            <Text style={styles.supportLinkText}>❓ FAQ</Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -444,6 +484,8 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     },
     input: {
       backgroundColor: theme.colors.backgroundAlt,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
       borderRadius: theme.radius.sm,
       paddingHorizontal: theme.spacing.md,
       paddingVertical: 12,
@@ -473,6 +515,8 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       flexDirection: 'row',
       alignItems: 'center',
       backgroundColor: theme.colors.backgroundAlt,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
       borderRadius: theme.radius.sm,
       paddingHorizontal: theme.spacing.md,
       overflow: 'hidden',
@@ -517,8 +561,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     },
     supportLink: {
       paddingVertical: theme.spacing.md,
-      borderBottomWidth: 1,
-      borderBottomColor: theme.colors.border,
     },
     supportLinkText: {
       fontFamily: theme.fonts.semibold,

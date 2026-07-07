@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Linking, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -20,7 +20,7 @@ import { fetchGooglePlacesSuggestions } from '../services/googlePlaces';
 import { fetchOsmSuggestions } from '../services/osmPlaces';
 import { fetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { Availability } from '../types';
-import { formatTime, normalizeClockTime } from '../utils/time';
+import { formatClockTime, formatTime, normalizeClockTime } from '../utils/time';
 import { isBusinessAdmin } from '../services/user';
 
 const interestGroups = [
@@ -80,9 +80,18 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
   const [debugMessages, setDebugMessages] = useState<DebugMessage[]>([]);
   const [clockTick, setClockTick] = useState(Date.now());
+  const [interestTags, setInterestTags] = useState<string[]>(state.prefs.interestTags || []);
+  const [customInterests, setCustomInterests] = useState<string[]>(state.prefs.customInterests ?? []);
+  const [interestInput, setInterestInput] = useState('');
+  const [selfDescription, setSelfDescription] = useState(state.prefs.selfDescription ?? '');
+  const [lifestyle, setLifestyle] = useState(state.prefs.lifestyle ?? 'mixed');
   const [wakeStartTime, setWakeStartTime] = useState(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
   const [wakeEndTime, setWakeEndTime] = useState(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
   const insets = useSafeAreaInsets();
+
+  const updatePrefs = (patch: Partial<typeof state.prefs>) => {
+    actions.setPrefs({ ...state.prefs, ...patch });
+  };
 
   useEffect(() => {
     const loadCalendars = async () => {
@@ -108,6 +117,13 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     setWakeEndTime(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
   }, [state.prefs.wakeStartTime, state.prefs.wakeEndTime]);
 
+  useEffect(() => {
+    setInterestTags(state.prefs.interestTags || []);
+    setCustomInterests(state.prefs.customInterests ?? []);
+    setSelfDescription(state.prefs.selfDescription ?? '');
+    setLifestyle(state.prefs.lifestyle ?? 'mixed');
+  }, [state.prefs.interestTags, state.prefs.customInterests, state.prefs.selfDescription, state.prefs.lifestyle]);
+
   const buildAvailability = (): Availability => {
     if (state.availability) return state.availability;
     const now = new Date();
@@ -130,6 +146,45 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
       wakeStartTime: nextStart,
       wakeEndTime: nextEnd,
     });
+  };
+
+  const toggleInterest = (tag: string) => {
+    const nextInterestTags = interestTags.includes(tag)
+      ? interestTags.filter((item) => item !== tag)
+      : [...interestTags, tag];
+    setInterestTags(nextInterestTags);
+    updatePrefs({ interestTags: nextInterestTags });
+  };
+
+  const normalizeInterest = (value: string): string => value
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_]/g, '');
+
+  const addCustomInterest = () => {
+    const normalized = normalizeInterest(interestInput);
+    if (!normalized) return;
+
+    const nextCustomInterests = customInterests.includes(normalized)
+      ? customInterests
+      : [...customInterests, normalized];
+    const nextInterestTags = interestTags.includes(normalized)
+      ? interestTags
+      : [...interestTags, normalized];
+
+    setCustomInterests(nextCustomInterests);
+    setInterestTags(nextInterestTags);
+    setInterestInput('');
+    updatePrefs({ customInterests: nextCustomInterests, interestTags: nextInterestTags });
+  };
+
+  const removeCustomInterest = (item: string) => {
+    const nextCustomInterests = customInterests.filter((x) => x !== item);
+    const nextInterestTags = interestTags.filter((x) => x !== item);
+    setCustomInterests(nextCustomInterests);
+    setInterestTags(nextInterestTags);
+    updatePrefs({ customInterests: nextCustomInterests, interestTags: nextInterestTags });
   };
 
   const requireLocation = () => {
@@ -168,7 +223,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.sectionTitle}>Local time</Text>
           <Text style={styles.rowText}>{formatTime(new Date(clockTick))}</Text>
           <Text style={styles.rowText}>Timezone: {state.location.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}</Text>
-          <Text style={styles.rowText}>Wake window: {wakeStartTime} - {wakeEndTime}</Text>
+          <Text style={styles.rowText}>Wake window: {formatClockTime(wakeStartTime)} - {formatClockTime(wakeEndTime)}</Text>
         </View>
 
         <View style={styles.section}>
@@ -246,16 +301,97 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
             value={state.prefs.themeMode === 'dark'}
             onValueChange={(value) => actions.setPrefs({ ...state.prefs, themeMode: value ? 'dark' : 'light' })}
           />
-          <Text style={styles.rowText}>Interests</Text>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Preferences</Text>
+
+          <Text style={styles.preferenceLabel}>Choose a few that fit you</Text>
           {interestGroups.map((group) => (
             <View key={group.title}>
               <Text style={styles.groupLabel}>{group.title}</Text>
+              <View style={styles.chipsWrap}>
+                {group.options.map((interest) => (
+                  <Chip
+                    key={interest.id}
+                    label={interest.label}
+                    selected={interestTags.includes(interest.id)}
+                    onPress={() => toggleInterest(interest.id)}
+                  />
+                ))}
+              </View>
             </View>
           ))}
+
+          <Text style={styles.preferenceLabel}>Add your own interests</Text>
+          <View style={styles.inlineRow}>
+            <TextInput
+              style={styles.textInput}
+              value={interestInput}
+              onChangeText={setInterestInput}
+              placeholder="e.g. pottery, climbing, stand-up comedy"
+              placeholderTextColor={theme.colors.textMuted}
+              returnKeyType="done"
+              onSubmitEditing={addCustomInterest}
+            />
+            <Pressable onPress={addCustomInterest} style={styles.addPill}>
+              <Text style={styles.addPillText}>Add</Text>
+            </Pressable>
+          </View>
+          {customInterests.length > 0 && (
+            <View style={styles.chipsWrap}>
+              {customInterests.map((item) => (
+                <Chip
+                  key={item}
+                  label={`#${item.replace(/_/g, ' ')}`}
+                  selected
+                  onPress={() => removeCustomInterest(item)}
+                />
+              ))}
+            </View>
+          )}
+
+          <Text style={styles.preferenceLabel}>Your lifestyle</Text>
+          <View style={styles.chipsWrap}>
+            {[
+              { id: 'active', label: 'Active' },
+              { id: 'moderate', label: 'Moderate' },
+              { id: 'chill', label: 'Chill' },
+              { id: 'mixed', label: 'Mixed' },
+            ].map((item) => (
+              <Chip
+                key={item.id}
+                label={item.label}
+                selected={lifestyle === item.id}
+                onPress={() => {
+                  setLifestyle(item.id as 'active' | 'moderate' | 'chill' | 'mixed');
+                  updatePrefs({ lifestyle: item.id as 'active' | 'moderate' | 'chill' | 'mixed' });
+                }}
+              />
+            ))}
+          </View>
+
+          <Text style={styles.preferenceLabel}>Tell us about your daily life</Text>
+          <TextInput
+            style={styles.textArea}
+            value={selfDescription}
+            onChangeText={setSelfDescription}
+            onBlur={() => updatePrefs({ selfDescription: selfDescription.trim() })}
+            placeholder="What do your days look like? What energizes you? What do you usually avoid?"
+            placeholderTextColor={theme.colors.textMuted}
+            multiline
+            textAlignVertical="top"
+            maxLength={420}
+          />
+
+          <Text style={styles.rowText}>Discovery radius ({state.prefs.radiusKm} km)</Text>
           <Slider
+            style={styles.slider}
             step={1}
             value={state.prefs.radiusKm}
-            onSlidingComplete={(val) => actions.setPrefs({ ...state.prefs, radiusKm: val })}
+            minimumValue={1}
+            maximumValue={25}
+            onSlidingComplete={(val) => updatePrefs({ radiusKm: val })}
             minimumTrackTintColor={theme.colors.accent}
             maximumTrackTintColor={theme.colors.border}
             thumbTintColor={theme.colors.accent}
@@ -380,7 +516,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
                 style={styles.debugButton}
                 onPress={() => runTest('gemini_test', async () => {
                   const availability = buildAvailability();
-                  const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null);
+                  const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null, undefined, state.userId);
                   return results.length;
                 })}
               >
@@ -394,7 +530,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
                 <View key={msg.id} style={styles.debugRow}>
                   <Text style={styles.debugSource}>{msg.source}</Text>
                   <Text style={styles.debugText}>{msg.message}</Text>
-                  <Text style={styles.debugTime}>{new Date(msg.ts).toLocaleTimeString()}</Text>
+                  <Text style={styles.debugTime}>{formatTime(new Date(msg.ts))}</Text>
                 </View>
               ))
             )}
@@ -492,6 +628,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexWrap: 'wrap',
     gap: theme.spacing.sm,
   },
+  preferenceLabel: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    marginTop: theme.spacing.sm,
+    color: theme.colors.textMuted,
+  },
   groupLabel: {
     fontFamily: theme.fonts.body,
     fontSize: 13,
@@ -499,6 +641,45 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: theme.spacing.md,
     marginBottom: 2,
     opacity: 0.7,
+  },
+  inlineRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.xs,
+  },
+  textInput: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: theme.colors.text,
+    fontFamily: theme.fonts.body,
+    backgroundColor: theme.colors.card,
+  },
+  textArea: {
+    marginTop: theme.spacing.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    minHeight: 110,
+    color: theme.colors.text,
+    fontFamily: theme.fonts.body,
+    backgroundColor: theme.colors.card,
+  },
+  addPill: {
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: theme.radius.sm,
+  },
+  addPillText: {
+    color: theme.colors.accentText,
+    fontFamily: theme.fonts.semibold,
   },
   calendarRow: {
     flexDirection: 'row',

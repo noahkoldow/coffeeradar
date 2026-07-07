@@ -1,5 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { ActivityLog, Habit, HistoryState, LocationProfile, SavedSuggestion, ScheduledActivity, TagAffinities, UserPrefs } from '../types';
+import { ActivityLog, DeckSuggestion, Habit, HistoryState, InProgressPlanSession, LocationProfile, SavedSuggestion, ScheduledActivity, SmartTodoItem, TagAffinities, UserPrefs } from '../types';
 
 const KEYS = {
   prefs: 'prefs',
@@ -11,11 +11,15 @@ const KEYS = {
   tagAffinities: 'tag_affinities',
   locationProfile: 'location_profile',
   scheduledActivities: 'scheduled_activities',
+  inProgressPlanSession: 'in_progress_plan_session',
   savedSuggestions: 'saved_suggestions',
+  smartTodos: 'smart_todos',
   isBusinessOnly: 'is_business_only',
   swipeBank: 'swipe_bank',
+  premium: 'premium_active',
   geminiUsage: 'gemini_usage',
   profileAvatar: 'profile_avatar_uri',
+  preloadedDeck: 'preloaded_deck',
 };
 
 const keyFor = (base: string, userId?: string | null): string => {
@@ -115,6 +119,20 @@ export const saveScheduledActivities = async (items: ScheduledActivity[], userId
   await AsyncStorage.setItem(keyFor(KEYS.scheduledActivities, userId), JSON.stringify(items));
 };
 
+export const loadInProgressPlanSession = async (userId?: string | null): Promise<InProgressPlanSession | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.inProgressPlanSession, userId));
+  return raw ? (JSON.parse(raw) as InProgressPlanSession) : null;
+};
+
+export const saveInProgressPlanSession = async (session: InProgressPlanSession | null, userId?: string | null): Promise<void> => {
+  const key = keyFor(KEYS.inProgressPlanSession, userId);
+  if (!session) {
+    await AsyncStorage.removeItem(key);
+    return;
+  }
+  await AsyncStorage.setItem(key, JSON.stringify(session));
+};
+
 export const loadSavedSuggestions = async (userId?: string | null): Promise<SavedSuggestion[] | null> => {
   const raw = await AsyncStorage.getItem(keyFor(KEYS.savedSuggestions, userId));
   return raw ? (JSON.parse(raw) as SavedSuggestion[]) : null;
@@ -122,6 +140,15 @@ export const loadSavedSuggestions = async (userId?: string | null): Promise<Save
 
 export const saveSavedSuggestions = async (items: SavedSuggestion[], userId?: string | null): Promise<void> => {
   await AsyncStorage.setItem(keyFor(KEYS.savedSuggestions, userId), JSON.stringify(items));
+};
+
+export const loadSmartTodos = async (userId?: string | null): Promise<SmartTodoItem[] | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.smartTodos, userId));
+  return raw ? (JSON.parse(raw) as SmartTodoItem[]) : null;
+};
+
+export const saveSmartTodos = async (items: SmartTodoItem[], userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.smartTodos, userId), JSON.stringify(items));
 };
 
 export const loadIsBusinessOnly = async (userId?: string | null): Promise<boolean> => {
@@ -136,6 +163,7 @@ export const saveIsBusinessOnly = async (isBusinessOnly: boolean, userId?: strin
 export type SwipeBankStorage = { current: number; max: number; lastUpdated?: string };
 
 export type GeminiUsageStorage = { callCount: number; date?: string };
+export type PreloadedDeckStorage = { deck: DeckSuggestion[]; usedFallback: boolean; savedAt: string };
 
 export const loadSwipeBank = async (userId?: string | null): Promise<SwipeBankStorage | null> => {
   const raw = await AsyncStorage.getItem(keyFor(KEYS.swipeBank, userId));
@@ -146,13 +174,46 @@ export const saveSwipeBank = async (bank: SwipeBankStorage, userId?: string | nu
   await AsyncStorage.setItem(keyFor(KEYS.swipeBank, userId), JSON.stringify(bank));
 };
 
-export const loadGeminiUsage = async (): Promise<GeminiUsageStorage | null> => {
-  const raw = await AsyncStorage.getItem(KEYS.geminiUsage);
+export const loadPremiumActive = async (userId?: string | null): Promise<boolean> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.premium, userId));
+  return raw === 'true';
+};
+
+export const savePremiumActive = async (value: boolean, userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.premium, userId), value ? 'true' : 'false');
+};
+
+export const loadGeminiUsage = async (userId?: string | null): Promise<GeminiUsageStorage | null> => {
+  if (!userId) return null;
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.geminiUsage, userId));
   return raw ? (JSON.parse(raw) as GeminiUsageStorage) : null;
 };
 
-export const saveGeminiUsage = async (usage: GeminiUsageStorage): Promise<void> => {
-  await AsyncStorage.setItem(KEYS.geminiUsage, JSON.stringify(usage));
+export const saveGeminiUsage = async (usage: GeminiUsageStorage, userId?: string | null): Promise<void> => {
+  if (!userId) return;
+  await AsyncStorage.setItem(keyFor(KEYS.geminiUsage, userId), JSON.stringify(usage));
+};
+
+export const loadPreloadedDeck = async (userId?: string | null): Promise<PreloadedDeckStorage | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.preloadedDeck, userId));
+  return raw ? (JSON.parse(raw) as PreloadedDeckStorage) : null;
+};
+
+export const savePreloadedDeck = async (
+  value: { deck: DeckSuggestion[]; usedFallback: boolean } | null,
+  userId?: string | null,
+): Promise<void> => {
+  const key = keyFor(KEYS.preloadedDeck, userId);
+  if (!value) {
+    await AsyncStorage.removeItem(key);
+    return;
+  }
+  const payload: PreloadedDeckStorage = {
+    deck: value.deck,
+    usedFallback: value.usedFallback,
+    savedAt: new Date().toISOString(),
+  };
+  await AsyncStorage.setItem(key, JSON.stringify(payload));
 };
 
 export const loadProfileAvatarUri = async (userId?: string | null): Promise<string | null> => {

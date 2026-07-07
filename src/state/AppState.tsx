@@ -6,6 +6,7 @@ import {
   Suggestion,
   Habit,
   HistoryState,
+  InProgressPlanSession,
   LocationProfile,
   LocationState,
   PermissionsState,
@@ -32,8 +33,10 @@ import {
   saveOnboardingComplete,
   savePrefs,
   saveTagAffinities,
+  loadInProgressPlanSession,
   loadScheduledActivities,
   loadSavedSuggestions,
+  saveInProgressPlanSession,
   saveScheduledActivities,
   saveSavedSuggestions,
   loadIsBusinessOnly,
@@ -42,11 +45,15 @@ import {
   saveSmartTodos,
   loadSwipeBank,
   saveSwipeBank,
+  loadPremiumActive,
+  savePremiumActive,
+  loadPreloadedDeck,
+  savePreloadedDeck,
 } from '../utils/storage';
 import { getCalendarPermissionStatus, getUpcomingEvents } from '../services/calendar';
 import { getLocationPermissionStatus } from '../services/location';
 import { subscribeAuthState } from '../services/auth';
-import { firebaseEnabled } from '../services/firebase';
+import { auth, firebaseEnabled } from '../services/firebase';
 import { buildDeck } from '../services/suggestions';
 import { recordComplete, recordTypeAccept, decayAffinities } from '../services/affinity';
 import { completeHabitEntry, uncompleteHabitEntry, migrateHabit } from '../utils/habits';
@@ -64,15 +71,32 @@ import {
   syncSavedSuggestions,
   syncUserProfileContext,
   persistOnboardingComplete,
+  isBusinessPremium,
 } from '../services/user';
 import { setPreferredTimeZone, initializeDeviceTimeZone } from '../utils/time';
 
 // Swipe bank config
 const SWIPE_BANK_DEFAULT = 20;
+const SWIPE_BANK_PREMIUM_BONUS = 10;
 const RECHARGE_INTERVAL_MIN = 10; // minutes per credit
 const RECHARGE_PER_INTERVAL = 1; // credits per interval
 const OVERFLOW_DECAY_PER_HOUR = 0.5; // unchanged decay behaviour
 const BONUS_PER_MIN = 1 / 30; // y swipes per minute of completed task (1 swipe per 30m)
+const PRELOADED_DECK_TTL_MS = 60 * 60 * 1000;
+
+const isNewlyCreatedFirebaseAccountSession = (): boolean => {
+  const metadata = auth?.currentUser?.metadata;
+  if (!metadata?.creationTime || !metadata?.lastSignInTime) return false;
+  const createdAt = new Date(metadata.creationTime).getTime();
+  const lastSignInAt = new Date(metadata.lastSignInTime).getTime();
+  if (!Number.isFinite(createdAt) || !Number.isFinite(lastSignInAt)) return false;
+  // Firebase metadata timestamps may be rounded; keep a small tolerance window.
+  return Math.abs(lastSignInAt - createdAt) <= 60_000;
+};
+
+const resolveSwipeBankMax = (email: string | null, premiumActive: boolean): number => {
+  return SWIPE_BANK_DEFAULT + ((premiumActive || isBusinessPremium(email)) ? SWIPE_BANK_PREMIUM_BONUS : 0);
+};
 
 const defaultPrefs: UserPrefs = {
   openToGoingOut: true,
@@ -123,14 +147,17 @@ type AppState = {
   tagAffinities: TagAffinities;
   locationProfile: LocationProfile | null;
   scheduledActivities: ScheduledActivity[];
+  inProgressPlanSession: InProgressPlanSession | null;
   savedSuggestions: SavedSuggestion[];
   smartTodos: SmartTodoItem[];
   swipeBank: { current: number; max: number };
+  swipeBankLastUpdated: number;
   bankTimerRef: React.MutableRefObject<ReturnType<typeof setInterval> | null>;
   accountType: 'consumer' | 'business';
   businessProfile: BusinessProfile | null;
   businessMode: boolean;
   isBusinessOnly: boolean;
+  isPremium: boolean;
 };
 
 type AppActions = {
@@ -156,7 +183,9 @@ type AppActions = {
   setTagAffinities: (value: TagAffinities) => void;
   setLocationProfile: (value: LocationProfile | null) => void;
   addScheduledActivity: (item: ScheduledActivity) => void;
+  updateScheduledActivity: (id: string, item: ScheduledActivity) => void;
   removeScheduledActivity: (id: string) => void;
+  setInProgressPlanSession: (session: InProgressPlanSession | null) => void;
   saveSuggestion: (item: SavedSuggestion) => void;
   removeSavedSuggestion: (id: string) => void;
   addSmartTodo: (item: SmartTodoItem) => void;
@@ -170,6 +199,7 @@ type AppActions = {
   switchToConsumerMode: () => void;
   setBusinessProfile: (profile: BusinessProfile | null) => void;
   setIsBusinessOnly: (value: boolean) => void;
+  setPremiumActive: (value: boolean) => void;
 };
 
 const AppStateContext = createContext<{ state: AppState; actions: AppActions } | undefined>(undefined);
@@ -193,6 +223,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [tagAffinities, setTagAffinitiesState] = useState<TagAffinities>({});
   const [locationProfile, setLocationProfileState] = useState<LocationProfile | null>(null);
   const [scheduledActivities, setScheduledActivitiesState] = useState<ScheduledActivity[]>([]);
+  const [inProgressPlanSession, setInProgressPlanSessionState] = useState<InProgressPlanSession | null>(null);
   const [savedSuggestions, setSavedSuggestionsState] = useState<SavedSuggestion[]>([]);
   const [smartTodos, setSmartTodosState] = useState<SmartTodoItem[]>([]);
   const [swipeBank, setSwipeBank] = useState<{ current: number; max: number }>({ current: 20, max: 20 });
@@ -203,13 +234,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [businessProfile, setBusinessProfileState] = useState<BusinessProfile | null>(null);
   const [businessMode, setBusinessMode] = useState(false);
   const [isBusinessOnly, setIsBusinessOnlyState] = useState(false);
+  const [isPremium, setIsPremium] = useState(false);
+  const emailHasPremium = useMemo(() => isBusinessPremium(userEmail), [userEmail]);
+  const swipeBankMax = useMemo(() => resolveSwipeBankMax(userEmail, isPremium), [isPremium, userEmail]);
 
   // Refs for preloadDeck so it always reads the latest values without
   // being a useMemo dependency (which would cause infinite re-renders).
-  const preloadRef = useRef({ location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions });
+  const preloadRef = useRef({ location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions });
   useEffect(() => {
-    preloadRef.current = { location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions };
-  }, [location, prefs, history, habits, tagAffinities, locationProfile, savedSuggestions]);
+    preloadRef.current = { location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions };
+  }, [location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions]);
   const preloadedDeckRef = useRef(preloadedDeck);
   useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
   const geminiPoolRef = useRef<Suggestion[]>([]);
@@ -217,6 +251,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => { geminiPoolRef.current = geminiPool; }, [geminiPool]);
   useEffect(() => { deckIndexRef.current = deckIndex; }, [deckIndex]);
   const deckBuildId = useRef(0);
+
+  const invalidatePreloadedDeck = useCallback(() => {
+    deckBuildId.current += 1;
+    setDeckLoading(false);
+    setPreloadedDeck(null);
+    savePreloadedDeck(null, userId).catch(() => undefined);
+  }, [userId]);
 
   /**
    * Consume Gemini budget for the current deck.
@@ -295,6 +336,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setHabitsState([]);
           setActivityLogState([]);
           setEnabledCalendarsState([]);
+          setInProgressPlanSessionState(null);
           setSmartTodosState([]);
           setOnboardingComplete(false);
           setAvailabilityState(null);
@@ -311,9 +353,11 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           storedActivity,
           storedAffinities,
           storedScheduled,
+          storedPlanSession,
           storedSaved,
           storedSmartTodos,
           storedIsBusinessOnly,
+          storedPreloadedDeck,
           guestPrefs,
           guestHistory,
           guestCalendars,
@@ -321,9 +365,11 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           guestActivity,
           guestAffinities,
           guestScheduled,
+          guestPlanSession,
           guestSaved,
           guestSmartTodos,
           guestIsBusinessOnly,
+          guestPreloadedDeck,
         ] = await Promise.all([
           loadPrefs(userId),
           loadHistory(userId),
@@ -333,9 +379,11 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadActivityLog(userId),
           loadTagAffinities(userId),
           loadScheduledActivities(userId),
+          loadInProgressPlanSession(userId),
           loadSavedSuggestions(userId),
           loadSmartTodos(userId),
           loadIsBusinessOnly(userId),
+          loadPreloadedDeck(userId),
           loadPrefs(null),
           loadHistory(null),
           loadEnabledCalendars(null),
@@ -344,9 +392,11 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadActivityLog(null),
           loadTagAffinities(null),
           loadScheduledActivities(null),
+          loadInProgressPlanSession(null),
           loadSavedSuggestions(null),
           loadSmartTodos(null),
           loadIsBusinessOnly(null),
+          loadPreloadedDeck(null),
         ]);
         // Try loading from Firestore (cloud-first for cross-device sync)
         const [fbAffinities, fbLocProfile, fbSaved, fbProfileContext] = await Promise.all([
@@ -364,6 +414,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           (storedActivity && storedActivity.length) ||
           (storedAffinities && Object.keys(storedAffinities).length) ||
           (storedScheduled && storedScheduled.length) ||
+          !!storedPlanSession ||
           (storedSaved && storedSaved.length) ||
           (storedSmartTodos && storedSmartTodos.length)
         );
@@ -394,9 +445,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
         if (storedCalendars) setEnabledCalendarsState(storedCalendars);
         else setEnabledCalendarsState(guestCalendars ?? []);
-        // Merge: prefer Firebase habits, fall back to local, migrate legacy fields
+        // Merge: prefer Firebase habits, fall back to local, migrate legacy fields.
+        // Be defensive: older/corrupted payloads may be objects instead of arrays.
         const fbHabits = await loadFirebaseHabits().catch(() => null);
-        const rawHabits = (fbHabits ?? storedHabits ?? guestHabits ?? []) as Habit[];
+        const habitsSource = fbHabits ?? storedHabits ?? guestHabits;
+        const rawHabits = Array.isArray(habitsSource)
+          ? habitsSource
+          : (Array.isArray((habitsSource as any)?.items) ? (habitsSource as any).items : []);
         const migratedHabits = rawHabits.map(migrateHabit);
         setHabitsState(migratedHabits);
         // Sync migrated back to local cache
@@ -414,6 +469,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
         // Load scheduled activities
         setScheduledActivitiesState(storedScheduled ?? guestScheduled ?? []);
+        setInProgressPlanSessionState(storedPlanSession ?? guestPlanSession ?? null);
         const mergedSaved = fbSaved ?? storedSaved ?? guestSaved ?? [];
         setSavedSuggestionsState(mergedSaved);
         setSmartTodosState(storedSmartTodos ?? guestSmartTodos ?? []);
@@ -425,29 +481,48 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const isBusinessOnly = storedIsBusinessOnly ?? guestIsBusinessOnly ?? false;
         setIsBusinessOnlyState(isBusinessOnly);
 
-        const hasCloudProfile = !!(fbAffinities || fbLocProfile || fbSaved || fbProfileContext || (fbHabits && fbHabits.length));
+        // Restore queued deck (if still fresh) so Home can reuse it without a new Gemini call.
+        const restoredPreloadedDeck = storedPreloadedDeck ?? guestPreloadedDeck;
+        if (restoredPreloadedDeck?.deck?.length) {
+          const savedAt = new Date(restoredPreloadedDeck.savedAt).getTime();
+          const isFresh = Number.isFinite(savedAt) && (Date.now() - savedAt) <= PRELOADED_DECK_TTL_MS;
+          if (isFresh) {
+            setPreloadedDeck({
+              deck: restoredPreloadedDeck.deck,
+              usedFallback: restoredPreloadedDeck.usedFallback,
+            });
+          } else {
+            savePreloadedDeck(null, userId).catch(() => undefined);
+            if (userId) savePreloadedDeck(null, null).catch(() => undefined);
+            setPreloadedDeck(null);
+          }
+        } else {
+          setPreloadedDeck(null);
+        }
+
         const hasFirebaseOnboardingComplete = firebaseOnboardingComplete === true;
-        // For authenticated users logging in: if they have NO local data but have cloud profile,
-        // they're a returning user and should skip onboarding. If they're brand-new, they'll have neither.
-        const isReturningUserWithCloudData = userId && !hasStoredProfile && hasCloudProfile;
-        
-        // SKIP ONBOARDING if:
-        // 1. User has local onboarding flag OR
-        // 2. User has any local profile data OR  
-        // 3. User has any cloud/Firestore data (returning user)
-        // This ensures users who login with existing Discord/Firebase accounts skip onboarding
-        const shouldSkipOnboarding = 
-          storedOnboarding || 
-          hasStoredProfile || 
-          hasCloudProfile ||
-          hasFirebaseOnboardingComplete ||
-          isReturningUserWithCloudData ||
-          !!(userId && (fbAffinities || fbLocProfile || fbSaved || fbHabits?.length));
+        const hasMeaningfulCloudLearningData = !!(
+          fbLocProfile ||
+          (fbHabits && fbHabits.length > 0) ||
+          (fbSaved && fbSaved.length > 0) ||
+          (fbAffinities && Object.keys(fbAffinities).length > 0)
+        );
+        const isNewAccountSession = !!(userId && isNewlyCreatedFirebaseAccountSession());
+        const isReturningRegisteredAccount = !!(userId && !isNewAccountSession);
+
+        // Hard rule: never skip onboarding for newly created Firebase accounts.
+        // Only returning accounts can auto-skip via stored/cloud completion signals.
+        const shouldSkipOnboarding =
+          !isNewAccountSession && (
+            storedOnboarding ||
+            hasFirebaseOnboardingComplete ||
+            (isReturningRegisteredAccount && hasMeaningfulCloudLearningData)
+          );
           
         setOnboardingComplete(shouldSkipOnboarding);
 
-        // If we detected a returning user via cloud data, cache the onboarding flag locally so future logins are faster
-        if ((isReturningUserWithCloudData || hasFirebaseOnboardingComplete) && !storedOnboarding) {
+        // If we detected a returning account via cloud data, cache onboarding completion locally.
+        if (!isNewAccountSession && (hasMeaningfulCloudLearningData || hasFirebaseOnboardingComplete) && !storedOnboarding) {
           saveOnboardingComplete(true, userId).catch(() => undefined);
         }
 
@@ -457,6 +532,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           (guestActivity && guestActivity.length) ||
           (guestAffinities && Object.keys(guestAffinities).length) ||
           (guestScheduled && guestScheduled.length) ||
+          !!guestPlanSession ||
           (guestSaved && guestSaved.length) ||
           (guestSmartTodos && guestSmartTodos.length)
         );
@@ -470,8 +546,15 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             saveActivityLog(guestActivity ?? [], userId),
             saveTagAffinities(mergedAffinities, userId),
             saveScheduledActivities(guestScheduled ?? [], userId),
+            saveInProgressPlanSession(guestPlanSession ?? null, userId),
             saveSavedSuggestions(mergedSaved, userId),
             saveSmartTodos(guestSmartTodos ?? [], userId),
+            savePreloadedDeck(
+              guestPreloadedDeck?.deck?.length
+                ? { deck: guestPreloadedDeck.deck, usedFallback: guestPreloadedDeck.usedFallback }
+                : null,
+              userId,
+            ),
           ]).catch(() => undefined);
         }
       } catch (error) {
@@ -485,7 +568,19 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     return () => {
       active = false;
     };
-  }, [authChecked, userId]);
+  }, [authChecked, userId, swipeBankMax]);
+
+  useEffect(() => {
+    if (!authChecked) return;
+    (async () => {
+      const storedPremium = await loadPremiumActive(userId).catch(() => false);
+      const effectivePremium = storedPremium || emailHasPremium;
+      setIsPremium(effectivePremium);
+      if (effectivePremium !== storedPremium) {
+        savePremiumActive(effectivePremium, userId).catch(() => undefined);
+      }
+    })();
+  }, [authChecked, userId, emailHasPremium]);
 
   // Load swipe bank from storage when auth state is ready
   useEffect(() => {
@@ -498,7 +593,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           const last = stored.lastUpdated ? new Date(stored.lastUpdated).getTime() : now;
           const elapsedMin = Math.max(0, Math.floor((now - last) / 60000));
           let current = stored.current;
-          const max = stored.max ?? SWIPE_BANK_DEFAULT;
+          const max = swipeBankMax;
           if (current <= max) {
             const toAdd = Math.floor(elapsedMin / RECHARGE_INTERVAL_MIN) * RECHARGE_PER_INTERVAL;
             current = Math.min(max, current + toAdd);
@@ -513,20 +608,20 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setSwipeBankLastUpdated(lastUpdatedRef.current);
           saveSwipeBank({ ...bank, lastUpdated: new Date(lastUpdatedRef.current).toISOString() }, userId).catch(() => undefined);
         } else {
-          const bank = { current: SWIPE_BANK_DEFAULT, max: SWIPE_BANK_DEFAULT };
+          const bank = { current: swipeBankMax, max: swipeBankMax };
           setSwipeBank(bank);
           lastUpdatedRef.current = now;
           setSwipeBankLastUpdated(now);
           saveSwipeBank({ ...bank, lastUpdated: new Date(now).toISOString() }, userId).catch(() => undefined);
         }
       } catch {
-        const bank = { current: SWIPE_BANK_DEFAULT, max: SWIPE_BANK_DEFAULT };
+        const bank = { current: swipeBankMax, max: swipeBankMax };
         setSwipeBank(bank);
         lastUpdatedRef.current = Date.now();
         setSwipeBankLastUpdated(lastUpdatedRef.current);
       }
     })();
-  }, [authChecked, userId]);
+  }, [authChecked, userId, swipeBankMax]);
 
   // Periodic tick: recharge or decay overflow gradually
   useEffect(() => {
@@ -681,26 +776,32 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const id = ++deckBuildId.current;
       setDeckLoading(true);
       setPreloadedDeck(null);
+      savePreloadedDeck(null, userId).catch(() => undefined);
       const {
         location: loc,
         prefs: p,
         history: h,
         habits: hb,
+        smartTodos: todos,
         tagAffinities: ta,
         locationProfile: lp,
         savedSuggestions: ss,
       } = preloadRef.current;
       // Background preload gets a generous 15 s API timeout
       // (the user isn't waiting — they're on HomeScreen or swiping)
-      buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp, undefined, ss)
+      buildDeck(finalAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, userId)
         .then((result) => {
           // Only apply if this is still the latest build request
           if (deckBuildId.current === id) {
             setPreloadedDeck(result);
+            savePreloadedDeck(result, userId).catch(() => undefined);
           }
         })
         .catch(() => {
-          if (deckBuildId.current === id) setPreloadedDeck(null);
+          if (deckBuildId.current === id) {
+            setPreloadedDeck(null);
+            savePreloadedDeck(null, userId).catch(() => undefined);
+          }
         })
         .finally(() => {
           if (deckBuildId.current === id) setDeckLoading(false);
@@ -710,6 +811,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       const result = preloadedDeckRef.current;
       preloadedDeckRef.current = null;
       setPreloadedDeck(null);
+      savePreloadedDeck(null, userId).catch(() => undefined);
       return result;
     },
     consumeGeminiForDeck: computeGeminiForDeck,
@@ -746,24 +848,30 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const id = ++deckBuildId.current;
         setDeckLoading(true);
         setPreloadedDeck(null);
+        savePreloadedDeck(null, userId).catch(() => undefined);
         const {
           location: loc,
           prefs: p,
           history: h,
           habits: hb,
+          smartTodos: todos,
           tagAffinities: ta,
           locationProfile: lp,
           savedSuggestions: ss,
         } = preloadRef.current;
         // Background preload gets a generous 15 s API timeout
-        buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp, undefined, ss)
+        buildDeck(finalAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, userId)
           .then((result) => {
             if (deckBuildId.current === id) {
               setPreloadedDeck(result);
+              savePreloadedDeck(result, userId).catch(() => undefined);
             }
           })
           .catch(() => {
-            if (deckBuildId.current === id) setPreloadedDeck(null);
+            if (deckBuildId.current === id) {
+              setPreloadedDeck(null);
+              savePreloadedDeck(null, userId).catch(() => undefined);
+            }
           })
           .finally(() => {
             if (deckBuildId.current === id) setDeckLoading(false);
@@ -881,6 +989,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       })();
     },
+    updateScheduledActivity: (id, item) => {
+      setScheduledActivitiesState((prev) => {
+        const updated = prev.map((existing) => (existing.id === id ? item : existing));
+        saveScheduledActivities(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
     removeScheduledActivity: (id) => {
       setScheduledActivitiesState((prev) => {
         const updated = prev.filter((i) => i.id !== id);
@@ -902,23 +1017,29 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const id = ++deckBuildId.current;
         setDeckLoading(true);
         setPreloadedDeck(null);
+        savePreloadedDeck(null, userId).catch(() => undefined);
         const {
           location: loc,
           prefs: p,
           history: h,
           habits: hb,
+          smartTodos: todos,
           tagAffinities: ta,
           locationProfile: lp,
           savedSuggestions: ss,
         } = preloadRef.current;
-        buildDeck(finalAvail, loc, p, h, hb, 15000, ta, lp, undefined, ss)
+        buildDeck(finalAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, userId)
           .then((result) => {
             if (deckBuildId.current === id) {
               setPreloadedDeck(result);
+              savePreloadedDeck(result, userId).catch(() => undefined);
             }
           })
           .catch(() => {
-            if (deckBuildId.current === id) setPreloadedDeck(null);
+            if (deckBuildId.current === id) {
+              setPreloadedDeck(null);
+              savePreloadedDeck(null, userId).catch(() => undefined);
+            }
           })
           .finally(() => {
             if (deckBuildId.current === id) setDeckLoading(false);
@@ -926,6 +1047,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       } catch (err) {
         // ignore
       }
+    },
+    setInProgressPlanSession: (session) => {
+      setInProgressPlanSessionState(session);
+      saveInProgressPlanSession(session, userId).catch(() => undefined);
     },
     saveSuggestion: (item) => {
       setSavedSuggestionsState((prev) => {
@@ -948,6 +1073,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
     },
     addSmartTodo: (item) => {
+      invalidatePreloadedDeck();
       setSmartTodosState((prev) => {
         const updated = [item, ...prev].slice(0, 500);
         saveSmartTodos(updated, userId).catch(() => undefined);
@@ -955,6 +1081,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
     },
     updateSmartTodo: (item) => {
+      invalidatePreloadedDeck();
       setSmartTodosState((prev) => {
         const updated = prev.map((todo) => (todo.id === item.id ? item : todo));
         saveSmartTodos(updated, userId).catch(() => undefined);
@@ -962,6 +1089,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
     },
     removeSmartTodo: (id) => {
+      invalidatePreloadedDeck();
       setSmartTodosState((prev) => {
         const updated = prev.filter((todo) => todo.id !== id);
         saveSmartTodos(updated, userId).catch(() => undefined);
@@ -969,6 +1097,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       });
     },
     toggleSmartTodoDone: (id) => {
+      invalidatePreloadedDeck();
       setSmartTodosState((prev) => {
         const updated = prev.map((todo) => (
           todo.id === id ? { ...todo, done: !todo.done } : todo
@@ -1013,6 +1142,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setTagAffinitiesState({});
       setLocationProfileState(null);
       setScheduledActivitiesState([]);
+      setInProgressPlanSessionState(null);
       setSavedSuggestionsState([]);
       setSmartTodosState([]);
     },
@@ -1036,7 +1166,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setIsBusinessOnlyState(value);
       saveIsBusinessOnly(value, userId).catch(() => undefined);
     },
-  }), [userId]);
+    setPremiumActive: (value) => {
+      const effectivePremium = value || emailHasPremium;
+      setIsPremium(effectivePremium);
+      savePremiumActive(effectivePremium, userId).catch(() => undefined);
+    },
+  }), [userId, emailHasPremium]);
 
   const state: AppState = {
     loading,
@@ -1059,6 +1194,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     tagAffinities,
     locationProfile,
     scheduledActivities,
+    inProgressPlanSession,
     savedSuggestions,
     smartTodos,
     bankTimerRef,
@@ -1068,6 +1204,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     businessProfile,
     businessMode,
     isBusinessOnly,
+    isPremium,
   };
 
   return (

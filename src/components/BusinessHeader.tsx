@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { View, Text, StyleSheet, Pressable, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeProvider';
+import { useAppState } from '../state/AppState';
 
 interface BusinessHeaderProps {
   onSettingsPress?: () => void;
@@ -11,17 +12,32 @@ interface BusinessHeaderProps {
 export const BusinessHeader: React.FC<BusinessHeaderProps> = ({ onSettingsPress, showSettingsIcon = true }) => {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const { state } = useAppState();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const businessLogoUrl = state.businessProfile?.logo?.url;
+  const appLogoSource = state.isPremium
+    ? require('../../assets/logo_premium.png')
+    : require('../../assets/logo.png');
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.content}>
         <View style={styles.logoSection}>
           <Image
-            source={require('../../assets/logo.png')}
+            source={appLogoSource}
             style={styles.logo}
             resizeMode="contain"
           />
+          {businessLogoUrl ? (
+            <>
+              <Text style={styles.collabDivider}>X</Text>
+              <Image
+                source={{ uri: businessLogoUrl }}
+                style={styles.partnerLogo}
+                resizeMode="cover"
+              />
+            </>
+          ) : null}
           <Text style={styles.businessText}>BUSINESS</Text>
         </View>
 
@@ -57,6 +73,21 @@ const createStyles = (theme: any) =>
     logo: {
       width: 32,
       height: 32,
+    },
+    collabDivider: {
+      fontSize: 12,
+      fontWeight: '700',
+      color: theme.colors.textMuted,
+      letterSpacing: 0.8,
+      marginHorizontal: 2,
+    },
+    partnerLogo: {
+      width: 30,
+      height: 30,
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.backgroundAlt,
     },
     businessText: {
       fontSize: 14,

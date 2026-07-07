@@ -157,7 +157,7 @@ export const CampaignDetailsScreen: React.FC<DetailScreenProps> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>← Back</Text>
+            <Text style={styles.back}>Back</Text>
           </Pressable>
           <View style={styles.headerSpacer} />
         </View>

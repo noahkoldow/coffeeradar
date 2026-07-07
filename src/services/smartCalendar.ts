@@ -1,5 +1,6 @@
 import { Habit, SmartTodoItem } from '../types';
 import { chooseTravelMode, estimateEtaMinutes, haversineKm } from './travel';
+import { formatTime } from '../utils/time';
 
 export type LocationHint = {
   title?: string;
@@ -45,6 +46,9 @@ type BuildGapOptions = {
   defaultLocation?: LocationHint;
   dayStartMin?: number;
   dayEndMin?: number;
+  generationSpeedFactor?: number;
+  aiTargetCount?: number;
+  totalSuggestions?: number;
 };
 
 const MIN_GAP_MINUTES = 20;
@@ -121,6 +125,7 @@ export const findCalendarGaps = (
   dayEnd.setHours(Math.floor(endMin / 60), endMin % 60, 0, 0);
 
   const sorted = blocks
+    .filter((block) => !block.allDay)
     .map((block) => ({
       ...block,
       startAt: new Date(Math.max(block.startAt.getTime(), dayStart.getTime())),
@@ -325,16 +330,16 @@ const buildGapPrompt = (
     .join('\n') || '- none';
 
   const before = gap.before
-    ? `${gap.before.title} (${gap.before.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}-${gap.before.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`
+    ? `${gap.before.title} (${formatTime(gap.before.startAt)}-${formatTime(gap.before.endAt)})`
     : 'none';
   const after = gap.after
-    ? `${gap.after.title} (${gap.after.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}-${gap.after.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })})`
+    ? `${gap.after.title} (${formatTime(gap.after.startAt)}-${formatTime(gap.after.endAt)})`
     : 'none';
 
   return [
     'Return ONLY valid JSON.',
     'Schema: {"suggestions":[{"title":string,"reason":string,"durationMin":number,"source":"todo"|"habit"|"smart"}]}',
-    'Goal: propose activities and to-dos that BEST FIT this specific free-time gap.',
+    'Goal: propose activities and to-dos that are appropriate for this specific free-time gap.',
     'Hard constraints:',
     `- Gap duration is ${gap.durationMin} minutes.`,
     '- Each suggestion must realistically fit between before and after events.',
@@ -343,7 +348,7 @@ const buildGapPrompt = (
     '- Prefer concrete actions over generic fillers.',
     '- Return 3 to 5 suggestions max.',
     '',
-    `Gap: ${gap.dayLabel}, ${gap.startAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}-${gap.endAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`,
+    `Gap: ${gap.dayLabel}, ${formatTime(gap.startAt)}-${formatTime(gap.endAt)}`,
     `Before event: ${before}`,
     `After event: ${after}`,
     `Default user coordinates: ${options?.defaultLocation?.lat ?? 'unknown'}, ${options?.defaultLocation?.lng ?? 'unknown'}`,
@@ -364,29 +369,41 @@ const requestGeminiGapSuggestions = async (
 ): Promise<SmartCalendarSuggestion[]> => {
   if (!GEMINI_KEY) return [];
 
+  const speedFactor = Math.max(0.5, Math.min(1, options?.generationSpeedFactor ?? 1));
+  const controller = new AbortController();
+  const timeoutMs = Math.round(12000 * speedFactor);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
   const prompt = buildGapPrompt(gap, habits, todos, options);
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.35,
-        topP: 0.9,
-        topK: 32,
-        maxOutputTokens: 900,
-        responseMimeType: 'application/json',
-      },
-    }),
-  });
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: 0.35,
+          topP: 0.9,
+          topK: 32,
+          maxOutputTokens: Math.round(900 * speedFactor),
+          responseMimeType: 'application/json',
+        },
+      }),
+    });
 
-  if (!response.ok) return [];
-  const data = await response.json();
-  const text = data?.candidates?.[0]?.content?.parts?.map((part: any) => String(part?.text ?? '')).join('') ?? '';
-  const parsed = parseGeminiJson(text);
-  return normalizeGeminiSuggestions(parsed, gap, todos, options);
+    if (!response.ok) return [];
+    const data = await response.json();
+    const text = data?.candidates?.[0]?.content?.parts?.map((part: any) => String(part?.text ?? '')).join('') ?? '';
+    const parsed = parseGeminiJson(text);
+    return normalizeGeminiSuggestions(parsed, gap, todos, options);
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(timeoutId);
+  }
 };
 
 const buildHeuristicSuggestions = (
@@ -470,7 +487,34 @@ export const buildGapSuggestions = (
   todos: SmartTodoItem[],
   options?: BuildGapOptions,
 ): Promise<SmartCalendarSuggestion[]> => {
-  return requestGeminiGapSuggestions(gap, habits, todos, options)
-    .then((result) => (result.length ? result : buildHeuristicSuggestions(gap, habits, todos, options)))
-    .catch(() => buildHeuristicSuggestions(gap, habits, todos, options));
+  const desiredCount = Math.max(1, Math.min(5, options?.totalSuggestions ?? 3));
+  const aiTarget = Math.max(0, Math.min(desiredCount, options?.aiTargetCount ?? desiredCount));
+  const normalizeKey = (value: string): string => value.trim().toLowerCase().replace(/\s+/g, ' ');
+
+  return Promise.all([
+    requestGeminiGapSuggestions(gap, habits, todos, options).catch(() => [] as SmartCalendarSuggestion[]),
+    Promise.resolve(buildHeuristicSuggestions(gap, habits, todos, options)),
+  ]).then(([aiSuggestions, dbSuggestions]) => {
+    const selected: SmartCalendarSuggestion[] = [];
+    const used = new Set<string>();
+
+    const pushUnique = (list: SmartCalendarSuggestion[], limit?: number) => {
+      let added = 0;
+      for (const item of list) {
+        const key = normalizeKey(item.title);
+        if (used.has(key)) continue;
+        used.add(key);
+        selected.push(item);
+        added += 1;
+        if (selected.length >= desiredCount) break;
+        if (limit != null && added >= limit) break;
+      }
+    };
+
+    pushUnique(aiSuggestions, aiTarget);
+    pushUnique(dbSuggestions);
+    pushUnique(aiSuggestions);
+
+    return selected.slice(0, desiredCount);
+  });
 };

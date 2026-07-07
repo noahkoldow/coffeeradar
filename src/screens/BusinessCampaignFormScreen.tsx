@@ -1,4 +1,4 @@
-﻿import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   View,
   Text,
@@ -20,7 +20,9 @@ import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { createCampaign, updateCampaign, getCampaign } from '../services/business';
 import { Campaign, BusinessCategory, CampaignMedia } from '../types/business';
+import { DeckSuggestion } from '../types';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SuggestionCard } from '../components/SuggestionCard';
 
 type Props = StackScreenProps<RootStackParamList, 'BusinessCampaignForm'>;
 
@@ -41,28 +43,55 @@ const CTA_ACTIONS = [
   { label: 'Visit Website', value: 'url' },
   { label: 'Call Now', value: 'phone' },
   { label: 'Add to Calendar', value: 'calendar' },
-  { label: 'Scan QR Code', value: 'qr' },
+  { label: 'Visit location', value: 'location' },
 ];
 
-const STORY_ASPECT: [number, number] = [9, 16];
-const CARD_ASPECT: [number, number] = [16, 9];
-const TARGET_SLIDE_ASPECT: [number, number] = STORY_ASPECT;
-type CreativePreviewMode = 'story' | 'card';
+const TARGET_TAG_OPTIONS: { id: string; label: string }[] = [
+  { id: 'fitness', label: '🏋️ Fitness' },
+  { id: 'cycling', label: '🚴 Cycling' },
+  { id: 'running', label: '🏃 Running' },
+  { id: 'swimming', label: '🏊 Swimming' },
+  { id: 'hiking', label: '🥾 Hiking' },
+  { id: 'wellness', label: '🧘 Wellness' },
+  { id: 'nature', label: '🌿 Nature' },
+  { id: 'beaches', label: '🏖️ Beaches' },
+  { id: 'parks', label: '🌳 Parks' },
+  { id: 'explore', label: '🧭 Explore' },
+  { id: 'coffee', label: '☕ Coffee' },
+  { id: 'food', label: '🍽️ Food' },
+  { id: 'street_food', label: '🌮 Street Food' },
+  { id: 'art', label: '🎨 Art' },
+  { id: 'music', label: '🎵 Music' },
+  { id: 'movies', label: '🎬 Movies' },
+  { id: 'learning', label: '📚 Learning' },
+  { id: 'focus', label: '🎯 Focus' },
+  { id: 'social', label: '🫢 Social' },
+];
 
-const CROP_REQUIREMENTS: Record<CreativePreviewMode, { label: string; recommended: string; description: string }> = {
-  story: {
-    label: '9:16 vertical',
-    recommended: '1080 × 1920 px',
-    description: 'Best for full-screen story ads.',
-  },
-  card: {
-    label: '16:9 landscape',
-    recommended: '1920 × 1080 px',
-    description: 'Best for card header ads.',
-  },
+const CARD_ASPECT: [number, number] = [16, 9];
+const CROP_REQUIREMENTS = {
+  label: '16:9 landscape',
+  recommended: '1920 × 1080 px',
+  description: 'Card header crop for the standard campaign card.',
 };
 
-const PREVIEW_CARD_WIDTH = Dimensions.get('window').width - 72;
+const DEFAULT_CATEGORY_EMOJIS: Record<BusinessCategory, string[]> = {
+  restaurant: ['🍽️', '🔥', '🥂'],
+  cafe: ['☕', '🥐', '✨'],
+  gym: ['💪', '⚡', '🏋️'],
+  wellness: ['🧘', '🌿', '💆'],
+  entertainment: ['🎬', '🎟️', '🎉'],
+  retail: ['🛍️', '💎', '🛒'],
+  services: ['🔧', '✅', '⚙️'],
+  events: ['🎉', '📅', '🎈'],
+  tourism: ['✈️', '📍', '🌍'],
+  other: ['⭐', '💡', '🚀'],
+};
+
+const getDefaultCategoryEmojis = (category?: BusinessCategory): string[] => {
+  const fallback: BusinessCategory = 'cafe';
+  return DEFAULT_CATEGORY_EMOJIS[category ?? fallback] ?? DEFAULT_CATEGORY_EMOJIS[fallback];
+};
 
 export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
@@ -71,12 +100,13 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
   const { state } = useAppState();
   const [loading, setLoading] = useState(false);
   const [previewVisible, setPreviewVisible] = useState(false);
-  const [previewMode, setPreviewMode] = useState<CreativePreviewMode>('card');
+  const [emojiEditorVisible, setEmojiEditorVisible] = useState(false);
+  const [emojiDraft, setEmojiDraft] = useState('');
   const businessId = state.userId ?? state.businessProfile?.ownerId ?? state.businessProfile?.id;
   const businessLogoUrl = state.businessProfile?.logo?.url;
-  const selectedAspect = previewMode === 'story' ? STORY_ASPECT : CARD_ASPECT;
-  const selectedAspectRatio = previewMode === 'story' ? '9:16' : '16:9';
-  const selectedCrop = CROP_REQUIREMENTS[previewMode];
+  const selectedAspect = CARD_ASPECT;
+  const selectedAspectRatio = '16:9';
+  const selectedCrop = CROP_REQUIREMENTS;
 
   const campaignId = route.params?.campaignId;
   const [campaign, setCampaign] = useState<Partial<Campaign>>({
@@ -85,6 +115,7 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
     description: '',
     category: 'cafe',
     cta: { text: 'Learn More', action: 'url', value: '' },
+    emojis: getDefaultCategoryEmojis('cafe'),
     targeting: {},
   });
   const [imgNaturalSize, setImgNaturalSize] = useState<{ width: number; height: number } | null>(null);
@@ -93,6 +124,47 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
   const panStateRef = useRef<{ startFocalX: number; startFocalY: number; sw: number; sh: number } | null>(null);
   const [campaignLogoUploading, setCampaignLogoUploading] = useState(false);
   const effectiveLogoUrl = campaign.logoUrl || businessLogoUrl;
+  const targeting = campaign.targeting ?? {};
+
+  const updateTargeting = (updates: Partial<NonNullable<Campaign['targeting']>>) => {
+    setCampaign((prev) => ({
+      ...prev,
+      targeting: {
+        ...(prev.targeting ?? {}),
+        ...updates,
+      },
+    }));
+  };
+
+  const toggleRequiredTag = (tag: string) => {
+    const selected = targeting.requiredTags ?? [];
+    const next = selected.includes(tag)
+      ? selected.filter((item) => item !== tag)
+      : [...selected, tag];
+    updateTargeting({ requiredTags: next, interests: next });
+  };
+
+  const oneTimeDate = targeting.oneTimeStartAt
+    ? targeting.oneTimeStartAt.slice(0, 10)
+    : '';
+  const oneTimeTime = targeting.oneTimeStartAt && targeting.oneTimeStartAt.length >= 16
+    ? targeting.oneTimeStartAt.slice(11, 16)
+    : '';
+
+  const setOneTimeDateTime = (dateValue: string, timeValue: string) => {
+    const cleanDate = dateValue.trim();
+    const cleanTime = timeValue.trim();
+    if (!cleanDate || !cleanTime) {
+      updateTargeting({ oneTimeStartAt: undefined });
+      return;
+    }
+    const parsed = new Date(`${cleanDate}T${cleanTime}:00`);
+    if (Number.isNaN(parsed.getTime())) {
+      updateTargeting({ oneTimeStartAt: undefined });
+      return;
+    }
+    updateTargeting({ oneTimeStartAt: parsed.toISOString() });
+  };
 
   useEffect(() => {
     if (campaignId && businessId) {
@@ -156,9 +228,10 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
     try {
       const loaded = await getCampaign(businessId, campaignId);
       if (loaded) {
-        setCampaign(loaded);
-        const firstAspect = loaded.media?.[0]?.aspectRatio;
-        setPreviewMode('card');
+        setCampaign({
+          ...loaded,
+          emojis: loaded.emojis && loaded.emojis.length > 0 ? loaded.emojis : getDefaultCategoryEmojis(loaded.category),
+        });
       }
     } catch (error) {
       Alert.alert('Error', 'Failed to load campaign');
@@ -167,12 +240,20 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
     }
   };
 
-  const guessAspectRatio = (width?: number, height?: number): CampaignMedia['aspectRatio'] => {
-    if (!width || !height) return '9:16';
-    const ratio = width / height;
-    if (Math.abs(ratio - 1) < 0.1) return '1:1';
-    if (Math.abs(ratio - (16 / 9)) < 0.25) return '16:9';
-    return '9:16';
+  const parseEmojiDraft = (value: string): string[] => value.split(/\s+/).filter(Boolean).slice(0, 6);
+
+  const openEmojiEditor = () => {
+    setEmojiDraft((campaign.emojis ?? []).join(' '));
+    setEmojiEditorVisible(true);
+  };
+
+  const saveEmojiEditor = () => {
+    const parsed = parseEmojiDraft(emojiDraft);
+    setCampaign((prev) => ({
+      ...prev,
+      emojis: parsed.length > 0 ? parsed : getDefaultCategoryEmojis(prev.category),
+    }));
+    setEmojiEditorVisible(false);
   };
 
   const handleAddImage = async () => {
@@ -252,6 +333,44 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
       Alert.alert('Validation Error', 'CTA value is required');
       return;
     }
+    if (!targeting.requiredTags?.length) {
+      Alert.alert('Validation Error', 'Please select at least one required audience tag');
+      return;
+    }
+    if (targeting.requiredDurationMin && targeting.requiredDurationMin < 1) {
+      Alert.alert('Validation Error', 'Duration must be at least 1 minute');
+      return;
+    }
+    if (targeting.isOneTimeEvent) {
+      if (!targeting.oneTimeStartAt) {
+        Alert.alert('Validation Error', 'Please provide date and time for the one-time event');
+        return;
+      }
+      const oneTimeDateValue = new Date(targeting.oneTimeStartAt);
+      if (Number.isNaN(oneTimeDateValue.getTime())) {
+        Alert.alert('Validation Error', 'One-time event date/time is invalid');
+        return;
+      }
+    }
+    if (targeting.targetLocation) {
+      const { lat, lng, radiusKm } = targeting.targetLocation;
+      if (
+        typeof lat !== 'number' ||
+        typeof lng !== 'number' ||
+        Number.isNaN(lat) ||
+        Number.isNaN(lng) ||
+        typeof radiusKm !== 'number' ||
+        Number.isNaN(radiusKm) ||
+        radiusKm <= 0
+      ) {
+        Alert.alert('Validation Error', 'Target location requires valid latitude, longitude, and radius');
+        return;
+      }
+    }
+    if (campaign.retrieveOffer && !campaign.retrieveOffer.value.trim()) {
+      Alert.alert('Validation Error', 'Retrieve Offer value is required when the option is enabled');
+      return;
+    }
 
     if (!businessId) {
       Alert.alert('Error', 'No business profile found');
@@ -276,11 +395,39 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
     }
   };
 
+  const campaignEmojis = campaign.emojis && campaign.emojis.length > 0
+    ? campaign.emojis
+    : getDefaultCategoryEmojis(campaign.category);
+
+  const previewSuggestion: DeckSuggestion = {
+    id: `campaign_preview_${campaignId ?? 'new'}`,
+    type: 'GO_OUT',
+    source: 'business',
+    title: campaign.title?.trim() || 'Untitled Campaign',
+    hook: campaign.hook?.trim() || 'Promoted',
+    cta: campaign.cta?.text?.trim() || 'Learn More',
+    description: campaign.description?.trim() || 'Describe your offer so users understand the value quickly.',
+    durationMin: campaign.targeting?.requiredDurationMin ?? 60,
+    tags: campaign.targeting?.requiredTags?.length
+      ? campaign.targeting.requiredTags
+      : campaign.targeting?.interests ?? [],
+    emojis: campaignEmojis,
+    place: campaign.targeting?.targetLocation
+      ? {
+          name: campaign.targeting.targetLocation.name || campaign.targeting.locationName || 'Target location',
+          lat: campaign.targeting.targetLocation.lat,
+          lng: campaign.targeting.targetLocation.lng,
+          address: campaign.targeting.locationName || campaign.cta?.value || undefined,
+        }
+      : undefined,
+    confidence: 0.78,
+  };
+
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>← Back</Text>
+          <Text style={styles.backButton}>Back</Text>
         </Pressable>
         <Text style={styles.headerTitle}>{campaignId ? 'Edit Campaign' : 'Create Campaign'}</Text>
       </View>
@@ -292,145 +439,129 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
           <View style={styles.formGroup}>
             <Text style={styles.label}>Slide Builder</Text>
             <Text style={styles.mediaHint}>
-              Build the ad directly on the slide. The picker opens with the crop required for the selected format.
+              Card header format only. Hero media is cropped to 16:9 and shown in a standard-height card.
             </Text>
-            <View style={styles.formatPickerRow}>
-              <Pressable
-                onPress={() => setPreviewMode('story')}
-                style={[styles.formatCard, previewMode === 'story' && styles.formatCardActive]}
-              >
-                <Text style={[styles.formatCardTitle, previewMode === 'story' && styles.formatCardTitleActive]}>Vertical story</Text>
-                <Text style={[styles.formatCardCrop, previewMode === 'story' && styles.formatCardCropActive]}>Media crop: 9:16</Text>
-                <Text style={[styles.formatCardText, previewMode === 'story' && styles.formatCardTextActive]}>Recommended: 1080 × 1920 px</Text>
-              </Pressable>
-              <Pressable
-                onPress={() => setPreviewMode('card')}
-                style={[styles.formatCard, previewMode === 'card' && styles.formatCardActive]}
-              >
-                <Text style={[styles.formatCardTitle, previewMode === 'card' && styles.formatCardTitleActive]}>Card header</Text>
-                <Text style={[styles.formatCardCrop, previewMode === 'card' && styles.formatCardCropActive]}>Media crop: 16:9</Text>
-                <Text style={[styles.formatCardText, previewMode === 'card' && styles.formatCardTextActive]}>Recommended: 1920 × 1080 px</Text>
-              </Pressable>
-            </View>
             <View style={styles.cropRequirementBox}>
-              <Text style={styles.cropRequirementTitle}>Current media requirement: {selectedCrop.label}</Text>
+              <Text style={styles.cropRequirementTitle}>Card header crop: {selectedCrop.label}</Text>
               <Text style={styles.cropRequirementText}>
                 Picker crop: {selectedCrop.label}. Recommended image size: {selectedCrop.recommended}. {selectedCrop.description}
               </Text>
             </View>
 
-            <View
-              style={[
-                styles.mediaPreviewFrame,
-                { aspectRatio: selectedAspect[0] / selectedAspect[1] },
-                { maxWidth: previewMode === 'story' ? 260 : 360 },
-                previewMode === 'card' && styles.cardBuilderFrame,
-              ]}
-              onLayout={(e) => {
-                const { width, height } = e.nativeEvent.layout;
-                setPreviewLayout({ width, height });
-              }}
-            >
-              {campaign.media?.length && campaign.media[0].url ? (
-                <>
-                  {campaign.media[0].url && (
-                    <Image
-                      source={{ uri: campaign.media[0].url }}
-                      onLoad={({ nativeEvent }) => {
-                        const { width, height } = nativeEvent.source;
-                        if (width && height) setImgNaturalSize({ width, height });
-                      }}
-                      style={{ width: 0, height: 0 }}
-                    />
-                  )}
-                  <View
-                    style={styles.builderMediaLayer}
-                    {...(panResponderRef.current?.panHandlers ?? {})}
-                  >
-                    {(() => {
-                      const media = campaign.media?.[0];
-                      if (!media) return null;
-                      const focalX = media.focalX ?? 0.5;
-                      const focalY = media.focalY ?? 0.5;
+            <View style={styles.builderStandardCard}>
+              <View
+                style={styles.builderCardMediaArea}
+                onLayout={(e) => {
+                  const { width, height } = e.nativeEvent.layout;
+                  setPreviewLayout({ width, height });
+                }}
+              >
+                {campaign.media?.length && campaign.media[0].url ? (
+                  <>
+                    {campaign.media[0].url && (
+                      <Image
+                        source={{ uri: campaign.media[0].url }}
+                        onLoad={({ nativeEvent }) => {
+                          const { width, height } = nativeEvent.source;
+                          if (width && height) setImgNaturalSize({ width, height });
+                        }}
+                        style={{ width: 0, height: 0 }}
+                      />
+                    )}
+                    <View style={styles.builderMediaLayer} {...(panResponderRef.current?.panHandlers ?? {})}>
+                      {(() => {
+                        const media = campaign.media?.[0];
+                        if (!media) return null;
+                        const focalX = media.focalX ?? 0.5;
+                        const focalY = media.focalY ?? 0.5;
 
-                      if (!imgNaturalSize || previewLayout.width === 0) {
-                        return <Image source={{ uri: media.url }} style={styles.primaryMediaPreview} />;
-                      }
+                        if (!imgNaturalSize || previewLayout.width === 0) {
+                          return <Image source={{ uri: media.url }} style={styles.primaryMediaPreview} />;
+                        }
 
-                      const iw = imgNaturalSize.width;
-                      const ih = imgNaturalSize.height;
-                      const cw = previewLayout.width;
-                      const ch = previewLayout.height;
-                      const scale = Math.max(cw / iw, ch / ih);
-                      const sw = iw * scale;
-                      const sh = ih * scale;
+                        const iw = imgNaturalSize.width;
+                        const ih = imgNaturalSize.height;
+                        const cw = previewLayout.width;
+                        const ch = previewLayout.height;
+                        const scale = Math.max(cw / iw, ch / ih);
+                        const sw = iw * scale;
+                        const sh = ih * scale;
 
-                      const desiredCenterX = focalX * sw;
-                      const desiredCenterY = focalY * sh;
-                      let translateX = Math.round(cw / 2 - desiredCenterX);
-                      let translateY = Math.round(ch / 2 - desiredCenterY);
+                        const desiredCenterX = focalX * sw;
+                        const desiredCenterY = focalY * sh;
+                        let translateX = Math.round(cw / 2 - desiredCenterX);
+                        let translateY = Math.round(ch / 2 - desiredCenterY);
 
-                      const maxOffsetX = Math.max(0, sw - cw);
-                      const maxOffsetY = Math.max(0, sh - ch);
-                      translateX = Math.max(-maxOffsetX, Math.min(0, translateX));
-                      translateY = Math.max(-maxOffsetY, Math.min(0, translateY));
+                        const maxOffsetX = Math.max(0, sw - cw);
+                        const maxOffsetY = Math.max(0, sh - ch);
+                        translateX = Math.max(-maxOffsetX, Math.min(0, translateX));
+                        translateY = Math.max(-maxOffsetY, Math.min(0, translateY));
 
-                      return (
-                        <Image
-                          source={{ uri: media.url }}
-                          style={{
-                            position: 'absolute',
-                            width: sw,
-                            height: sh,
-                            left: translateX,
-                            top: translateY,
-                          }}
-                        />
-                      );
-                    })()}
-                  </View>
-                  <Pressable onPress={handleAddImage} style={styles.builderMediaEditPill}>
-                    <Text style={styles.builderMediaEditText}>Change media ({selectedAspectRatio})</Text>
-                  </Pressable>
-                </>
-              ) : (
-                <Pressable onPress={handleAddImage} style={styles.builderMediaPlaceholder}>
-                  <Text style={styles.builderPlus}>+</Text>
-                  <Text style={styles.builderPlaceholderTitle}>Add hero media</Text>
-                  <Text style={styles.builderPlaceholderText}>Required crop: {selectedCrop.label}</Text>
-                  <Text style={styles.builderPlaceholderText}>Recommended: {selectedCrop.recommended}</Text>
-                </Pressable>
-              )}
-
-              <View style={styles.previewTopRow} pointerEvents="box-none">
-                <View style={styles.previewBadgeWrap}>
-                  <Text style={styles.previewBadge}>Ad</Text>
-                </View>
-                {effectiveLogoUrl ? (
-                  <Pressable onPress={handleAddLogo} style={styles.previewLogoWrap}>
-                    <Image source={{ uri: effectiveLogoUrl }} style={styles.previewLogo} />
-                  </Pressable>
+                        return (
+                          <Image
+                            source={{ uri: media.url }}
+                            style={{
+                              position: 'absolute',
+                              width: sw,
+                              height: sh,
+                              left: translateX,
+                              top: translateY,
+                            }}
+                          />
+                        );
+                      })()}
+                    </View>
+                    <Pressable onPress={handleAddImage} style={styles.builderMediaEditPill}>
+                      <Text style={styles.builderMediaEditText}>Change media ({selectedAspectRatio})</Text>
+                    </Pressable>
+                  </>
                 ) : (
-                  <Pressable onPress={handleAddLogo} style={styles.builderLogoPlaceholder}>
-                    <Text style={styles.builderLogoPlus}>+</Text>
+                  <Pressable onPress={handleAddImage} style={styles.builderMediaPlaceholder}>
+                    <Text style={styles.builderPlus}>+</Text>
+                    <Text style={styles.builderPlaceholderTitle}>Add hero media</Text>
+                    <Text style={styles.builderPlaceholderText}>Required crop: {selectedCrop.label}</Text>
+                    <Text style={styles.builderPlaceholderText}>Recommended: {selectedCrop.recommended}</Text>
                   </Pressable>
                 )}
+
+                <View style={styles.previewTopRow} pointerEvents="box-none">
+                  <View style={styles.previewBadgeWrap}>
+                    <Text style={styles.previewBadge}>Ad</Text>
+                  </View>
+                  {effectiveLogoUrl ? (
+                    <Pressable onPress={handleAddLogo} style={styles.previewLogoWrap}>
+                      <Image source={{ uri: effectiveLogoUrl }} style={styles.previewLogo} />
+                    </Pressable>
+                  ) : (
+                    <Pressable onPress={handleAddLogo} style={styles.builderLogoPlaceholder}>
+                      <Text style={styles.builderLogoPlus}>+</Text>
+                    </Pressable>
+                  )}
+                </View>
               </View>
 
-              <View style={previewMode === 'story' ? styles.builderContentOverlay : styles.builderCardContentOverlay}>
+              <View style={styles.builderCardBody}>
+                <View style={styles.builderEmojiRow}>
+                  <Text style={styles.builderCrown}>👑</Text>
+                  <Text style={styles.builderEmojiText}>{campaignEmojis.join(' ')}</Text>
+                  <Pressable onPress={openEmojiEditor} style={styles.builderEmojiEditButton}>
+                    <Text style={styles.builderEmojiEditText}>Edit</Text>
+                  </Pressable>
+                </View>
+
                 <TextInput
-                  style={styles.builderHookInput}
+                  style={styles.builderHookInputCard}
                   placeholder="+ Add short hook"
-                  placeholderTextColor="rgba(255,255,255,0.78)"
+                  placeholderTextColor={theme.colors.textMuted}
                   value={campaign.hook || ''}
                   onChangeText={(text) => setCampaign({ ...campaign, hook: text })}
                   editable={!loading}
                   maxLength={80}
                 />
                 <TextInput
-                  style={styles.builderTitleInput}
+                  style={styles.builderTitleInputCard}
                   placeholder="+ Add headline"
-                  placeholderTextColor="rgba(255,255,255,0.78)"
+                  placeholderTextColor={theme.colors.textMuted}
                   value={campaign.title || ''}
                   onChangeText={(text) => setCampaign({ ...campaign, title: text })}
                   editable={!loading}
@@ -438,9 +569,9 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
                   multiline
                 />
                 <TextInput
-                  style={styles.builderDescriptionInput}
+                  style={styles.builderDescriptionInputCard}
                   placeholder="+ Add offer details"
-                  placeholderTextColor="rgba(255,255,255,0.72)"
+                  placeholderTextColor={theme.colors.textMuted}
                   value={campaign.description || ''}
                   onChangeText={(text) => setCampaign({ ...campaign, description: text })}
                   editable={!loading}
@@ -448,7 +579,7 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
                   multiline
                 />
                 <TextInput
-                  style={styles.builderCtaInput}
+                  style={styles.builderCtaInputCard}
                   placeholder="+ CTA"
                   placeholderTextColor="#fff"
                   value={campaign.cta?.text || ''}
@@ -491,7 +622,13 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
               {BUSINESS_CATEGORIES.map((cat) => (
                 <Pressable
                   key={cat.value}
-                  onPress={() => setCampaign({ ...campaign, category: cat.value })}
+                  onPress={() =>
+                    setCampaign({
+                      ...campaign,
+                      category: cat.value,
+                      emojis: getDefaultCategoryEmojis(cat.value),
+                    })
+                  }
                   style={[
                     styles.categoryButton,
                     campaign.category === cat.value && styles.categoryButtonActive,
@@ -542,8 +679,8 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
                 ? 'Website URL'
                 : campaign.cta?.action === 'phone'
                 ? 'Phone Number'
-                : campaign.cta?.action === 'qr'
-                ? 'QR Code Data'
+                : campaign.cta?.action === 'location'
+                ? 'Location Address'
                 : 'Calendar Details'}
               *
             </Text>
@@ -554,6 +691,8 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
                   ? 'https://...'
                   : campaign.cta?.action === 'phone'
                   ? '+1 (555) 123-4567'
+                  : campaign.cta?.action === 'location'
+                  ? 'Alexanderplatz 1, Berlin'
                   : 'Value'
               }
               value={campaign.cta?.value || ''}
@@ -581,6 +720,227 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
               }
               editable={!loading}
             />
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Retrieve Offer</Text>
+            <View style={styles.retrieveRow}>
+              <Pressable
+                onPress={() => setCampaign({ ...campaign, retrieveOffer: undefined })}
+                style={[
+                  styles.retrieveChip,
+                  !campaign.retrieveOffer && styles.retrieveChipActive,
+                ]}
+              >
+                <Text style={[styles.retrieveChipText, !campaign.retrieveOffer && styles.retrieveChipTextActive]}>Disabled</Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  setCampaign({
+                    ...campaign,
+                    retrieveOffer: { type: 'qr', value: campaign.retrieveOffer?.type === 'qr' ? campaign.retrieveOffer.value : '' },
+                  })
+                }
+                style={[
+                  styles.retrieveChip,
+                  campaign.retrieveOffer?.type === 'qr' && styles.retrieveChipActive,
+                ]}
+              >
+                <Text style={[styles.retrieveChipText, campaign.retrieveOffer?.type === 'qr' && styles.retrieveChipTextActive]}>QR value</Text>
+              </Pressable>
+              <Pressable
+                onPress={() =>
+                  setCampaign({
+                    ...campaign,
+                    retrieveOffer: { type: 'code', value: campaign.retrieveOffer?.type === 'code' ? campaign.retrieveOffer.value : '' },
+                  })
+                }
+                style={[
+                  styles.retrieveChip,
+                  campaign.retrieveOffer?.type === 'code' && styles.retrieveChipActive,
+                ]}
+              >
+                <Text style={[styles.retrieveChipText, campaign.retrieveOffer?.type === 'code' && styles.retrieveChipTextActive]}>Text code</Text>
+              </Pressable>
+            </View>
+
+            {campaign.retrieveOffer ? (
+              <TextInput
+                style={styles.input}
+                placeholder={campaign.retrieveOffer.type === 'qr' ? 'https://offer.example/redeem?id=...' : 'SUMMER25'}
+                value={campaign.retrieveOffer.value}
+                onChangeText={(text) =>
+                  setCampaign({
+                    ...campaign,
+                    retrieveOffer: { ...campaign.retrieveOffer!, value: text },
+                  })
+                }
+                editable={!loading}
+              />
+            ) : null}
+          </View>
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Audience Targeting</Text>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Required User Tags *</Text>
+            <Text style={styles.mediaHint}>Users must match all selected tags to see this campaign.</Text>
+            <View style={styles.retrieveRow}>
+              {TARGET_TAG_OPTIONS.map((tag) => {
+                const isActive = (targeting.requiredTags ?? []).includes(tag.id);
+                return (
+                  <Pressable
+                    key={tag.id}
+                    onPress={() => toggleRequiredTag(tag.id)}
+                    style={[styles.retrieveChip, isActive && styles.retrieveChipActive]}
+                  >
+                    <Text style={[styles.retrieveChipText, isActive && styles.retrieveChipTextActive]}>{tag.label}</Text>
+                  </Pressable>
+                );
+              })}
+            </View>
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>One-Time Event</Text>
+            <View style={styles.retrieveRow}>
+              <Pressable
+                onPress={() => updateTargeting({ isOneTimeEvent: false, oneTimeStartAt: undefined })}
+                style={[styles.retrieveChip, !targeting.isOneTimeEvent && styles.retrieveChipActive]}
+              >
+                <Text style={[styles.retrieveChipText, !targeting.isOneTimeEvent && styles.retrieveChipTextActive]}>No</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => updateTargeting({ isOneTimeEvent: true })}
+                style={[styles.retrieveChip, !!targeting.isOneTimeEvent && styles.retrieveChipActive]}
+              >
+                <Text style={[styles.retrieveChipText, !!targeting.isOneTimeEvent && styles.retrieveChipTextActive]}>Yes</Text>
+              </Pressable>
+            </View>
+
+            {targeting.isOneTimeEvent ? (
+              <>
+                <Text style={styles.mediaHint}>Set local event date and time.</Text>
+                <View style={styles.rowInputs}>
+                  <TextInput
+                    style={[styles.input, styles.halfInput]}
+                    placeholder="YYYY-MM-DD"
+                    value={oneTimeDate}
+                    onChangeText={(text) => setOneTimeDateTime(text, oneTimeTime)}
+                    editable={!loading}
+                  />
+                  <TextInput
+                    style={[styles.input, styles.halfInput]}
+                    placeholder="HH:mm"
+                    value={oneTimeTime}
+                    onChangeText={(text) => setOneTimeDateTime(oneTimeDate, text)}
+                    editable={!loading}
+                  />
+                </View>
+              </>
+            ) : null}
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Required Free Time (minutes)</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="e.g., 60"
+              keyboardType="numeric"
+              value={targeting.requiredDurationMin ? String(targeting.requiredDurationMin) : ''}
+              onChangeText={(text) => {
+                const trimmed = text.trim();
+                if (!trimmed) {
+                  updateTargeting({ requiredDurationMin: undefined });
+                  return;
+                }
+                const parsed = Number.parseInt(trimmed, 10);
+                updateTargeting({ requiredDurationMin: Number.isNaN(parsed) ? undefined : parsed });
+              }}
+              editable={!loading}
+            />
+          </View>
+
+          <View style={styles.formGroup}>
+            <Text style={styles.label}>Target Location</Text>
+            <Text style={styles.mediaHint}>Only users inside this radius qualify.</Text>
+            <TextInput
+              style={styles.input}
+              placeholder="Location name (optional)"
+              value={targeting.targetLocation?.name ?? targeting.locationName ?? ''}
+              onChangeText={(text) =>
+                updateTargeting({
+                  locationName: text,
+                  targetLocation: {
+                    lat: targeting.targetLocation?.lat ?? 0,
+                    lng: targeting.targetLocation?.lng ?? 0,
+                    radiusKm: targeting.targetLocation?.radiusKm ?? 2,
+                    name: text,
+                  },
+                })
+              }
+              editable={!loading}
+            />
+            <View style={styles.rowInputs}>
+              <TextInput
+                style={[styles.input, styles.thirdInput]}
+                placeholder="Latitude"
+                keyboardType="decimal-pad"
+                value={targeting.targetLocation?.lat !== undefined ? String(targeting.targetLocation?.lat) : ''}
+                onChangeText={(text) => {
+                  const parsed = Number.parseFloat(text);
+                  updateTargeting({
+                    targetLocation: {
+                      name: targeting.targetLocation?.name ?? targeting.locationName,
+                      lat: Number.isNaN(parsed) ? 0 : parsed,
+                      lng: targeting.targetLocation?.lng ?? 0,
+                      radiusKm: targeting.targetLocation?.radiusKm ?? 2,
+                    },
+                  });
+                }}
+                editable={!loading}
+              />
+              <TextInput
+                style={[styles.input, styles.thirdInput]}
+                placeholder="Longitude"
+                keyboardType="decimal-pad"
+                value={targeting.targetLocation?.lng !== undefined ? String(targeting.targetLocation?.lng) : ''}
+                onChangeText={(text) => {
+                  const parsed = Number.parseFloat(text);
+                  updateTargeting({
+                    targetLocation: {
+                      name: targeting.targetLocation?.name ?? targeting.locationName,
+                      lat: targeting.targetLocation?.lat ?? 0,
+                      lng: Number.isNaN(parsed) ? 0 : parsed,
+                      radiusKm: targeting.targetLocation?.radiusKm ?? 2,
+                    },
+                  });
+                }}
+                editable={!loading}
+              />
+              <TextInput
+                style={[styles.input, styles.thirdInput]}
+                placeholder="Radius km"
+                keyboardType="decimal-pad"
+                value={targeting.targetLocation?.radiusKm !== undefined ? String(targeting.targetLocation?.radiusKm) : ''}
+                onChangeText={(text) => {
+                  const parsed = Number.parseFloat(text);
+                  const radius = Number.isNaN(parsed) ? 0 : parsed;
+                  updateTargeting({
+                    locationRadius: radius,
+                    targetLocation: {
+                      name: targeting.targetLocation?.name ?? targeting.locationName,
+                      lat: targeting.targetLocation?.lat ?? 0,
+                      lng: targeting.targetLocation?.lng ?? 0,
+                      radiusKm: radius,
+                    },
+                  });
+                }}
+                editable={!loading}
+              />
+            </View>
           </View>
         </View>
 
@@ -623,101 +983,40 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
               </Pressable>
             </View>
 
-            <View style={styles.previewModeRow}>
-              <Pressable
-                onPress={() => setPreviewMode('story')}
-                style={[styles.previewModeChip, previewMode === 'story' && styles.previewModeChipActive]}
-              >
-                <Text style={[styles.previewModeChipText, previewMode === 'story' && styles.previewModeChipTextActive]}>Story 9:16</Text>
+            <Text style={styles.previewNote}>The current photo will be cropped to 16:9.</Text>
+
+            <View style={styles.previewCardHost}>
+              <SuggestionCard suggestion={previewSuggestion} preview />
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={emojiEditorVisible}
+        onRequestClose={() => setEmojiEditorVisible(false)}
+      >
+        <View style={styles.previewBackdrop}>
+          <View style={styles.emojiEditorCard}>
+            <Text style={styles.previewTitle}>Edit crown emojis</Text>
+            <Text style={styles.previewNote}>Use spaces between emojis. Example: ☕ ✨ 🥐</Text>
+            <TextInput
+              style={styles.input}
+              value={emojiDraft}
+              onChangeText={setEmojiDraft}
+              placeholder="☕ ✨ 🥐"
+              editable={!loading}
+            />
+            <View style={styles.emojiEditorActions}>
+              <Pressable onPress={() => setEmojiEditorVisible(false)} style={styles.previewButton}>
+                <Text style={styles.previewButtonText}>Cancel</Text>
               </Pressable>
-              <Pressable
-                onPress={() => setPreviewMode('card')}
-                style={[styles.previewModeChip, previewMode === 'card' && styles.previewModeChipActive]}
-              >
-                <Text style={[styles.previewModeChipText, previewMode === 'card' && styles.previewModeChipTextActive]}>Card 16:9</Text>
+              <Pressable onPress={saveEmojiEditor} style={styles.saveButton}>
+                <Text style={styles.saveButtonText}>Save emojis</Text>
               </Pressable>
             </View>
-
-            <Text style={styles.previewNote}>
-              The current photo will be cropped to {previewMode === 'story' ? '9:16' : '16:9'}.
-            </Text>
-
-            {previewMode === 'story' ? (
-              <View style={[styles.previewSlide, styles.storySlide, { width: PREVIEW_CARD_WIDTH, height: Math.round(PREVIEW_CARD_WIDTH * (16 / 9)) }]}>
-                {campaign.media?.[0]?.url ? (
-                  <Image source={{ uri: campaign.media[0].url }} style={styles.previewSlideImage} />
-                ) : (
-                  <View style={styles.previewSlidePlaceholder}>
-                    <Text style={styles.previewSlidePlaceholderIcon}>🖼️</Text>
-                    <Text style={styles.previewSlidePlaceholderText}>No media selected</Text>
-                  </View>
-                )}
-
-                <View style={styles.previewTopRow}>
-                  <View style={styles.previewBadgeWrap}>
-                    <Text style={styles.previewBadge}>Ad</Text>
-                  </View>
-                  {effectiveLogoUrl ? (
-                    <View style={styles.previewLogoWrap}>
-                      <Image source={{ uri: effectiveLogoUrl }} style={styles.previewLogo} />
-                    </View>
-                  ) : null}
-                </View>
-
-                <View style={styles.previewContentOverlay}>
-                  <Text style={styles.previewHook} numberOfLines={2}>
-                    {campaign.hook?.trim() || 'Your campaign hook appears here'}
-                  </Text>
-                  <Text style={styles.previewMainTitle} numberOfLines={2}>
-                    {campaign.title?.trim() || 'Untitled Campaign'}
-                  </Text>
-                  <Text style={styles.previewDescription} numberOfLines={3}>
-                    {campaign.description?.trim() || 'Describe your offer so users understand the value quickly.'}
-                  </Text>
-                  <View style={styles.previewCtaButton}>
-                    <Text style={styles.previewCtaText}>{campaign.cta?.text?.trim() || 'Learn More'}</Text>
-                  </View>
-                </View>
-              </View>
-            ) : (
-              <View style={[styles.previewSlide, styles.cardSlide, { width: PREVIEW_CARD_WIDTH }]}>
-                <View style={styles.cardMediaWrap}>
-                  {campaign.media?.[0]?.url ? (
-                    <Image source={{ uri: campaign.media[0].url }} style={styles.cardMedia} />
-                  ) : (
-                    <View style={[styles.cardMediaPlaceholder, { width: '100%', height: '100%' }]}>
-                      <Text style={styles.previewSlidePlaceholderIcon}>🖼️</Text>
-                      <Text style={styles.previewSlidePlaceholderText}>No media selected</Text>
-                    </View>
-                  )}
-                  <View style={styles.cardTopRow}>
-                    <View style={styles.previewBadgeWrap}>
-                      <Text style={styles.previewBadge}>Ad</Text>
-                    </View>
-                    {effectiveLogoUrl ? (
-                      <View style={styles.previewLogoWrap}>
-                        <Image source={{ uri: effectiveLogoUrl }} style={styles.previewLogo} />
-                      </View>
-                    ) : null}
-                  </View>
-                </View>
-
-                <View style={styles.cardBody}>
-                  <Text style={styles.previewHookCard} numberOfLines={1}>
-                    {campaign.hook?.trim() || 'Your campaign hook appears here'}
-                  </Text>
-                  <Text style={styles.previewMainTitleCard} numberOfLines={2}>
-                    {campaign.title?.trim() || 'Untitled Campaign'}
-                  </Text>
-                  <Text style={styles.previewDescriptionCard} numberOfLines={3}>
-                    {campaign.description?.trim() || 'Describe your offer so users understand the value quickly.'}
-                  </Text>
-                  <View style={styles.previewCtaButtonCard}>
-                    <Text style={styles.previewCtaText}>{campaign.cta?.text?.trim() || 'Learn More'}</Text>
-                  </View>
-                </View>
-              </View>
-            )}
           </View>
         </View>
       </Modal>
@@ -795,7 +1094,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       minHeight: 100,
       textAlignVertical: 'top',
     },
-    mediaPreviewFrame: {
+    builderStandardCard: {
       width: '100%',
       alignSelf: 'center',
       borderWidth: 1,
@@ -803,10 +1102,20 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       borderRadius: 12,
       overflow: 'hidden',
       backgroundColor: theme.colors.card,
-      aspectRatio: TARGET_SLIDE_ASPECT[0] / TARGET_SLIDE_ASPECT[1],
+      minHeight: 420,
     },
-    cardBuilderFrame: {
-      minHeight: undefined,
+    builderCardMediaArea: {
+      position: 'relative',
+      width: '100%',
+      height: 150,
+      backgroundColor: theme.colors.backgroundAlt,
+      overflow: 'hidden',
+    },
+    builderCardBody: {
+      padding: theme.spacing.md,
+      gap: 8,
+      backgroundColor: theme.colors.card,
+      flex: 1,
     },
     builderMediaLayer: {
       width: '100%',
@@ -874,48 +1183,56 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       lineHeight: 24,
       fontFamily: theme.fonts.heading,
     },
-    builderContentOverlay: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      bottom: 0,
-      paddingHorizontal: theme.spacing.md,
-      paddingVertical: theme.spacing.md,
-      backgroundColor: 'rgba(0,0,0,0.58)',
-      gap: 6,
+    builderEmojiRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 8,
+      marginBottom: 2,
     },
-    builderCardContentOverlay: {
-      position: 'absolute',
-      left: 0,
-      right: 0,
-      bottom: 0,
-      paddingHorizontal: theme.spacing.md,
-      paddingVertical: theme.spacing.md,
-      backgroundColor: 'rgba(0,0,0,0.62)',
-      gap: 5,
+    builderCrown: {
+      fontSize: 16,
     },
-    builderHookInput: {
-      color: '#D1D5DB',
+    builderEmojiText: {
+      flex: 1,
+      fontFamily: theme.fonts.semibold,
+      color: theme.colors.text,
+      fontSize: 14,
+    },
+    builderEmojiEditButton: {
+      borderRadius: 8,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.backgroundAlt,
+      paddingHorizontal: 10,
+      paddingVertical: 6,
+    },
+    builderEmojiEditText: {
+      color: theme.colors.text,
+      fontFamily: theme.fonts.semibold,
+      fontSize: 12,
+    },
+    builderHookInputCard: {
+      color: theme.colors.accent,
       fontFamily: theme.fonts.body,
       fontSize: 12,
       padding: 0,
     },
-    builderTitleInput: {
-      color: '#fff',
+    builderTitleInputCard: {
+      color: theme.colors.text,
       fontFamily: theme.fonts.heading,
-      fontSize: 22,
+      fontSize: 20,
       padding: 0,
       minHeight: 30,
     },
-    builderDescriptionInput: {
-      color: '#E5E7EB',
+    builderDescriptionInputCard: {
+      color: theme.colors.textMuted,
       fontFamily: theme.fonts.body,
       fontSize: 12,
       lineHeight: 16,
       padding: 0,
       minHeight: 38,
     },
-    builderCtaInput: {
+    builderCtaInputCard: {
       marginTop: 4,
       alignSelf: 'flex-start',
       minWidth: 96,
@@ -1113,6 +1430,43 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       color: '#fff',
       fontWeight: '600',
     },
+    retrieveRow: {
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
+      marginBottom: theme.spacing.sm,
+      flexWrap: 'wrap',
+    },
+    retrieveChip: {
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      borderRadius: 999,
+      paddingHorizontal: 12,
+      paddingVertical: 8,
+      backgroundColor: theme.colors.card,
+    },
+    retrieveChipActive: {
+      borderColor: theme.colors.accent,
+      backgroundColor: theme.colors.accentSoft,
+    },
+    retrieveChipText: {
+      color: theme.colors.textMuted,
+      fontFamily: theme.fonts.semibold,
+      fontSize: 12,
+    },
+    retrieveChipTextActive: {
+      color: theme.colors.accent,
+    },
+    rowInputs: {
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
+      marginTop: theme.spacing.sm,
+    },
+    halfInput: {
+      flex: 1,
+    },
+    thirdInput: {
+      flex: 1,
+    },
     saveButton: {
       paddingVertical: theme.spacing.md,
       paddingHorizontal: theme.spacing.lg,
@@ -1161,6 +1515,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       borderColor: theme.colors.border,
       alignItems: 'center',
       gap: theme.spacing.md,
+    },
+    previewCardHost: {
+      width: '100%',
+      marginTop: 56,
     },
     previewHeaderRow: {
       width: '100%',
@@ -1329,6 +1687,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       fontFamily: theme.fonts.semibold,
       fontSize: 12,
     },
+    previewEmojiRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 6,
+    },
+    previewCrown: {
+      fontSize: 15,
+    },
+    previewEmojiText: {
+      color: theme.colors.text,
+      fontFamily: theme.fonts.semibold,
+      fontSize: 13,
+    },
     cardMediaWrap: {
       position: 'relative',
       width: '100%',
@@ -1377,5 +1748,20 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       borderRadius: 8,
       paddingHorizontal: 12,
       paddingVertical: 8,
+    },
+    emojiEditorCard: {
+      width: '100%',
+      maxWidth: 420,
+      backgroundColor: theme.colors.card,
+      borderRadius: 14,
+      padding: theme.spacing.md,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      gap: theme.spacing.md,
+    },
+    emojiEditorActions: {
+      flexDirection: 'row',
+      gap: theme.spacing.sm,
+      justifyContent: 'flex-end',
     },
   });

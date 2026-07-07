@@ -180,6 +180,7 @@ export const communityIdeaToSuggestion = (idea: CommunityIdeaSubmission): DeckSu
     emojis: idea.emojis ?? [],
     place: idea.place,
     event: idea.event,
+    timeOfDay: idea.timeOfDay,
     confidence: 0.78,
     isRepetitionFriendly: true,
   };
@@ -218,6 +219,9 @@ export const submitCommunityIdea = async (
     const cleanCta = idea.cta?.trim();
     if (cleanCta) {
       payload.cta = cleanCta;
+    }
+    if (idea.timeOfDay) {
+      payload.timeOfDay = idea.timeOfDay;
     }
     if (idea.place) {
       payload.place = idea.place;

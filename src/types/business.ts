@@ -71,8 +71,23 @@ export type TargetingType = 'mood' | 'weather' | 'location' | 'interest' | 'time
 export interface CampaignTargeting {
   moods?: string[]; // e.g., ['relaxed', 'energetic', 'social']
   weatherConditions?: string[]; // e.g., ['sunny', 'rainy', 'cloudy']
+  /** User preference tags that must be present for eligibility */
+  requiredTags?: string[];
+  /** Minimum free time (in minutes) user should have for this campaign */
+  requiredDurationMin?: number;
+  /** Optional one-time event mode (date + time campaign) */
+  isOneTimeEvent?: boolean;
+  /** ISO timestamp used when isOneTimeEvent is true */
+  oneTimeStartAt?: string;
   locationRadius?: number;
   locationName?: string;
+  /** Single primary target location for campaign matching */
+  targetLocation?: {
+    name?: string;
+    lat: number;
+    lng: number;
+    radiusKm: number;
+  };
   locations?: {
     lat: number;
     lng: number;
@@ -110,8 +125,13 @@ export interface Campaign {
   logoUrl?: string;
   cta: {
     text: string; // e.g., "Book Now", "Download", "Visit"
-    action: 'url' | 'phone' | 'qr' | 'calendar';
+    action: 'url' | 'phone' | 'calendar' | 'location';
     value: string; // URL, phone number, QR code data, etc.
+  };
+  emojis?: string[];
+  retrieveOffer?: {
+    type: 'qr' | 'code';
+    value: string;
   };
   category: BusinessCategory;
   media: CampaignMedia[];

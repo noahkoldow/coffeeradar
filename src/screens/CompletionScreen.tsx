@@ -69,16 +69,16 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
   const badgeLevelUp = useMemo((): BadgeProgress | null => {
     if (!tags?.length) return null;
     const progress = buildBadgeProgress(state.activityLog, state.habits);
-    // Find a badge whose tags overlap and that just hit a new level
-    // (level > 0 and count equals the current level threshold)
+    // Find a badge whose current activity pushed total minutes across a level threshold.
     for (const badge of progress) {
       if (!badge.tags.some((t) => tags.includes(t))) continue;
-      if (badge.level > 0 && badge.count === badge.currentTarget) {
+      const previousMinutes = Math.max(0, badge.count - durationMin);
+      if (badge.level > 0 && previousMinutes < badge.currentTarget && badge.count >= badge.currentTarget) {
         return badge;
       }
     }
     return null;
-  }, [state.activityLog, tags]);
+  }, [durationMin, state.activityLog, state.habits, tags]);
 
   const weekStats = useMemo(() => {
     const now = new Date();
@@ -206,7 +206,7 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
   return (
     <LinearGradient
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
-      style={[styles.container, { paddingTop: insets.top + theme.spacing.lg, paddingBottom: insets.bottom + theme.spacing.lg }]}
+      style={[styles.container, { paddingTop: insets.top + theme.spacing.sm, paddingBottom: insets.bottom + theme.spacing.lg }]}
     >
       {/* Big animated checkmark */}
       <View style={styles.heroSection}>
@@ -299,11 +299,10 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
           style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7, transform: [{ scale: 0.96 }] }]}
           onPress={goHome}
         >
-          <Text style={styles.backButtonText}>← Back</Text>
+          <Text style={styles.backButtonText}>← Home</Text>
         </Pressable>
         <PrimaryButton label="Next activity" onPress={queueNextActivity} glow style={styles.nextButtonWrap} />
       </Animated.View>
-      <Text style={[styles.hint, { marginTop: theme.spacing.sm }]}>Keep the momentum going 🚀</Text>
 
       <EmojiConfetti visible={showConfetti} emojis={confettiEmojis} />
     </LinearGradient>
@@ -319,7 +318,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   heroSection: {
     alignItems: 'center',
     gap: theme.spacing.md,
-    marginTop: theme.spacing.lg,
+    marginTop: theme.spacing.sm,
   },
   checkCircle: {
     width: 80,

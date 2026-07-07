@@ -1,9 +1,10 @@
 import React, { useMemo, useState } from 'react';
-import { Image, StyleSheet, Text, View } from 'react-native';
+import { StyleSheet, Text, View } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { BrandCollabLockup } from '../components/BrandCollabLockup';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
@@ -12,7 +13,6 @@ import { logEvent } from '../services/analytics';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
-const bitsLogo = require('../../assets/logo.png');
 
 type Props = StackScreenProps<RootStackParamList, 'CalendarPermission'>;
 
@@ -45,7 +45,7 @@ export const CalendarPermissionScreen: React.FC<Props> = ({ navigation }) => {
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
       <View style={styles.content}>
-        <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+        <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
         <Text style={styles.title}>Connect your calendar 📅</Text>
         <Text style={styles.subtitle}>
           We read your next event to find real free time, and write a plan when you commit.
@@ -73,8 +73,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: theme.spacing.xxl,
   },
   logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
+    alignSelf: 'flex-start',
     marginBottom: theme.spacing.lg,
   },
   title: {

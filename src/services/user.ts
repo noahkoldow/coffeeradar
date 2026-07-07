@@ -425,7 +425,8 @@ export const isBusinessAdmin = (email?: string | null): boolean => {
 export const isBusinessPremium = (email?: string | null): boolean => {
   if (!email) return false;
   const normalized = email.trim().toLowerCase();
-  return getPremiumEmails().includes(normalized);
+  // Admins should always inherit premium capabilities.
+  return getPremiumEmails().includes(normalized) || isBusinessAdmin(normalized);
 };
 
 const toBusinessSubmission = (id: string, data: any): BusinessSubmission | null => {

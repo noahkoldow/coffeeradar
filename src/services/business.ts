@@ -347,6 +347,9 @@ export const createCampaign = async (
     title: campaign.title || 'Untitled Campaign',
     hook: campaign.hook || '',
     description: campaign.description || '',
+    logoUrl: campaign.logoUrl,
+    emojis: campaign.emojis || [],
+    retrieveOffer: campaign.retrieveOffer,
     // Some deployed Firestore rules expect cta to be a string.
     cta: campaign.cta?.text || 'Learn More',
     ctaPayload: campaign.cta || {

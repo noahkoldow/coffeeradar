@@ -66,6 +66,14 @@ const SLIDES = [
     color: '#6366F1',
   },
   {
+    id: 'redemption',
+    title: 'Give Users the Final Push',
+    subtitle: 'App-exclusive code redemption',
+    icon: '🎟️',
+    description: 'Offer special discount codes only for users coming from Bits. They redeem directly at your business through the integrated code redemption program.',
+    color: '#F97316',
+  },
+  {
     id: 'ready',
     title: 'Ready to Get Started?',
     subtitle: 'Create your business account',
@@ -187,7 +195,7 @@ export const BusinessOnboarding: React.FC<BusinessOnboardingProps> = ({ onComple
         <View style={styles.navButtons}>
           {currentSlide > 0 && (
             <Pressable onPress={handlePrev} style={[styles.button, styles.prevButton]}>
-              <Text style={styles.prevButtonText}>← Back</Text>
+              <Text style={styles.prevButtonText}>Back</Text>
             </Pressable>
           )}
           <Pressable

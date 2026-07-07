@@ -73,7 +73,7 @@ export const ActivityChatScreen: React.FC<Props> = ({ navigation, route }) => {
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + theme.spacing.md }]}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>← Back</Text>
+          <Text style={styles.back}>Back</Text>
         </Pressable>
         <Text style={styles.title}>{threadTitle}</Text>
         <Text style={styles.subtitle}>

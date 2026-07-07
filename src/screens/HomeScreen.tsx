@@ -9,26 +9,37 @@ import { ChargeBar } from '../components/ChargeBar';
 import { Chip } from '../components/Chip';
 import { BadgeRing } from '../components/BadgeRing';
 import { BadgeIcon } from '../components/BadgeIcon';
+import { BrandCollabLockup } from '../components/BrandCollabLockup';
 import { ActivityBanner, SkyBanner } from '../components/ActivityBanner';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
-import { getAvailability } from '../services/calendar';
+import { deletePlanEvent, getAvailability } from '../services/calendar';
 import { getCurrentLocation } from '../services/location';
 import { formatDuration, formatTime } from '../utils/time';
 import { logEvent } from '../services/analytics';
-import { upsertUserData } from '../services/user';
+import { isBusinessAdmin, upsertUserData } from '../services/user';
 import { fetchWeather, WeatherCondition } from '../services/weather';
 import { prefetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { loadWeatherCondition, saveWeatherCondition } from '../utils/storage';
 import { detectLocationProfile } from '../services/locationProfile';
 import { recommendedHabits } from '../data/habits';
-import { Availability, Habit, ScheduledActivity } from '../types';
+import { ActivityLog, Availability, Habit, ScheduledActivity } from '../types';
 import { formatHabitFrequency, formatHabitTimeOfDay, isHabitDue, streakEmoji, weeklyDots, getHabitUrgency } from '../utils/habits';
 import * as Haptics from 'expo-haptics';
 import { buildBadgeProgress } from '../utils/badges';
+import { buildPlanSessionKey } from '../utils/planSession';
 
 type Props = StackScreenProps<RootStackParamList, 'Home'>;
+
+type ActionMode = {
+  key: 'all' | 'productive' | 'tomorrow' | 'at_home';
+  label: string;
+  filter?: string;
+  planDate?: 'today' | 'tomorrow';
+  bg: string;
+  text: string;
+};
 
 const durationOptions = [30, 60, 120, 240];
 
@@ -42,7 +53,6 @@ const BANNER_PAGE_HEIGHT = 94;
 // Logo: 1:3 aspect ratio, half the button height (~30px tall, 90px wide)
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
-const bitsLogo = require('../../assets/logo.png');
 const lastUpdatedLabel = new Date().toLocaleDateString('en-GB', {
   day: 'numeric',
   month: 'short',
@@ -69,9 +79,24 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const actionsRef = useRef(actions);
   useEffect(() => { actionsRef.current = actions; }, [actions]);
+  const deckQueueRef = useRef({
+    hasQueuedDeck: state.preloadedDeck != null,
+    deckLoading: state.deckLoading,
+    prefs: state.prefs,
+  });
+  useEffect(() => {
+    deckQueueRef.current = {
+      hasQueuedDeck: state.preloadedDeck != null,
+      deckLoading: state.deckLoading,
+      prefs: state.prefs,
+    };
+  }, [state.preloadedDeck, state.deckLoading, state.prefs]);
   const isInitialMount = useRef(true);
+  const isAdmin = isBusinessAdmin(state.userEmail);
+  const premiumEnabled = state.isPremium;
 
   const screenWidth = Dimensions.get('window').width - theme.spacing.xl * 2;
+  const homeScrollRef = useRef<ScrollView>(null);
 
   // ������ Banner auto-swipe ������
   const bannerScrollRef = useRef<ScrollView>(null);
@@ -93,7 +118,6 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   }, [screenWidth]);
 
   // ������ Scheduled activity popup ������
-  const [schedulePrompt, setSchedulePrompt] = useState<ScheduledActivity | null>(null);
   const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
 
   const recentActivities = useMemo(() => {
@@ -101,6 +125,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   }, [state.activityLog]);
 
   const { height: screenHeight } = Dimensions.get('window');
+  const todayKey = useMemo(() => {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return today.toDateString();
+  }, []);
 
   // Restore cached weather so the banner doesn't visually jump on first render
   useEffect(() => {
@@ -111,52 +140,70 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     });
   }, []);
 
-  const ACTION_MODES = useMemo(() => [
-    { key: 'all', label: 'DO SOMETHING NOW', filter: undefined as string | undefined, bg: theme.colors.accent, text: theme.colors.accentText },
-    {
-      key: 'productive',
-      label: 'BE PRODUCTIVE',
-      filter: 'productive',
-      bg: theme.isDark ? '#2A4A5E' : '#A8D8EA',
-      text: theme.isDark ? '#D8F0FF' : '#1A3A4A',
-    },
-    {
-      key: 'tomorrow',
-      label: 'PLAN AHEAD',
-      filter: undefined as string | undefined,
-      planDate: 'tomorrow' as const,
-      bg: theme.isDark ? '#2E4F45' : '#B5EAD7',
-      text: theme.isDark ? '#D9F6EA' : '#1A4A3A',
-    },
-    {
-      key: 'at_home',
-      label: 'HOMEBODY IT',
-      filter: 'at_home',
-      bg: theme.isDark ? '#54374A' : '#E2B6CF',
-      text: theme.isDark ? '#F5DDED' : '#3A1A2E',
-    },
-  ], [theme.colors.accent, theme.colors.accentText, theme.isDark]);
+  const ACTION_MODES = useMemo(() => {
+    const baseModes: ActionMode[] = [
+      { key: 'all', label: 'DO SOMETHING NOW', filter: undefined as string | undefined, bg: theme.colors.accent, text: theme.colors.accentText },
+      {
+        key: 'productive',
+        label: 'BE PRODUCTIVE',
+        filter: 'productive',
+        bg: theme.isDark ? '#2A4A5E' : '#A8D8EA',
+        text: theme.isDark ? '#D8F0FF' : '#1A3A4A',
+      },
+      {
+        key: 'at_home',
+        label: 'HOMEBODY IT',
+        filter: 'at_home',
+        bg: theme.isDark ? '#54374A' : '#E2B6CF',
+        text: theme.isDark ? '#F5DDED' : '#3A1A2E',
+      },
+    ];
+
+    if (!premiumEnabled) return baseModes;
+
+    return [
+      baseModes[0],
+      {
+        key: 'tomorrow',
+        label: 'PLAN AHEAD',
+        filter: undefined as string | undefined,
+        planDate: 'tomorrow' as const,
+        bg: theme.isDark ? '#2E4F45' : '#B5EAD7',
+        text: theme.isDark ? '#D9F6EA' : '#1A4A3A',
+      },
+      baseModes[1],
+      baseModes[2],
+    ];
+  }, [premiumEnabled, theme.colors.accent, theme.colors.accentText, theme.isDark]);
 
   const weekGraph = useMemo(() => {
+    const anchorDate = new Date();
+    anchorDate.setHours(0, 0, 0, 0);
     const days = Array.from({ length: 7 }, (_, offset) => {
-      const date = new Date();
-      date.setHours(0, 0, 0, 0);
-      date.setDate(date.getDate() - (6 - offset));
+      const date = new Date(anchorDate);
+      date.setDate(anchorDate.getDate() - 3 + offset);
       const dayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(date);
       const key = date.toDateString();
       const activities = state.activityLog
         .filter((entry) => new Date(entry.timestamp).toDateString() === key)
         .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+      const scheduled = state.scheduledActivities
+        .filter((item) => key === todayKey && new Date(item.startAt).toDateString() === key)
+        .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
       const minutes = activities.reduce((sum, entry) => sum + entry.durationMin, 0);
-      return { date, dayLabel, key, minutes, activities };
+      return { date, dayLabel, key, minutes, activities, scheduled };
     });
     const maxMinutes = Math.max(1, ...days.map((day) => day.minutes));
     return days.map((day) => ({
       ...day,
-      hasActivity: day.minutes > 0,
-      height: day.minutes > 0 ? Math.max(8, (day.minutes / maxMinutes) * 100) : 0,
+      hasActivity: day.minutes > 0 || day.scheduled.length > 0,
+      height: day.minutes > 0
+        ? Math.max(8, (day.minutes / maxMinutes) * 100)
+        : day.scheduled.length > 0
+          ? 18
+          : 0,
     }));
-  }, [state.activityLog]);
+  }, [state.activityLog, state.scheduledActivities, todayKey]);
 
   useEffect(() => {
     if (selectedDayKey && weekGraph.some((day) => day.key === selectedDayKey)) return;
@@ -169,6 +216,104 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     [selectedDayKey, weekGraph],
   );
   const selectedDayActivities = selectedDay?.activities ?? [];
+  const isSelectedDayToday = useMemo(() => {
+    if (!selectedDay) return false;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    return selectedDay.date.toDateString() === today.toDateString();
+  }, [selectedDay]);
+  const nextUpcomingToday = useMemo(() => {
+    const nextTitle = state.availability?.nextEventTitle?.trim();
+    const nextStartAt = state.availability?.nextEventStartAt;
+    if (!isSelectedDayToday || !nextTitle || !nextStartAt) return null;
+
+    const nextStart = new Date(nextStartAt);
+    const now = new Date();
+    if (Number.isNaN(nextStart.getTime()) || nextStart <= now) return null;
+    if (nextStart.toDateString() !== now.toDateString()) return null;
+
+    return {
+      title: nextTitle,
+      startLabel: formatTime(nextStart),
+    };
+  }, [isSelectedDayToday, state.availability?.nextEventStartAt, state.availability?.nextEventTitle]);
+  const selectedDayScheduledActivities = useMemo(() => {
+    if (!selectedDay || selectedDay.key !== todayKey) return [];
+    return state.scheduledActivities
+      .filter((item) => {
+        const scheduledDate = new Date(item.startAt);
+        return scheduledDate.toDateString() === todayKey;
+      })
+      .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+  }, [selectedDay, state.scheduledActivities, todayKey]);
+
+  const overdueScheduledActivityIds = useMemo(() => {
+    const now = Date.now();
+    return new Set(
+      state.smartTodos
+        .filter((todo) => {
+          if (todo.done) return false;
+          if (!todo.completionPromptedAt) return false;
+          if (!todo.linkedScheduledActivityId) return false;
+          if (!todo.scheduledEndAt) return true;
+          const endAt = new Date(todo.scheduledEndAt).getTime();
+          return Number.isNaN(endAt) || endAt <= now;
+        })
+        .map((todo) => todo.linkedScheduledActivityId as string),
+    );
+  }, [state.smartTodos]);
+
+  const dashboardScheduledActivities = useMemo(() => {
+    return state.scheduledActivities
+      .filter((item) => {
+        const startDate = new Date(item.startAt);
+        return startDate.toDateString() === todayKey;
+      })
+      .sort((a, b) => {
+        const aOverdue = overdueScheduledActivityIds.has(a.id);
+        const bOverdue = overdueScheduledActivityIds.has(b.id);
+        if (aOverdue !== bOverdue) return aOverdue ? -1 : 1;
+        return new Date(a.startAt).getTime() - new Date(b.startAt).getTime();
+      });
+  }, [overdueScheduledActivityIds, state.scheduledActivities, todayKey]);
+
+  const activePlanSession = useMemo(() => {
+    const session = state.inProgressPlanSession;
+    if (!session?.manualStartAt) return null;
+    const startedAt = new Date(session.manualStartAt);
+    if (Number.isNaN(startedAt.getTime())) return null;
+    return session;
+  }, [state.inProgressPlanSession]);
+
+  const openPlanSession = useCallback((item?: ScheduledActivity) => {
+    if (item && activePlanSession) {
+      const itemKey = buildPlanSessionKey(item.commitment, item.suggestion);
+      if (itemKey === activePlanSession.key) {
+        navigation.navigate('Plan', {
+          commitment: activePlanSession.commitment,
+          suggestion: activePlanSession.suggestion,
+        });
+        return true;
+      }
+    }
+
+    if (activePlanSession) {
+      if (!activePlanSession.manualStartAt) return false;
+      const now = Date.now();
+      const started = new Date(activePlanSession.manualStartAt).getTime();
+      const ends = new Date(activePlanSession.commitment.endAt).getTime();
+      const isRunningWindow = Number.isFinite(started) && Number.isFinite(ends) && now >= started && now <= ends + 2 * 60 * 60 * 1000;
+      if (isRunningWindow) {
+        navigation.navigate('Plan', {
+          commitment: activePlanSession.commitment,
+          suggestion: activePlanSession.suggestion,
+        });
+        return true;
+      }
+    }
+
+    return false;
+  }, [activePlanSession, navigation]);
 
   const onActionScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
@@ -198,16 +343,17 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   // Preload deck when manual duration changes (for users without calendar)
   useEffect(() => {
     if (!state.permissions.calendarGranted) {
+      if (state.preloadedDeck || state.deckLoading) return;
       const fakeAvail: Availability = {
         start: new Date().toISOString(),
         end: new Date(Date.now() + manualDuration * 60000).toISOString(),
         durationMin: manualDuration,
         nextEventTitle: null,
       };
-      prefetchGeminiSuggestions(state.location, state.prefs, fakeAvail, null).catch(() => undefined);
+      prefetchGeminiSuggestions(state.location, deckQueueRef.current.prefs, fakeAvail, null, undefined, state.userId).catch(() => undefined);
       actionsRef.current.preloadDeck(fakeAvail);
     }
-  }, [manualDuration, state.permissions.calendarGranted]);
+  }, [manualDuration, state.permissions.calendarGranted, state.preloadedDeck, state.deckLoading, state.location]);
 
   const refreshContext = useCallback(async () => {
     if (!state.permissions.calendarGranted && !state.permissions.locationGranted) return;
@@ -245,11 +391,15 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       });
       // Preload the deck in the background so DeckScreen opens instantly
       if (latestAvailability) {
+        const queueState = deckQueueRef.current;
+        if (queueState.hasQueuedDeck || queueState.deckLoading) {
+          return;
+        }
         // Use at least 15 min so preload builds a viable deck even when "busy"
         const preloadAvail = latestAvailability.durationMin < 15
           ? { ...latestAvailability, durationMin: 15 }
           : latestAvailability;
-        prefetchGeminiSuggestions(latestLocation, state.prefs, preloadAvail, latestWeather).catch(() => undefined);
+        prefetchGeminiSuggestions(latestLocation, queueState.prefs, preloadAvail, latestWeather, undefined, state.userId).catch(() => undefined);
         actionsRef.current.preloadDeck(preloadAvail);
       }
     } catch (error) {
@@ -261,11 +411,15 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   useFocusEffect(
     useCallback(() => {
+      homeScrollRef.current?.scrollTo({ y: 0, animated: true });
       if (isInitialMount.current) {
         isInitialMount.current = false;
       } else {
         setBannerKey((k) => k + 1);
       }
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      setSelectedDayKey(today.toDateString());
       navigatingRef.current = false;          // reset guard on focus
       refreshContext();
     }, [refreshContext]),
@@ -279,6 +433,33 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const isBusyNow = !!(state.permissions.calendarGranted && state.availability && state.availability.durationMin === 0);
   const currentEventTitle = state.availability?.nextEventTitle || 'Current event';
+  const handleDeleteCurrentEvent = useCallback(() => {
+    const eventId = state.availability?.currentEventId;
+    if (!eventId) return;
+
+    Alert.alert('Delete this activity?', 'This removes it from your calendar.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            await deletePlanEvent(eventId);
+            const linkedScheduled = state.scheduledActivities.filter(
+              (item) => item.calendarEventId === eventId || item.commitment.calendarEventId === eventId,
+            );
+            linkedScheduled.forEach((item) => {
+              actions.removeScheduledActivity(item.id);
+            });
+            await refreshContext();
+          } catch (error) {
+            console.warn('Failed to delete current event', error);
+            Alert.alert('Could not delete', 'Please try again from your calendar app.');
+          }
+        },
+      },
+    ]);
+  }, [actions, refreshContext, state.availability?.currentEventId, state.scheduledActivities]);
   const availabilityLabel = state.availability
     ? isBusyNow
       ? 'You are busy right now'
@@ -291,6 +472,12 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     ? `before ${state.availability.nextEventTitle}`
     : '';
 
+  const availabilitySubtext = isBusyNow
+    ? ''
+    : (state.permissions.calendarGranted
+      ? beforeLabel ? `${availabilityLabel} ${beforeLabel}` : availabilityLabel
+      : availabilityLabel);
+
   const areaLabel = state.location.areaLabel ?? null;
   const locationStatusLabel = areaLabel
     ?? (state.permissions.locationGranted ? 'Finding location...' : 'Location off');
@@ -301,7 +488,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     const recent = state.activityLog.filter((entry) => new Date(entry.timestamp) >= weekAgo);
     const minutes = recent.reduce((sum, entry) => sum + entry.durationMin, 0);
     const habitTotal = state.habits.length;
-    const habitDone = state.habits.filter((habit) => !isHabitDue(habit, now)).length;
+    const habitDone = state.habits.filter((habit) => !isHabitDue(habit, now, state.location.timeZone)).length;
     const habitPercent = habitTotal ? Math.round((habitDone / habitTotal) * 100) : null;
     return {
       activityCount: recent.length,
@@ -311,7 +498,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       habitPercent,
       totalDone: state.activityLog.length,
     };
-  }, [state.activityLog, state.habits]);
+  }, [state.activityLog, state.habits, state.location.timeZone]);
 
   const badgeProgress = useMemo(() => {
     const progress = buildBadgeProgress(state.activityLog, state.habits);
@@ -339,6 +526,26 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       return true;
     }).slice(0, 3);
   }, [state.habits, state.prefs]);
+
+  const existingHabitNames = useMemo(
+    () => new Set(state.habits.map((habit) => habit.name.trim().toLowerCase())),
+    [state.habits],
+  );
+
+  const activityStatsByKey = useMemo(() => {
+    const stats = new Map<string, { count: number; minutes: number }>();
+    state.activityLog.forEach((entry) => {
+      const key = entry.suggestionId || entry.title.trim().toLowerCase();
+      const current = stats.get(key);
+      if (current) {
+        current.count += 1;
+        current.minutes += entry.durationMin;
+      } else {
+        stats.set(key, { count: 1, minutes: entry.durationMin });
+      }
+    });
+    return stats;
+  }, [state.activityLog]);
 
   const addSuggestedHabit = (template: typeof recommendedHabits[number]) => {
     const habit: Habit = {
@@ -392,7 +599,47 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     });
   }, [actions, navigation]);
 
+  const addCompletedActivityToHabits = useCallback((entry: ActivityLog) => {
+    if (entry.isHabit) return;
+    const normalizedTitle = entry.title.trim().toLowerCase();
+    if (!normalizedTitle) return;
+    if (existingHabitNames.has(normalizedTitle)) {
+      Alert.alert('Already in habits', 'This activity is already in your habits list.');
+      return;
+    }
+
+    const nowIso = new Date().toISOString();
+    const newHabit: Habit = {
+      id: `habit_${Date.now()}`,
+      name: entry.title,
+      type: entry.suggestionType === 'AT_HOME' ? 'AT_HOME' : 'GO_OUT',
+      lengthMin: entry.durationMin,
+      description: '',
+      frequency: 'daily',
+      timeOfDay: 'any',
+      tags: entry.tags ?? [],
+      createdAt: nowIso,
+      lastCompletedAt: nowIso,
+      currentStreak: 1,
+      longestStreak: 1,
+      completionHistory: [nowIso.slice(0, 10)],
+    };
+
+    actions.addHabit(newHabit);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    logEvent('habit_added_from_dashboard_activity', {
+      title: entry.title,
+      suggestion_id: entry.suggestionId ?? null,
+    });
+  }, [actions, existingHabitNames]);
+
   const startDeck = (filter?: string, planDate?: 'today' | 'tomorrow') => {
+    if (planDate === 'tomorrow') {
+      navigation.navigate('SmartCalendar');
+      logEvent('tap_plan_tomorrow', { filter: filter ?? 'all', planDate: 'tomorrow' });
+      return;
+    }
+
     const params = {
       durationOverride: state.permissions.calendarGranted ? null : manualDuration,
       filter: filter ?? undefined,
@@ -406,7 +653,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     } else {
       navigation.navigate('Deck', params);
     }
-    logEvent(planDate === 'tomorrow' ? 'tap_plan_tomorrow' : 'tap_do_something_now', { filter: filter ?? 'all', planDate: planDate ?? 'today' });
+    logEvent('tap_do_something_now', { filter: filter ?? 'all', planDate: planDate ?? 'today' });
   };
 
   const onDoSomethingNow = () => {
@@ -425,12 +672,45 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     startDeck(currentMode.filter, currentMode.planDate);
   };
 
+  const openScheduledActivity = useCallback((item: ScheduledActivity) => {
+    if (openPlanSession(item)) return;
+    navigation.navigate('Plan', {
+      commitment: item.commitment,
+      suggestion: item.suggestion,
+    });
+  }, [navigation, openPlanSession]);
+
+  const removeScheduledActivity = useCallback((item: ScheduledActivity) => {
+    Alert.alert('Delete this activity?', 'This removes it from your scheduled activities and your calendar.', [
+      { text: 'Keep', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          const linkedEventId = item.calendarEventId ?? item.commitment.calendarEventId;
+          if (linkedEventId) {
+            try {
+              await deletePlanEvent(linkedEventId);
+            } catch (error) {
+              console.warn('Failed to delete scheduled activity from calendar', error);
+              Alert.alert('Could not delete', 'Please try again from your calendar app.');
+              return;
+            }
+          }
+
+          actions.removeScheduledActivity(item.id);
+          await refreshContext();
+        },
+      },
+    ]);
+  }, [actions, refreshContext]);
+
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
       <View style={[styles.pinnedHeader, { paddingTop: insets.top + theme.spacing.sm }]}> 
         <View style={styles.topBar}>
           <View style={styles.logoContainer}>
-            <Image source={bitsLogo} style={styles.logo} resizeMode="contain" />
+            <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
             <Text style={styles.lastUpdated}>Last updated: {lastUpdatedLabel}</Text>
             <View style={styles.locationRow}>
               <Text style={styles.pinIcon}>{'\u{1F4CD}'}</Text>
@@ -438,12 +718,24 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           </View>
           <View style={styles.headerRightColumn}>
-            <ChargeBar
-              current={state.swipeBank?.current ?? 0}
-              max={state.swipeBank?.max ?? 20}
-              onPress={() => navigation.navigate('Bank')}
-              style={styles.homeBankCounter}
-            />
+            <View style={styles.bankActionRow}>
+              <Pressable
+                style={({ pressed }) => [
+                  styles.premiumButton,
+                  premiumEnabled ? styles.premiumButtonActive : styles.premiumButtonInactive,
+                  pressed && styles.premiumButtonPressed,
+                ]}
+                onPress={() => navigation.navigate('Premium')}
+              >
+                <Text style={[styles.premiumButtonIcon, premiumEnabled ? styles.premiumIconActive : styles.premiumIconInactive]}>{'\u{1F451}'}</Text>
+              </Pressable>
+              <ChargeBar
+                current={state.swipeBank?.current ?? 0}
+                max={state.swipeBank?.max ?? 20}
+                onPress={() => navigation.navigate('Bank')}
+                style={styles.homeBankCounter}
+              />
+            </View>
             <View style={styles.headerRight}>
               <Pressable onPress={() => navigation.navigate('Profile')}>
                 <Text style={styles.settings}>Profile</Text>
@@ -456,6 +748,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       </View>
       <ScrollView
+        ref={homeScrollRef}
         contentContainerStyle={[
           styles.scroll,
           { paddingTop: theme.spacing.sm, paddingBottom: insets.bottom + 120 },
@@ -534,6 +827,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             <Pressable
               style={({ pressed }) => [styles.busyCard, pressed && { opacity: 0.85 }]}
               onPress={() => {
+                if (openPlanSession()) return;
                 const eventId = state.availability?.currentEventId;
                 if (!eventId) return;
                 if (Platform.OS === 'ios') {
@@ -546,45 +840,80 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               }}
             >
               <Text style={styles.busyLabel}>Happening now</Text>
-              <Text style={styles.busyTitle}>{currentEventTitle}</Text>
-              <Text style={styles.busyHint}>Tap to open in calendar</Text>
+              <Text style={styles.busyTitle}>{activePlanSession?.suggestion?.title ?? currentEventTitle}</Text>
+              <Text style={styles.busyHint}>{activePlanSession ? 'Tap to resume activity' : 'Tap to open in calendar'}</Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel="Delete current activity from calendar"
+                hitSlop={8}
+                onPress={(event) => {
+                  event.stopPropagation();
+                  handleDeleteCurrentEvent();
+                }}
+                style={({ pressed }) => [
+                  styles.busyDeleteButton,
+                  pressed && styles.busyDeleteButtonPressed,
+                ]}
+              >
+                <Text style={styles.busyDeleteLabel}>X</Text>
+              </Pressable>
             </Pressable>
           )}
-          <View style={styles.deckMetaRow}>
-            <Text style={styles.subtext}>
-              {state.permissions.calendarGranted
-                ? beforeLabel ? `${availabilityLabel} ${beforeLabel}` : availabilityLabel
-                : availabilityLabel}
-            </Text>
-          </View>
+          {!!availabilitySubtext && (
+            <View style={styles.deckMetaRow}>
+              <Text style={styles.subtext}>{availabilitySubtext}</Text>
+            </View>
+          )}
           {/* ������ Scheduled activities ������ */}
-          {state.scheduledActivities.filter((s) => new Date(s.startAt) > new Date()).length > 0 && (
+          {dashboardScheduledActivities.length > 0 && (
             <View style={styles.scheduledSection}>
               <Text style={styles.scheduledSectionTitle}>Scheduled</Text>
-              {state.scheduledActivities
-                .filter((s) => new Date(s.startAt) > new Date())
-                .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime())
+              {dashboardScheduledActivities
                 .slice(0, 5)
-                .map((item) => (
+                .map((item) => {
+                  const isOverdue = overdueScheduledActivityIds.has(item.id);
+                  return (
                   <Pressable
                     key={item.id}
-                    onPress={() => setSchedulePrompt(item)}
+                    onPress={() => openScheduledActivity(item)}
                     style={({ pressed }) => [
                       styles.scheduledCard,
+                      isOverdue && styles.scheduledCardOverdue,
                       pressed && { opacity: 0.85 },
                     ]}
                   >
                     <View style={styles.scheduledCardRow}>
+                      {isOverdue && (
+                        <View style={styles.scheduledOverdueMarker}>
+                          <Text style={styles.scheduledOverdueMarkerText}>OVERDUE</Text>
+                        </View>
+                      )}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.scheduledTitle} numberOfLines={1}>{item.title}</Text>
-                        <Text style={styles.scheduledMeta}>
-                          {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} -� {formatTime(new Date(item.startAt))} -� {item.durationMin} min
+                        <Text style={[styles.scheduledMeta, isOverdue && styles.scheduledMetaOverdue]}>
+                          {isOverdue ? 'Overdue | ' : ''}
+                          {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} | {formatTime(new Date(item.startAt))} | {item.durationMin} min
                         </Text>
                       </View>
-                      <Text style={styles.scheduledArrow}>�Ǧ</Text>
+                      <Pressable
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove scheduled activity ${item.title}`}
+                        hitSlop={8}
+                        onPress={(event) => {
+                          event.stopPropagation();
+                          removeScheduledActivity(item);
+                        }}
+                        style={({ pressed }) => [
+                          styles.scheduledDeleteButton,
+                          pressed && styles.scheduledDeleteButtonPressed,
+                        ]}
+                      >
+                        <Text style={styles.scheduledDeleteLabel}>X</Text>
+                      </Pressable>
                     </View>
                   </Pressable>
-                ))}
+                  );
+                })}
             </View>
           )}
           {!state.permissions.calendarGranted && (
@@ -600,7 +929,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           )}
         </View>
-          {stats.totalDone < 3 ? (
+          {!isAdmin && stats.totalDone < 3 ? (
             <View style={styles.dashboard}>
               <Text style={styles.dashboardTitle}>Unlock your dashboard</Text>
               <Text style={styles.emptyText}>
@@ -629,12 +958,19 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                         pressed && styles.dashboardGraphColPressed,
                       ]}
                     >
-                      <View style={styles.dashboardGraphTrack}>
-                        {day.hasActivity ? (
-                          <View style={[styles.dashboardGraphFill, { height: `${day.height}%` }]} />
-                        ) : (
-                          <Text style={styles.dashboardGraphEmptyMark}>×</Text>
-                        )}
+                      <View
+                        style={[
+                          styles.dashboardGraphTrackWrap,
+                          day.key === selectedDayKey && styles.dashboardGraphTrackWrapActive,
+                        ]}
+                      >
+                        <View style={styles.dashboardGraphTrack}>
+                          {day.hasActivity ? (
+                            <View style={[styles.dashboardGraphFill, { height: `${day.height}%` }]} />
+                          ) : (
+                            <Text style={styles.dashboardGraphEmptyMark}>×</Text>
+                          )}
+                        </View>
                       </View>
                       <Text style={styles.dashboardGraphLabel}>{day.dayLabel}</Text>
                       {day.minutes > 0 && <Text style={styles.dashboardGraphValue}>{day.minutes}m</Text>}
@@ -663,11 +999,23 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 <View style={styles.dayDetailsCard}>
                   <View style={styles.dayDetailsHeader}>
                     <Text style={styles.dashboardTitle}>{selectedDay?.dayLabel ?? 'Today'}</Text>
-                    <Text style={styles.dayDetailsMeta}>{selectedDay && selectedDay.minutes > 0 ? `${selectedDay.minutes} min` : 'No activity'}</Text>
+                    <Text style={styles.dayDetailsMeta}>
+                      {selectedDay && selectedDay.minutes > 0
+                        ? `${selectedDay.minutes} min done`
+                        : nextUpcomingToday
+                          ? `Next today: ${nextUpcomingToday.title} at ${nextUpcomingToday.startLabel}`
+                        : selectedDayScheduledActivities.length > 0
+                          ? `${selectedDayScheduledActivities.length} scheduled`
+                          : 'No activity'}
+                    </Text>
                   </View>
-                  {selectedDayActivities.length > 0 ? (
+                  {selectedDayActivities.length > 0 || selectedDayScheduledActivities.length > 0 ? (
                     <View style={styles.dayActivityList}>
-                      {selectedDayActivities.map((entry) => (
+                      {selectedDayActivities.map((entry) => {
+                        const activityKey = entry.suggestionId || entry.title.trim().toLowerCase();
+                        const aggregateStats = activityStatsByKey.get(activityKey);
+                        const alreadyInHabits = entry.isHabit || existingHabitNames.has(entry.title.trim().toLowerCase());
+                        return (
                         <View key={entry.id} style={styles.dayActivityRow}>
                           <View style={[styles.dayActivityTypePill, entry.isHabit ? styles.dayActivityHabitPill : styles.dayActivityOneOffPill]}>
                             <Text style={[styles.dayActivityTypeText, entry.isHabit ? styles.dayActivityHabitText : styles.dayActivityOneOffText]}>
@@ -677,36 +1025,77 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                           <View style={{ flex: 1 }}>
                             <Text style={styles.dayActivityTitle}>{entry.title}</Text>
                             <Text style={styles.dayActivityMeta}>{formatTime(new Date(entry.timestamp))} · {entry.durationMin}m</Text>
+                            <View style={styles.dayActivityBottomRow}>
+                              <Text style={styles.dayActivityStatText}>
+                                {aggregateStats
+                                  ? `${aggregateStats.count}x done · ${aggregateStats.minutes}m total`
+                                  : `${entry.durationMin}m done`}
+                              </Text>
+                              {!entry.isHabit && (
+                                <Pressable
+                                  hitSlop={6}
+                                  disabled={alreadyInHabits}
+                                  onPress={() => addCompletedActivityToHabits(entry)}
+                                  style={({ pressed }) => [
+                                    styles.dayActivityHabitAction,
+                                    alreadyInHabits && styles.dayActivityHabitActionDisabled,
+                                    pressed && !alreadyInHabits && styles.dayActivityHabitActionPressed,
+                                  ]}
+                                >
+                                  <Text style={styles.dayActivityHabitActionText}>{alreadyInHabits ? 'In habits' : 'Add to habits'}</Text>
+                                </Pressable>
+                              )}
+                            </View>
                           </View>
                         </View>
+                        );
+                      })}
+                      {selectedDayScheduledActivities.map((item) => (
+                        <Pressable
+                          key={item.id}
+                          onPress={() => openScheduledActivity(item)}
+                          style={({ pressed }) => [styles.dayActivityRow, pressed && styles.dayActivityRowPressed]}
+                        >
+                          <View style={[styles.dayActivityTypePill, styles.dayActivityScheduledPill]}>
+                            <Text style={[styles.dayActivityTypeText, styles.dayActivityScheduledText]}>Scheduled</Text>
+                          </View>
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.dayActivityTitle}>{item.title}</Text>
+                            <Text style={styles.dayActivityMeta}>{formatTime(new Date(item.startAt))} · {item.durationMin}m</Text>
+                          </View>
+                        </Pressable>
                       ))}
                     </View>
                   ) : (
-                    <Text style={styles.dayDetailsEmpty}>No activities for this day yet.</Text>
+                    <Text style={styles.dayDetailsEmpty}>
+                      {nextUpcomingToday
+                        ? `Coming up today: ${nextUpcomingToday.title} at ${nextUpcomingToday.startLabel}.`
+                        : 'No activities for this day yet.'}
+                    </Text>
                   )}
                 </View>
-              </View>
-              {badgeProgress.length > 0 && (
-                <View style={styles.badgeCard}>
-                  <View style={styles.dashboardTitleRow}>
-                    <Text style={styles.dashboardTitle}>Badges</Text>
-                  </View>
-                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.badgeScrollContent}>
-                    {badgeProgress.map((badge) => (
-                      <Pressable key={badge.id} style={styles.badgeScrollCell} onPress={() => navigation.navigate('BadgeDetail', { badgeId: badge.id })}>
-                        <Text style={styles.badgeLevelLabelSmall}>Lv {badge.level}</Text>
-                        <View style={styles.badgeScrollIconWrap}>
-                          <BadgeRing size={36} strokeWidth={3} progress={badge.progress} level={badge.level} color={badge.color} />
-                          <View style={styles.bannerBadgeOverlay}>
-                            <BadgeIcon badgeId={badge.id} size={28} color={badge.color} />
+                {badgeProgress.length > 0 && (
+                  <View style={styles.dashboardBottomBadgeSection}>
+                    <View style={styles.dashboardTitleRow}>
+                      <Text style={styles.dashboardTitle}>Badges</Text>
+                    </View>
+                    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.badgeScrollContent}>
+                      {badgeProgress.map((badge) => (
+                        <Pressable key={badge.id} style={styles.badgeScrollCell} onPress={() => navigation.navigate('BadgeDetail', { badgeId: badge.id })}>
+                          <Text style={styles.badgeLevelLabelSmall}>Lv {badge.level}</Text>
+                          <View style={styles.badgeScrollIconWrap}>
+                            <BadgeRing size={36} strokeWidth={3} progress={badge.progress} level={badge.level} color={badge.color} />
+                            <View style={styles.bannerBadgeOverlay}>
+                              <BadgeIcon badgeId={badge.id} size={28} color={badge.color} />
+                            </View>
                           </View>
-                        </View>
-                        <Text style={styles.badgeScrollName} numberOfLines={1}>{badge.title}</Text>
-                      </Pressable>
-                    ))}
-                  </ScrollView>
-                </View>
-              )}
+                          <Text style={styles.badgeScrollName} numberOfLines={1}>{badge.title}</Text>
+                        </Pressable>
+                      ))}
+                    </ScrollView>
+                  </View>
+                )}
+              </View>
             </>
           )}
       </View>
@@ -745,46 +1134,6 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       </LinearGradient>
 
-      {/* ������ Scheduled activity prompt ������ */}
-      <Modal visible={!!schedulePrompt} transparent animationType="fade" onRequestClose={() => setSchedulePrompt(null)}>
-        <Pressable style={styles.scheduleModalOverlay} onPress={() => setSchedulePrompt(null)}>
-          <Pressable style={styles.scheduleModalCard} onPress={() => {}}>
-            <Text style={styles.scheduleModalTitle}>{schedulePrompt?.title}</Text>
-            <Text style={styles.scheduleModalMeta}>
-              Scheduled at {schedulePrompt ? formatTime(new Date(schedulePrompt.startAt)) : ''} -� {schedulePrompt?.durationMin} min
-            </Text>
-            <Text style={[styles.scheduleModalMeta, { marginTop: -4 }]}>Do you want to start this activity now?</Text>
-            <View style={styles.scheduleModalActions}>
-              <Pressable
-                style={[styles.scheduleModalBtn, { backgroundColor: theme.colors.backgroundAlt }]}
-                onPress={() => {
-                  if (schedulePrompt) {
-                    actions.removeScheduledActivity(schedulePrompt.id);
-                  }
-                  setSchedulePrompt(null);
-                }}
-              >
-                <Text style={[styles.scheduleModalBtnText, { color: theme.colors.textMuted }]}>Dismiss</Text>
-              </Pressable>
-              <Pressable
-                style={[styles.scheduleModalBtn, { backgroundColor: theme.colors.accent }]}
-                onPress={() => {
-                  if (schedulePrompt) {
-                    actions.removeScheduledActivity(schedulePrompt.id);
-                    navigation.navigate('Plan', {
-                      commitment: schedulePrompt.commitment,
-                      suggestion: schedulePrompt.suggestion,
-                    });
-                  }
-                  setSchedulePrompt(null);
-                }}
-              >
-                <Text style={[styles.scheduleModalBtnText, { color: theme.colors.accentText }]}>Start now</Text>
-              </Pressable>
-            </View>
-          </Pressable>
-        </Pressable>
-      </Modal>
     </LinearGradient>
   );
 };
@@ -801,8 +1150,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexGrow: 1,
   },
   logo: {
-    width: LOGO_WIDTH,
-    height: LOGO_HEIGHT,
     alignSelf: 'flex-start',
   },
   logoContainer: {
@@ -820,8 +1167,42 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: theme.spacing.xs,
     paddingTop: 0,
   },
+  bankActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+  },
   homeBankCounter: {
     alignSelf: 'flex-end',
+  },
+  premiumButton: {
+    width: 40,
+    height: 30,
+    borderRadius: 15,
+    borderWidth: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  premiumButtonActive: {
+    backgroundColor: '#F7E8A6',
+    borderColor: '#E8D889',
+  },
+  premiumButtonInactive: {
+    backgroundColor: theme.colors.backgroundAlt,
+    borderColor: theme.colors.border,
+  },
+  premiumButtonPressed: {
+    transform: [{ scale: 0.97 }],
+  },
+  premiumButtonIcon: {
+    fontSize: 17,
+    lineHeight: 18,
+  },
+  premiumIconActive: {
+    color: '#6A4A00',
+  },
+  premiumIconInactive: {
+    color: '#9AA0A8',
   },
   lastUpdated: {
     fontFamily: theme.fonts.body,
@@ -898,7 +1279,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     backgroundColor: 'transparent',
   },
   busyCard: {
+    position: 'relative',
     padding: theme.spacing.md,
+    paddingRight: 44,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.backgroundAlt,
     borderWidth: 1,
@@ -921,6 +1304,26 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
     fontSize: 12,
+  },
+  busyDeleteButton: {
+    position: 'absolute',
+    right: theme.spacing.md,
+    top: '50%',
+    transform: [{ translateY: -10 }],
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  busyDeleteButtonPressed: {
+    backgroundColor: theme.colors.border,
+  },
+  busyDeleteLabel: {
+    fontFamily: theme.fonts.semibold,
+    color: '#B8B8B8',
+    fontSize: 13,
+    lineHeight: 13,
   },
   dotRow: {
     flexDirection: 'row' as const,
@@ -1012,6 +1415,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   dashboard: {
     marginTop: theme.spacing.lg,
+    marginBottom: -(theme.spacing.sm + theme.spacing.xs),
     padding: theme.spacing.lg,
     borderRadius: theme.radius.lg,
     backgroundColor: theme.isDark ? theme.colors.card : '#FFFFFF',
@@ -1037,6 +1441,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   dashboardGraphColActive: {
     backgroundColor: theme.colors.backgroundAlt,
+  },
+  dashboardGraphTrackWrap: {
+    width: '100%',
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'transparent',
+    padding: 1,
+  },
+  dashboardGraphTrackWrapActive: {
+    borderColor: theme.colors.accent,
   },
   dashboardGraphColPressed: {
     opacity: 0.78,
@@ -1085,6 +1499,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: theme.radius.lg,
     backgroundColor: theme.colors.card,
     gap: theme.spacing.md,
+  },
+  dashboardBottomBadgeSection: {
+    marginTop: theme.spacing.sm,
+    paddingTop: theme.spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: theme.colors.border,
+    gap: theme.spacing.sm,
   },
   dashboardTitle: {
     fontFamily: theme.fonts.semibold,
@@ -1175,6 +1596,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
+  dayActivityRowPressed: {
+    opacity: 0.82,
+  },
   dayActivityTypePill: {
     paddingHorizontal: 8,
     paddingVertical: 4,
@@ -1187,6 +1611,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   dayActivityOneOffPill: {
     backgroundColor: theme.colors.background,
   },
+  dayActivityScheduledPill: {
+    backgroundColor: theme.colors.accentSoft,
+  },
   dayActivityTypeText: {
     fontFamily: theme.fonts.semibold,
     fontSize: 11,
@@ -1197,6 +1624,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   dayActivityOneOffText: {
     color: theme.colors.textMuted,
   },
+  dayActivityScheduledText: {
+    color: theme.colors.accentDark,
+  },
   dayActivityTitle: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
@@ -1205,6 +1635,36 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
     fontSize: 12,
+  },
+  dayActivityBottomRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
+  dayActivityStatText: {
+    flex: 1,
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 11,
+  },
+  dayActivityHabitAction: {
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 999,
+    backgroundColor: theme.colors.accentSoft,
+  },
+  dayActivityHabitActionPressed: {
+    opacity: 0.84,
+  },
+  dayActivityHabitActionDisabled: {
+    backgroundColor: theme.colors.background,
+  },
+  dayActivityHabitActionText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.colors.accentDark,
   },
   progressTrack: {
     height: 8,
@@ -1759,9 +2219,25 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderWidth: 1,
     borderColor: theme.colors.border,
   },
+  scheduledCardOverdue: {
+    borderColor: theme.colors.danger,
+  },
   scheduledCardRow: {
     flexDirection: 'row' as const,
     alignItems: 'center' as const,
+  },
+  scheduledOverdueMarker: {
+    backgroundColor: theme.colors.danger,
+    paddingHorizontal: theme.spacing.xs,
+    paddingVertical: 4,
+    borderRadius: theme.radius.sm,
+    marginRight: theme.spacing.sm,
+  },
+  scheduledOverdueMarkerText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: '#FFFFFF',
+    letterSpacing: 0.4,
   },
   scheduledTitle: {
     fontFamily: theme.fonts.semibold,
@@ -1774,51 +2250,24 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.textMuted,
     marginTop: 2,
   },
-  scheduledArrow: {
-    fontSize: 22,
-    color: theme.colors.textMuted,
+  scheduledMetaOverdue: {
+    color: theme.colors.danger,
+  },
+  scheduledDeleteButton: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginLeft: theme.spacing.sm,
   },
-  scheduleModalOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(0,0,0,0.45)',
-    justifyContent: 'center' as const,
-    alignItems: 'center' as const,
-    padding: theme.spacing.lg,
+  scheduledDeleteButtonPressed: {
+    backgroundColor: theme.colors.border,
   },
-  scheduleModalCard: {
-    backgroundColor: theme.colors.card,
-    borderRadius: theme.radius.lg,
-    padding: theme.spacing.lg,
-    width: '100%' as unknown as number,
-    maxWidth: 340,
-    gap: theme.spacing.md,
-  },
-  scheduleModalTitle: {
-    fontFamily: theme.fonts.heading,
-    fontSize: 18,
-    color: theme.colors.text,
-    textAlign: 'center' as const,
-  },
-  scheduleModalMeta: {
-    fontFamily: theme.fonts.body,
-    fontSize: 13,
-    color: theme.colors.textMuted,
-    textAlign: 'center' as const,
-  },
-  scheduleModalActions: {
-    flexDirection: 'row' as const,
-    gap: theme.spacing.sm,
-    marginTop: theme.spacing.xs,
-  },
-  scheduleModalBtn: {
-    flex: 1,
-    paddingVertical: 12,
-    borderRadius: theme.radius.md,
-    alignItems: 'center' as const,
-  },
-  scheduleModalBtnText: {
+  scheduledDeleteLabel: {
     fontFamily: theme.fonts.semibold,
-    fontSize: 14,
+    color: '#B8B8B8',
+    fontSize: 13,
+    lineHeight: 13,
   },
 });

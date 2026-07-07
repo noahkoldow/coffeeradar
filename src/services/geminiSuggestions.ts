@@ -2,7 +2,7 @@ import { Availability, LocationState, Suggestion, SuggestionType, UserPrefs } fr
 import { addDebugMessage } from './debug';
 import { WeatherInfo } from './weather';
 import { formatLocalDateTime, getTimeZoneParts, resolveTimeZone } from '../utils/time';
-import { loadGeminiUsage, saveGeminiUsage } from '../utils/storage';
+import { loadGeminiUsage, loadPremiumActive, saveGeminiUsage } from '../utils/storage';
 
 const GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY;
 const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
@@ -67,10 +67,15 @@ type ValidationResult = {
 };
 
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const GEMINI_CALL_LIMIT = 50; // Very permissive during development; tighten after validation works
+const GEMINI_FREE_CALL_LIMIT = 13;
+const GEMINI_PREMIUM_CALL_LIMIT = 25;
 const cache = new Map<string, CacheEntry>();
 const MAX_GEMINI_ATTEMPTS = 3;
 let usageQueue: Promise<void> = Promise.resolve();
+
+const resolveGeminiDailyCallLimit = (isPremium: boolean): number => (
+  isPremium ? GEMINI_PREMIUM_CALL_LIMIT : GEMINI_FREE_CALL_LIMIT
+);
 
 const withUsageLock = async <T,>(fn: () => Promise<T>): Promise<T> => {
   let release: (() => void) | undefined;
@@ -86,13 +91,14 @@ const withUsageLock = async <T,>(fn: () => Promise<T>): Promise<T> => {
   }
 };
 
-const reserveGeminiCall = async (): Promise<boolean> => withUsageLock(async () => {
+const reserveGeminiCall = async (dailyCallLimit: number, userId?: string | null): Promise<boolean> => withUsageLock(async () => {
+  if (!userId) return false;
   const today = new Date().toISOString().slice(0, 10);
-  const usage = await loadGeminiUsage().catch(() => null);
+  const usage = await loadGeminiUsage(userId).catch(() => null);
   // Reset counter automatically each new calendar day
   const callCount = (!usage?.date || usage.date !== today) ? 0 : (usage?.callCount ?? 0);
-  if (callCount >= GEMINI_CALL_LIMIT) return false;
-  await saveGeminiUsage({ callCount: callCount + 1, date: today }).catch(() => undefined);
+  if (callCount >= dailyCallLimit) return false;
+  await saveGeminiUsage({ callCount: callCount + 1, date: today }, userId).catch(() => undefined);
   return true;
 });
 
@@ -134,13 +140,71 @@ const stripRelativeTimingCopy = (value?: string): string | undefined => {
   return cleaned && cleaned.length >= 3 ? cleaned : undefined;
 };
 
+const wordCount = (value: string): number =>
+  value
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean)
+    .length;
+
+const isGenericActivityHeader = (value: string): boolean => {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!normalized) return true;
+  if (/\b(now|soon|asap|today|tonight|immediately)\b/.test(normalized)) return true;
+  const exactGeneric = new Set([
+    'head out',
+    'head out now',
+    'start now',
+    'start here',
+    'leave now',
+    'leave soon',
+    'go now',
+    'do this now',
+    'do it now',
+    'try this',
+    'make a move',
+    'begin now',
+  ]);
+  if (exactGeneric.has(normalized)) return true;
+  return /^(go|head|start|do|try|begin|leave)\b/.test(normalized) && wordCount(normalized) <= 3;
+};
+
+const toCondensedActivityHeader = (cta: string | undefined, title: string): string | undefined => {
+  const cleanCta = cta
+    ?.replace(/["“”]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (cleanCta) {
+    const ctaWords = wordCount(cleanCta);
+    if (ctaWords >= 2 && ctaWords <= 4 && !isGenericActivityHeader(cleanCta)) {
+      return cleanCta;
+    }
+  }
+
+  const titleWords = title
+    .replace(/["“”]/g, '')
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter(Boolean);
+  if (titleWords.length >= 2) {
+    return titleWords.slice(0, 4).join(' ');
+  }
+  return cleanCta;
+};
+
 const buildCacheKey = (
   location: LocationState,
   prefs: UserPrefs,
   availability: Availability,
   weather: WeatherInfo | null,
   learning?: GeminiLearningContext,
+  userId?: string | null,
 ): string => JSON.stringify({
+  userId: userId ?? 'guest',
   lat: location.lat,
   lng: location.lng,
   areaLabel: location.areaLabel,
@@ -451,6 +515,13 @@ const buildPrompt = (
     '   - Example: never suggest a "sunset walk" for midday; only use sunset-themed ideas close to sunset or in the evening.',
     '   - Keep titles, hooks, and whyNow text consistent with the current local hour and the available time window.',
     '',
+    '8. CTA / HEADER QUALITY (IMPORTANT):',
+    '   - cta is the BIG blue headline on the card.',
+    '   - It MUST be a condensed 2-4 word description of the specific activity.',
+    '   - Use concrete venue/event nouns when relevant.',
+    '   - Avoid generic action copy like "Head out now", "Start now", "Leave soon", "Try this".',
+    '   - Good: "Visit National Gallery", "Sunset Coastal Walk", "Surry Hills Espresso".',
+    '',
     'Each suggestion must include:',
     '  - type: AT_HOME (no location needed) | GO_OUT (specific venue) | EVENT (specific event + time)',
     '  - title: SHORT, SPECIFIC (not generic category)',
@@ -477,7 +548,7 @@ const buildPrompt = (
     '      "type": "AT_HOME",',
     '      "title": "15-minute focus reset",',
     '      "hook": "Start now",',
-    '      "cta": "Begin a focus block",',
+    '      "cta": "Deep Focus Sprint",',
     '      "description": "A short, practical activity that fits the current window.",',
     '      "whyNow": "You have enough time for a clean, useful start.",',
     '      "durationMin": 15,',
@@ -489,7 +560,7 @@ const buildPrompt = (
     '      "type": "GO_OUT",',
     '      "title": "Nearby place with a concrete reason to go",',
     '      "hook": "Leave soon",',
-    '      "cta": "Head out now",',
+    '      "cta": "Visit National Gallery",',
     '      "description": "A specific nearby venue with a clear fit for the user.",',
     '      "whyNow": "It fits the current window and can be started immediately.",',
     '      "durationMin": 45,',
@@ -511,7 +582,7 @@ const buildPrompt = (
     '      "type": "AT_HOME|GO_OUT|EVENT",',
     '      "title": "string",',
     '      "hook": "short catchy top label",',
-    '      "cta": "short action headline",',
+    '      "cta": "2-4 word activity descriptor",',
     '      "description": "1-2 sentence practical why/what",',
     '      "whyNow": "1 sentence urgency (e.g. starts in 30min)",',
     '      "durationMin": 25,',
@@ -643,7 +714,7 @@ const toSuggestion = (raw: GeminiRawSuggestion, index: number): Suggestion | nul
     source: 'gemini',
     title,
     hook: stripRelativeTimingCopy(raw.hook) || stripRelativeTimingCopy(raw.cta),
-    cta: stripRelativeTimingCopy(raw.cta),
+    cta: toCondensedActivityHeader(stripRelativeTimingCopy(raw.cta), title),
     description,
     whyNow: stripRelativeTimingCopy(raw.whyNow),
     durationMin,
@@ -704,25 +775,33 @@ const runGeminiSuggestions = async (
   availability: Availability,
   weather: WeatherInfo | null,
   learning?: GeminiLearningContext,
+  userId?: string | null,
 ): Promise<Suggestion[]> => {
+  if (!userId) {
+    addDebugMessage('gemini', 'Skipping Gemini source - no user id available for per-user quota.');
+    return [];
+  }
+
   if (!GEMINI_KEY) {
     console.warn('[Gemini] No API key — set EXPO_PUBLIC_GEMINI_API_KEY');
     addDebugMessage('gemini', 'Missing API key - skipping Gemini source.');
     return [];
   }
 
+  const isPremium = await loadPremiumActive(userId).catch(() => false);
+  const dailyCallLimit = resolveGeminiDailyCallLimit(isPremium);
   const today = new Date().toISOString().slice(0, 10);
-  const usage = await loadGeminiUsage().catch(() => null);
+  const usage = await loadGeminiUsage(userId).catch(() => null);
   // Treat a missing date or a different date as a fresh day (count = 0)
   const effectiveCount = (!usage?.date || usage.date !== today) ? 0 : (usage?.callCount ?? 0);
-  console.log(`[Gemini] usage: ${effectiveCount}/${GEMINI_CALL_LIMIT} calls today (${today}), stored:`, usage);
-  if (effectiveCount >= GEMINI_CALL_LIMIT) {
+  console.log(`[Gemini] usage: ${effectiveCount}/${dailyCallLimit} calls today (${today}), premium=${isPremium}, stored:`, usage);
+  if (effectiveCount >= dailyCallLimit) {
     console.warn('[Gemini] Daily call limit reached');
     addDebugMessage('gemini', 'Gemini call limit reached - using database-backed sources only.');
     return [];
   }
 
-  const cacheKey = buildCacheKey(location, prefs, availability, weather, learning);
+  const cacheKey = buildCacheKey(location, prefs, availability, weather, learning, userId);
   const cached = cache.get(cacheKey);
   if (cached?.data && cached.ts && Date.now() - cached.ts < CACHE_TTL_MS) {
     return cached.data;
@@ -732,7 +811,7 @@ const runGeminiSuggestions = async (
   }
 
   const promise = (async () => {
-    const canUseGemini = await reserveGeminiCall();
+    const canUseGemini = await reserveGeminiCall(dailyCallLimit, userId);
     if (!canUseGemini) {
       console.warn('[Gemini] reserveGeminiCall denied (limit)');
       addDebugMessage('gemini', 'Gemini call limit reached - using database-backed sources only.');
@@ -811,8 +890,9 @@ export const fetchGeminiSuggestions = async (
   availability: Availability,
   weather: WeatherInfo | null,
   learning?: GeminiLearningContext,
+  userId?: string | null,
 ): Promise<Suggestion[]> => {
-  return runGeminiSuggestions(location, prefs, availability, weather, learning);
+  return runGeminiSuggestions(location, prefs, availability, weather, learning, userId);
 };
 
 export const prefetchGeminiSuggestions = async (
@@ -821,4 +901,5 @@ export const prefetchGeminiSuggestions = async (
   availability: Availability,
   weather: WeatherInfo | null,
   learning?: GeminiLearningContext,
-): Promise<Suggestion[]> => runGeminiSuggestions(location, prefs, availability, weather, learning);
+  userId?: string | null,
+): Promise<Suggestion[]> => runGeminiSuggestions(location, prefs, availability, weather, learning, userId);

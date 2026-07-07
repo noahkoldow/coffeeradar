@@ -108,7 +108,7 @@ export const CampaignPreviewScreen: React.FC<PreviewScreenProps> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>← Back</Text>
+            <Text style={styles.back}>Back</Text>
           </Pressable>
           <Text style={styles.title}>Campaign Preview</Text>
           <View style={styles.spacer} />

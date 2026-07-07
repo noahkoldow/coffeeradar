@@ -59,14 +59,14 @@ const SavedActivityCard: React.FC<{
     onPanResponderRelease: (_, gesture) => {
       if (gesture.dx < -90) {
         Animated.timing(pan, { toValue: -420, duration: 180, useNativeDriver: true }).start(() => {
-          onStart();
+          onRemove();
           pan.setValue(0);
         });
         return;
       }
       if (gesture.dx > 90) {
         Animated.timing(pan, { toValue: 420, duration: 180, useNativeDriver: true }).start(() => {
-          onRemove();
+          onStart();
           pan.setValue(0);
         });
         return;
@@ -135,7 +135,7 @@ const SavedActivityCard: React.FC<{
       <Pressable style={({ pressed }) => [cardStyles.addHabitBtn, pressed && { opacity: 0.85 }]} onPress={onAddHabit}>
         <Text style={cardStyles.addHabitBtnText}>Add Habit</Text>
       </Pressable>
-      <Text style={cardStyles.backHint}>Swipe left to do it now · swipe right to delete</Text>
+      <Text style={cardStyles.backHint}>Swipe right to do it now · swipe left to delete</Text>
     </View>
   );
 
@@ -224,19 +224,11 @@ export const LibraryScreen: React.FC<Props> = ({ navigation }) => {
       <View style={styles.legendRow}>
         <View style={styles.legendItem}>
           <Text style={styles.legendIcon}>↞</Text>
-          <Text style={styles.legendText}>Check</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <Text style={styles.legendIcon}>✓</Text>
-          <Text style={styles.legendText}>Do it</Text>
-        </View>
-        <View style={styles.legendItem}>
-          <Text style={styles.legendIcon}>↠</Text>
           <Text style={styles.legendText}>Delete</Text>
         </View>
         <View style={styles.legendItem}>
-          <Text style={styles.legendIcon}>✕</Text>
-          <Text style={styles.legendText}>Remove</Text>
+          <Text style={styles.legendIcon}>↠</Text>
+          <Text style={styles.legendText}>Do it</Text>
         </View>
       </View>
 
