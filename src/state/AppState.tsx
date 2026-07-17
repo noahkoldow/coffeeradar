@@ -20,14 +20,14 @@ import { BusinessProfile } from '../types/business';
 import {
   clearStorage,
   loadActivityLog,
-  loadEnabledCalendars,
+  loadDisabledCalendars,
   loadHabits,
   loadHistory,
   loadOnboardingComplete,
   loadPrefs,
   loadTagAffinities,
   saveActivityLog,
-  saveEnabledCalendars,
+  saveDisabledCalendars,
   saveHabits,
   saveHistory,
   saveOnboardingComplete,
@@ -58,7 +58,7 @@ import { buildDeck } from '../services/suggestions';
 import { recordComplete, recordTypeAccept, decayAffinities } from '../services/affinity';
 import { completeHabitEntry, uncompleteHabitEntry, migrateHabit } from '../utils/habits';
 import { rescheduleHabitReminders } from '../services/notifications';
-import {
+import { recordCommunityIdeaCompletion } from '../services/communityIdeas';import {
   loadFirebaseAffinities,
   loadFirebaseLocationProfile,
   loadFirebaseOnboardingComplete,
@@ -139,7 +139,7 @@ type AppState = {
   activityLog: ActivityLog[];
   location: LocationState;
   availability: Availability | null;
-  enabledCalendars: string[];
+  disabledCalendars: string[];
   preloadedDeck: { deck: DeckSuggestion[]; usedFallback: boolean } | null;
   deckLoading: boolean;
   geminiPool: Suggestion[];
@@ -168,13 +168,13 @@ type AppActions = {
   addHabit: (habit: Habit) => void;
   updateHabit: (habit: Habit) => void;
   removeHabit: (habitId: string) => void;
-  completeHabit: (habitId: string) => void;
+  completeHabit: (habitId: string, completedAt?: Date | string) => void;
   uncompleteHabit: (habitId: string) => void;
   recordActivity: (entry: ActivityLog) => void;
   removeLatestActivityForHabit: (habitId: string) => void;
   setLocation: (value: LocationState) => void;
   setAvailability: (value: Availability | null) => void;
-  setEnabledCalendars: (value: string[]) => void;
+  setDisabledCalendars: (value: string[]) => void;
   completeOnboarding: () => void;
   preloadDeck: (availability: Availability, durationOverride?: number | null) => void;
   consumeDeck: () => { deck: DeckSuggestion[]; usedFallback: boolean } | null;
@@ -217,7 +217,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activityLog, setActivityLogState] = useState<ActivityLog[]>([]);
   const [location, setLocationState] = useState<LocationState>(defaultLocation);
   const [availability, setAvailabilityState] = useState<Availability | null>(null);
-  const [enabledCalendars, setEnabledCalendarsState] = useState<string[]>([]);
+  const [disabledCalendars, setDisabledCalendarsState] = useState<string[]>([]);
   const [preloadedDeck, setPreloadedDeck] = useState<{ deck: DeckSuggestion[]; usedFallback: boolean } | null>(null);
   const [deckLoading, setDeckLoading] = useState(false);
   const [tagAffinities, setTagAffinitiesState] = useState<TagAffinities>({});
@@ -335,7 +335,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setHistoryState(defaultHistory);
           setHabitsState([]);
           setActivityLogState([]);
-          setEnabledCalendarsState([]);
+          setDisabledCalendarsState([]);
           setInProgressPlanSessionState(null);
           setSmartTodosState([]);
           setOnboardingComplete(false);
@@ -373,7 +373,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         ] = await Promise.all([
           loadPrefs(userId),
           loadHistory(userId),
-          loadEnabledCalendars(userId),
+          loadDisabledCalendars(userId),
           loadOnboardingComplete(userId),
           loadHabits(userId),
           loadActivityLog(userId),
@@ -386,7 +386,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadPreloadedDeck(userId),
           loadPrefs(null),
           loadHistory(null),
-          loadEnabledCalendars(null),
+          loadDisabledCalendars(null),
           loadOnboardingComplete(null),
           loadHabits(null),
           loadActivityLog(null),
@@ -443,8 +443,8 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         } else {
           setHistoryState(guestHistory ? { ...defaultHistory, ...guestHistory, lastShownIds: guestHistory.lastShownIds ?? [] } : defaultHistory);
         }
-        if (storedCalendars) setEnabledCalendarsState(storedCalendars);
-        else setEnabledCalendarsState(guestCalendars ?? []);
+        if (storedCalendars) setDisabledCalendarsState(storedCalendars);
+        else setDisabledCalendarsState(guestCalendars ?? []);
         // Merge: prefer Firebase habits, fall back to local, migrate legacy fields.
         // Be defensive: older/corrupted payloads may be objects instead of arrays.
         const fbHabits = await loadFirebaseHabits().catch(() => null);
@@ -541,7 +541,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           await Promise.all([
             savePrefs(guestPrefs ?? defaultPrefs, userId),
             saveHistory(guestHistory ?? defaultHistory, userId),
-            saveEnabledCalendars(guestCalendars ?? [], userId),
+            saveDisabledCalendars(guestCalendars ?? [], userId),
             saveHabits(migratedHabits, userId),
             saveActivityLog(guestActivity ?? [], userId),
             saveTagAffinities(mergedAffinities, userId),
@@ -696,10 +696,15 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         return updated;
       });
     },
-    completeHabit: (habitId) => {
+    completeHabit: (habitId, completedAt) => {
+      const completionDate = completedAt instanceof Date
+        ? completedAt
+        : completedAt
+          ? new Date(completedAt)
+          : new Date();
       setHabitsState((prev) => {
         const updated = prev.map((item) => (
-          item.id === habitId ? completeHabitEntry(item) : item
+          item.id === habitId ? completeHabitEntry(item, completionDate) : item
         ));
         saveHabits(updated, userId).catch(() => undefined);
         syncHabits(updated).catch(() => undefined);
@@ -724,6 +729,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         saveActivityLog(updated, userId).catch(() => undefined);
         return updated;
       });
+      // Community activities: track how many people did it + minutes contributed.
+      if (entry.source === 'community') {
+        recordCommunityIdeaCompletion(entry.suggestionId, entry.durationMin).catch(() => undefined);
+      }
       // Strongest affinity signal: user completed the activity
       if (entry.tags?.length) {
         setTagAffinitiesState((prev) => {
@@ -753,9 +762,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setPreferredTimeZone(value.timeZone);
     },
     setAvailability: (value) => setAvailabilityState(value),
-    setEnabledCalendars: (value) => {
-      setEnabledCalendarsState(value);
-      saveEnabledCalendars(value, userId).catch(() => undefined);
+    setDisabledCalendars: (value) => {
+      setDisabledCalendarsState(value);
+      saveDisabledCalendars(value, userId).catch(() => undefined);
     },
     completeOnboarding: () => {
       setOnboardingComplete(true);
@@ -1134,7 +1143,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setHistoryState(defaultHistory);
       setHabitsState([]);
       setActivityLogState([]);
-      setEnabledCalendarsState([]);
+      setDisabledCalendarsState([]);
       setOnboardingComplete(false);
       setAvailabilityState(null);
       setLocationState(defaultLocation);
@@ -1186,7 +1195,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     activityLog,
     location,
     availability,
-    enabledCalendars,
+    disabledCalendars,
     preloadedDeck,
     deckLoading,
     geminiPool,

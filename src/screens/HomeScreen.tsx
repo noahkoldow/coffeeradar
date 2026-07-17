@@ -21,7 +21,7 @@ import { logEvent } from '../services/analytics';
 import { isBusinessAdmin, upsertUserData } from '../services/user';
 import { fetchWeather, WeatherCondition } from '../services/weather';
 import { prefetchGeminiSuggestions } from '../services/geminiSuggestions';
-import { loadWeatherCondition, saveWeatherCondition } from '../utils/storage';
+import { loadProfileAvatarUri, loadWeatherCondition, saveWeatherCondition } from '../utils/storage';
 import { detectLocationProfile } from '../services/locationProfile';
 import { recommendedHabits } from '../data/habits';
 import { ActivityLog, Availability, Habit, ScheduledActivity } from '../types';
@@ -29,11 +29,13 @@ import { formatHabitFrequency, formatHabitTimeOfDay, isHabitDue, streakEmoji, we
 import * as Haptics from 'expo-haptics';
 import { buildBadgeProgress } from '../utils/badges';
 import { buildPlanSessionKey } from '../utils/planSession';
+import { getVisibleTags } from '../utils/visibleTags';
+import { applyTodoChunkCompletion } from '../utils/todoAtomization';
 
 type Props = StackScreenProps<RootStackParamList, 'Home'>;
 
 type ActionMode = {
-  key: 'all' | 'productive' | 'tomorrow' | 'at_home';
+  key: 'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me';
   label: string;
   filter?: string;
   planDate?: 'today' | 'tomorrow';
@@ -51,17 +53,18 @@ const formatDurationLabel = (minutes: number): string => {
 };
 
 const BANNER_PAGE_HEIGHT = 94;
-const DASHBOARD_STACK_SEGMENT_OVERLAP_PX = 10;
+const DASHBOARD_STACK_SEGMENT_OVERLAP_PX = 16;
+// Activity graph window: keep plenty of past days scrollable, no future days.
+const DASHBOARD_HISTORY_DAYS = 30;
+const DASHBOARD_FUTURE_DAYS = 0;
+// How many day columns should fit within the visible viewport (matches the pre-scroll layout).
+// Slightly below 7 so bars are a touch wider and the week stays horizontally scrollable.
+const DASHBOARD_VISIBLE_DAYS = 6.4;
+const DASHBOARD_DEFAULT_COL_WIDTH = 30;
 
 // Logo: 1:3 aspect ratio, half the button height (~30px tall, 90px wide)
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
-const lastUpdatedLabel = new Date().toLocaleDateString('en-GB', {
-  day: 'numeric',
-  month: 'short',
-  year: 'numeric',
-});
-
 const hexToRgba = (hex: string, alpha: number): string => {
   const r = parseInt(hex.slice(1, 3), 16);
   const g = parseInt(hex.slice(3, 5), 16);
@@ -77,6 +80,10 @@ type DashboardTagTone = {
 
 const getDashboardTagTone = (tag: string): DashboardTagTone => {
   const t = tag.trim().toLowerCase();
+
+  if (/(challenge|quest|mission|sprint|hard|intense|push)/.test(t)) {
+    return { backgroundColor: '#F2EDFA', borderColor: '#D8CBEF', textColor: '#6A2B8E' };
+  }
 
   if (/(nature|outdoor|park|walk|hike|garden|forest|tree|green|trail|fresh air|sunset|view)/.test(t)) {
     return { backgroundColor: '#EAF6EE', borderColor: '#B8DDC5', textColor: '#3C7D50' };
@@ -123,6 +130,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const [bannerKey, setBannerKey] = useState(0);
   const [actionIndex, setActionIndex] = useState(0);
   const [bannerPageIndex, setBannerPageIndex] = useState(0);
+  const [profileAvatarUri, setProfileAvatarUri] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
   const actionsRef = useRef(actions);
   useEffect(() => { actionsRef.current = actions; }, [actions]);
@@ -138,6 +146,20 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       prefs: state.prefs,
     };
   }, [state.preloadedDeck, state.deckLoading, state.prefs]);
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+      loadProfileAvatarUri(state.userId)
+        .then((uri) => {
+          if (active) setProfileAvatarUri(uri);
+        })
+        .catch(() => undefined);
+      return () => {
+        active = false;
+      };
+    }, [state.userId])
+  );
   const isInitialMount = useRef(true);
   const isAdmin = isBusinessAdmin(state.userEmail);
   const premiumEnabled = state.isPremium;
@@ -167,6 +189,45 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   // ������ Scheduled activity popup ������
   const [selectedDayKey, setSelectedDayKey] = useState<string | null>(null);
+  const [isScheduledCollapsed, setIsScheduledCollapsed] = useState(false);
+  const graphScrollRef = useRef<ScrollView>(null);
+  const pendingGraphScrollRef = useRef(true);
+  const [graphViewportWidth, setGraphViewportWidth] = useState(0);
+  const [showTodayButton, setShowTodayButton] = useState(false);
+
+  const graphColumnWidth = useMemo(() => {
+    if (!graphViewportWidth) return DASHBOARD_DEFAULT_COL_WIDTH;
+    const horizontalPadding = theme.spacing.xs * 2;
+    const gaps = theme.spacing.xs * (DASHBOARD_VISIBLE_DAYS - 1);
+    return Math.max(24, (graphViewportWidth - horizontalPadding - gaps) / DASHBOARD_VISIBLE_DAYS);
+  }, [graphViewportWidth, theme.spacing.xs]);
+
+  const scrollGraphToToday = useCallback((animated: boolean) => {
+    if (!graphViewportWidth) {
+      pendingGraphScrollRef.current = true;
+      return;
+    }
+    // Skip to the end so the current whole week (today + surrounding days) is shown.
+    graphScrollRef.current?.scrollToEnd({ animated });
+    pendingGraphScrollRef.current = false;
+    setShowTodayButton(false);
+  }, [graphViewportWidth]);
+
+  const handleGraphScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
+    if (!graphViewportWidth) return;
+    const scrollX = e.nativeEvent.contentOffset.x;
+    const idx = DASHBOARD_HISTORY_DAYS; // today's column index within weekGraph
+    const colLeft = theme.spacing.xs + idx * (graphColumnWidth + theme.spacing.xs);
+    const colRight = colLeft + graphColumnWidth;
+    const todayFullyVisible = colLeft >= scrollX - 1 && colRight <= scrollX + graphViewportWidth + 1;
+    setShowTodayButton(!todayFullyVisible);
+  }, [graphColumnWidth, graphViewportWidth, theme.spacing.xs]);
+
+  useEffect(() => {
+    if (graphViewportWidth && pendingGraphScrollRef.current) {
+      scrollGraphToToday(false);
+    }
+  }, [graphViewportWidth, scrollGraphToToday]);
 
   const recentActivities = useMemo(() => {
     return state.activityLog.slice(0, 10);
@@ -214,6 +275,13 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         text: theme.isDark ? '#D8F0FF' : '#1A3A4A',
       },
       {
+        key: 'challenge_me',
+        label: 'CHALLENGE ME',
+        filter: 'challenge_me',
+        bg: theme.isDark ? '#4D2E66' : '#D7B9F1',
+        text: theme.isDark ? '#F0E3FF' : '#3E2257',
+      },
+      {
         key: 'at_home',
         label: 'HOMEBODY IT',
         filter: 'at_home',
@@ -236,6 +304,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       } as ActionMode,
       baseModes[1],
       baseModes[2],
+      baseModes[3],
     ];
   }, [premiumEnabled, theme.colors.accent, theme.colors.accentText, theme.isDark]);
 
@@ -258,25 +327,30 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     all: theme.colors.accent,
     tomorrow: theme.isDark ? '#2E4F45' : '#B5EAD7',
     productive: theme.isDark ? '#2A4A5E' : '#A8D8EA',
+    challenge_me: theme.isDark ? '#4D2E66' : '#D7B9F1',
     at_home: theme.isDark ? '#54374A' : '#E2B6CF',
   }), [theme.colors.accent, theme.isDark]);
 
   const resolveActivityMode = useCallback((entry: ActivityLog): ActivityModeKey => {
     if (entry.activityMode) return entry.activityMode;
+    if (entry.tags?.some((tag) => /challenge|quest|mission|sprint|hard|intense|push/.test(tag.toLowerCase()))) {
+      return 'challenge_me';
+    }
     if (entry.suggestionType === 'AT_HOME') return 'at_home';
     const productiveTags = new Set(['productivity', 'learning', 'creative', 'focus', 'planning', 'work', 'study', 'reading']);
     if (entry.tags?.some((tag) => productiveTags.has(tag))) return 'productive';
     return 'all';
   }, []);
 
-  const activityModeOrder: ActivityModeKey[] = ['all', 'tomorrow', 'productive', 'at_home'];
+  const activityModeOrder: ActivityModeKey[] = ['all', 'tomorrow', 'productive', 'challenge_me', 'at_home'];
 
   const weekGraph = useMemo(() => {
     const anchorDate = new Date();
     anchorDate.setHours(0, 0, 0, 0);
-    const days = Array.from({ length: 7 }, (_, offset) => {
+    const totalDays = DASHBOARD_HISTORY_DAYS + 1 + DASHBOARD_FUTURE_DAYS;
+    const days = Array.from({ length: totalDays }, (_, offset) => {
       const date = new Date(anchorDate);
-      date.setDate(anchorDate.getDate() - 3 + offset);
+      date.setDate(anchorDate.getDate() - DASHBOARD_HISTORY_DAYS + offset);
       const dayLabel = new Intl.DateTimeFormat('en-US', { weekday: 'short' }).format(date);
       const key = date.toDateString();
       const activities = state.activityLog
@@ -289,6 +363,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         all: 0,
         tomorrow: 0,
         productive: 0,
+        challenge_me: 0,
         at_home: 0,
       };
       for (const entry of activities) {
@@ -358,21 +433,31 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
   }, [selectedDay, state.scheduledActivities, todayKey]);
 
+  const linkedTodoByScheduledActivityId = useMemo(
+    () => new Map(
+      state.smartTodos
+        .filter((todo) => !!todo.linkedScheduledActivityId)
+        .map((todo) => [todo.linkedScheduledActivityId as string, todo] as const),
+    ),
+    [state.smartTodos],
+  );
+
   const overdueScheduledActivityIds = useMemo(() => {
     const now = Date.now();
+
     return new Set(
-      state.smartTodos
-        .filter((todo) => {
-          if (todo.done) return false;
-          if (!todo.completionPromptedAt) return false;
-          if (!todo.linkedScheduledActivityId) return false;
-          if (!todo.scheduledEndAt) return true;
-          const endAt = new Date(todo.scheduledEndAt).getTime();
-          return Number.isNaN(endAt) || endAt <= now;
+      state.scheduledActivities
+        .filter((item) => {
+          const endAt = new Date(item.endAt).getTime();
+          if (Number.isNaN(endAt) || endAt > now) return false;
+
+          const linkedTodo = linkedTodoByScheduledActivityId.get(item.id);
+          if (!linkedTodo) return true;
+          return !linkedTodo.done;
         })
-        .map((todo) => todo.linkedScheduledActivityId as string),
+        .map((item) => item.id),
     );
-  }, [state.smartTodos]);
+  }, [linkedTodoByScheduledActivityId, state.scheduledActivities]);
 
   const dashboardScheduledActivities = useMemo(() => {
     return state.scheduledActivities
@@ -474,7 +559,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       let latestLocation = state.location;
       let latestWeather: Awaited<ReturnType<typeof fetchWeather>> | null = null;
       if (state.permissions.calendarGranted) {
-        const availability = await getAvailability(state.enabledCalendars);
+        const availability = await getAvailability(state.disabledCalendars);
         actionsRef.current.setAvailability(availability);
         latestAvailability = availability;
       }
@@ -518,7 +603,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     } finally {
       setLoading(false);
     }
-  }, [state.permissions, state.enabledCalendars]);
+  }, [state.permissions, state.disabledCalendars]);
 
   useFocusEffect(
     useCallback(() => {
@@ -531,9 +616,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       setSelectedDayKey(today.toDateString());
+      pendingGraphScrollRef.current = true;
+      scrollGraphToToday(false);
       navigatingRef.current = false;          // reset guard on focus
       refreshContext();
-    }, [refreshContext]),
+    }, [refreshContext, scrollGraphToToday]),
   );
 
   useEffect(() => {
@@ -579,15 +666,91 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         : `You are free for ${formatDuration(state.availability.durationMin)}`
     : 'Pick something you can do right now';
 
-  const beforeLabel = state.availability?.nextEventTitle
-    ? `before ${state.availability.nextEventTitle}`
+  const availabilityEmoji = state.availability
+    ? isBusyNow
+      ? '⏳'
+      : state.availability.durationMin >= 240
+        ? '🏖️'
+        : '⏰'
     : '';
+
+  const nextEventStartDate = useMemo(() => {
+    const raw = state.availability?.nextEventStartAt;
+    if (!raw) return null;
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return null;
+    return parsed;
+  }, [state.availability?.nextEventStartAt]);
+
+  const nextEventTitle = state.availability?.nextEventTitle?.trim() ?? '';
+
+  const linkedUpcomingScheduledActivity = useMemo(() => {
+    const byStart = nextEventStartDate?.getTime();
+    const hasStart = Number.isFinite(byStart);
+    const normalizedNextTitle = nextEventTitle.toLowerCase();
+    const now = Date.now();
+
+    const candidates = state.scheduledActivities
+      .filter((item) => {
+        const start = new Date(item.startAt).getTime();
+        if (!Number.isFinite(start) || start < now - 15 * 60 * 1000) return false;
+        if (hasStart && Math.abs(start - (byStart as number)) <= 2 * 60 * 1000) return true;
+
+        if (!normalizedNextTitle) return false;
+        const normalizedTitle = item.title.trim().toLowerCase();
+        if (!normalizedTitle) return false;
+        return normalizedTitle === normalizedNextTitle;
+      })
+      .sort((a, b) => {
+        const aStart = new Date(a.startAt).getTime();
+        const bStart = new Date(b.startAt).getTime();
+        if (!hasStart) return aStart - bStart;
+        return Math.abs(aStart - (byStart as number)) - Math.abs(bStart - (byStart as number));
+      });
+
+    return candidates[0] ?? null;
+  }, [nextEventStartDate, nextEventTitle, state.scheduledActivities]);
+
+  const currentScheduledActivity = useMemo(() => {
+    const eventId = state.availability?.currentEventId;
+    if (eventId) {
+      const byCalendarId = state.scheduledActivities.find(
+        (item) => item.calendarEventId === eventId || item.commitment.calendarEventId === eventId,
+      );
+      if (byCalendarId) return byCalendarId;
+    }
+
+    const normalizedCurrentTitle = currentEventTitle.trim().toLowerCase();
+    const now = Date.now();
+
+    return state.scheduledActivities.find((item) => {
+      const start = new Date(item.startAt).getTime();
+      const end = new Date(item.endAt).getTime();
+      if (!Number.isFinite(start) || !Number.isFinite(end)) return false;
+      if (!(start <= now && now <= end + 15 * 60 * 1000)) return false;
+      return item.title.trim().toLowerCase() === normalizedCurrentTitle;
+    }) ?? null;
+  }, [currentEventTitle, state.availability?.currentEventId, state.scheduledActivities]);
+
+  const beforeLabel = nextEventTitle ? `before ${nextEventTitle}` : '';
+  const untilLabel = nextEventStartDate ? formatTime(nextEventStartDate) : '';
+  const showTappableUntil = !isBusyNow && !!untilLabel && !!linkedUpcomingScheduledActivity;
+
+  const availabilitySubtextPrefix = isBusyNow
+    ? ''
+    : (state.permissions.calendarGranted
+      ? `${availabilityEmoji} ${availabilityLabel}`
+      : `${availabilityEmoji} ${availabilityLabel}`);
+
+  const availabilitySubtextSuffix = isBusyNow
+    ? ''
+    : (state.permissions.calendarGranted
+      ? (untilLabel ? ' until ' : (beforeLabel ? ` ${beforeLabel}` : ''))
+      : '');
 
   const availabilitySubtext = isBusyNow
     ? ''
-    : (state.permissions.calendarGranted
-      ? beforeLabel ? `${availabilityLabel} ${beforeLabel}` : availabilityLabel
-      : availabilityLabel);
+    : `${availabilitySubtextPrefix}${state.permissions.calendarGranted && !untilLabel && beforeLabel ? ` ${beforeLabel}` : ''}`;
 
   const areaLabel = state.location.areaLabel ?? null;
   const locationStatusLabel = areaLabel
@@ -795,6 +958,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     });
   }, [navigation, openPlanSession]);
 
+  const onPressAvailabilityUntil = useCallback(() => {
+    if (!linkedUpcomingScheduledActivity) return;
+    openScheduledActivity(linkedUpcomingScheduledActivity);
+  }, [linkedUpcomingScheduledActivity, openScheduledActivity]);
+
   const removeScheduledActivity = useCallback((item: ScheduledActivity) => {
     Alert.alert('Delete this activity?', 'This removes it from your scheduled activities and your calendar.', [
       { text: 'Keep', style: 'cancel' },
@@ -820,13 +988,54 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     ]);
   }, [actions, refreshContext]);
 
+  const completeScheduledActivity = useCallback((item: ScheduledActivity) => {
+    const scheduledStart = new Date(item.startAt);
+    const completedAt = Number.isNaN(scheduledStart.getTime()) ? new Date() : scheduledStart;
+    const linkedTodo = linkedTodoByScheduledActivityId.get(item.id);
+
+    actions.recordActivity({
+      id: `act_${Date.now()}`,
+      suggestionId: item.suggestionId,
+      title: item.title,
+      durationMin: item.durationMin,
+      timestamp: completedAt.toISOString(),
+      activityMode: item.activityMode,
+      source: item.suggestion.source === 'ad' ? undefined : item.suggestion.source,
+      isHabit: !!item.suggestion.habitId,
+      habitId: item.suggestion.habitId,
+      tags: item.tags ?? item.suggestion.tags ?? [],
+      suggestionType: item.type,
+    });
+
+    if (item.suggestion.habitId) {
+      actions.completeHabit(item.suggestion.habitId, completedAt);
+    }
+
+    if (linkedTodo && !linkedTodo.done) {
+      const completion = applyTodoChunkCompletion(linkedTodo, item.durationMin);
+      actions.updateSmartTodo({
+        ...completion.todo,
+        completionPromptedAt: new Date().toISOString(),
+      });
+    }
+
+    actions.removeScheduledActivity(item.id);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+  }, [actions, linkedTodoByScheduledActivityId]);
+
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
       <View style={[styles.pinnedHeader, { paddingTop: insets.top + theme.spacing.sm }]}> 
         <View style={styles.topBar}>
           <View style={styles.logoContainer}>
-            <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-            <Text style={styles.lastUpdated}>Last updated: {lastUpdatedLabel}</Text>
+            <View style={styles.logoRow}>
+              {profileAvatarUri ? (
+                <Pressable onPress={() => navigation.navigate('Profile')}>
+                  <Image source={{ uri: profileAvatarUri }} style={styles.headerAvatar} />
+                </Pressable>
+              ) : null}
+              <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
+            </View>
             <View style={styles.locationRow}>
               <Text style={styles.pinIcon}>{'\u{1F4CD}'}</Text>
               <Text style={styles.locationLabel} numberOfLines={1}>{locationStatusLabel}</Text>
@@ -861,6 +1070,19 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             </View>
           </View>
         </View>
+        <LinearGradient
+          pointerEvents="none"
+          colors={[
+            hexToRgba(theme.colors.background, 1),
+            hexToRgba(theme.colors.background, 0.94),
+            hexToRgba(theme.colors.background, 0.82),
+            hexToRgba(theme.colors.background, 0.6),
+            hexToRgba(theme.colors.background, 0.3),
+            hexToRgba(theme.colors.background, 0),
+          ]}
+          locations={[0, 0.45, 0.65, 0.8, 0.92, 1]}
+          style={styles.headerFade}
+        />
       </View>
       <ScrollView
         ref={homeScrollRef}
@@ -951,6 +1173,10 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               style={({ pressed }) => [styles.busyCard, pressed && { opacity: 0.85 }]}
               onPress={() => {
                 if (openPlanSession()) return;
+                if (currentScheduledActivity) {
+                  openScheduledActivity(currentScheduledActivity);
+                  return;
+                }
                 const eventId = state.availability?.currentEventId;
                 if (!eventId) return;
                 if (Platform.OS === 'ios') {
@@ -964,7 +1190,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             >
               <Text style={styles.busyLabel}>Happening now</Text>
               <Text style={styles.busyTitle}>{activePlanSession?.suggestion?.title ?? currentEventTitle}</Text>
-              <Text style={styles.busyHint}>{activePlanSession ? 'Tap to resume activity' : 'Tap to open in calendar'}</Text>
+              <Text style={styles.busyHint}>{activePlanSession || currentScheduledActivity ? 'Tap to resume activity' : 'Tap to open in calendar'}</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Delete current activity from calendar"
@@ -984,14 +1210,42 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           )}
           {!!availabilitySubtext && (
             <View style={styles.deckMetaRow}>
-              <Text style={styles.subtext}>{availabilitySubtext}</Text>
+              <Text style={styles.subtext}>
+                {availabilitySubtextPrefix}
+                {!!availabilitySubtextSuffix && availabilitySubtextSuffix}
+                {showTappableUntil ? (
+                  <Text
+                    accessibilityRole="button"
+                    onPress={onPressAvailabilityUntil}
+                    style={styles.subtextLink}
+                  >
+                    {untilLabel}
+                  </Text>
+                ) : (
+                  !!untilLabel && <Text>{untilLabel}</Text>
+                )}
+              </Text>
             </View>
           )}
           {/* ������ Scheduled activities ������ */}
           {dashboardScheduledActivities.length > 0 && (
             <View style={styles.scheduledSection}>
-              <Text style={styles.scheduledSectionTitle}>Scheduled</Text>
-              {dashboardScheduledActivities
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={isScheduledCollapsed ? 'Expand scheduled activities' : 'Collapse scheduled activities'}
+                onPress={() => setIsScheduledCollapsed((prev) => !prev)}
+                style={({ pressed }) => [styles.scheduledSectionHeader, pressed && styles.scheduledSectionHeaderPressed]}
+              >
+                <View style={styles.scheduledSectionTitleRow}>
+                  <Text style={styles.scheduledSectionTitle}>
+                    {isScheduledCollapsed
+                      ? `Scheduled (${dashboardScheduledActivities.length} today)`
+                      : 'Scheduled'}
+                  </Text>
+                  {isScheduledCollapsed && <Text style={styles.scheduledSectionTriangle}>▸</Text>}
+                </View>
+              </Pressable>
+              {!isScheduledCollapsed && dashboardScheduledActivities
                 .slice(0, 5)
                 .map((item) => {
                   const isOverdue = overdueScheduledActivityIds.has(item.id);
@@ -1018,21 +1272,43 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                           {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} | {formatTime(new Date(item.startAt))} | {item.durationMin} min
                         </Text>
                       </View>
-                      <Pressable
-                        accessibilityRole="button"
-                        accessibilityLabel={`Remove scheduled activity ${item.title}`}
-                        hitSlop={8}
-                        onPress={(event) => {
-                          event.stopPropagation();
-                          removeScheduledActivity(item);
-                        }}
-                        style={({ pressed }) => [
-                          styles.scheduledDeleteButton,
-                          pressed && styles.scheduledDeleteButtonPressed,
-                        ]}
-                      >
-                        <Text style={styles.scheduledDeleteLabel}>X</Text>
-                      </Pressable>
+                      <View style={[
+                        styles.scheduledActionColumn,
+                        isOverdue && styles.scheduledActionColumnOverdue,
+                      ]}>
+                        {isOverdue && (
+                          <Pressable
+                            accessibilityRole="button"
+                            accessibilityLabel={`Mark scheduled activity ${item.title} as done`}
+                            hitSlop={8}
+                            onPress={(event) => {
+                              event.stopPropagation();
+                              completeScheduledActivity(item);
+                            }}
+                            style={({ pressed }) => [
+                              styles.scheduledCheckButton,
+                              pressed && styles.scheduledCheckButtonPressed,
+                            ]}
+                          >
+                            <Text style={styles.scheduledCheckLabel}>✓</Text>
+                          </Pressable>
+                        )}
+                        <Pressable
+                          accessibilityRole="button"
+                          accessibilityLabel={`Remove scheduled activity ${item.title}`}
+                          hitSlop={8}
+                          onPress={(event) => {
+                            event.stopPropagation();
+                            removeScheduledActivity(item);
+                          }}
+                          style={({ pressed }) => [
+                            styles.scheduledDeleteButton,
+                            pressed && styles.scheduledDeleteButtonPressed,
+                          ]}
+                        >
+                          <Text style={styles.scheduledDeleteLabel}>X</Text>
+                        </Pressable>
+                      </View>
                     </View>
                   </Pressable>
                   );
@@ -1069,18 +1345,39 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <View style={styles.dashboard}>
                 <View style={styles.dashboardTitleRow}>
                   <Text style={styles.dashboardTitle}>Your activity</Text>
-                </View>
-                <View style={styles.dashboardGraph}>
-                  {weekGraph.map((day) => (
+                  {showTodayButton && (
                     <Pressable
-                      key={day.key}
-                      onPress={() => setSelectedDayKey(day.key)}
-                      style={({ pressed }) => [
-                        styles.dashboardGraphCol,
-                        day.key === selectedDayKey && styles.dashboardGraphColActive,
-                        pressed && styles.dashboardGraphColPressed,
-                      ]}
+                      onPress={() => scrollGraphToToday(true)}
+                      style={({ pressed }) => [styles.todayButton, pressed && styles.todayButtonPressed]}
                     >
+                      <Text style={styles.todayButtonText}>Today</Text>
+                    </Pressable>
+                  )}
+                </View>
+                <View style={styles.dashboardGraphWrap}>
+                  <ScrollView
+                    ref={graphScrollRef}
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    contentContainerStyle={styles.dashboardGraph}
+                    scrollEventThrottle={16}
+                    onScroll={handleGraphScroll}
+                    onLayout={(e) => setGraphViewportWidth(e.nativeEvent.layout.width)}
+                    onContentSizeChange={() => {
+                      if (pendingGraphScrollRef.current) scrollGraphToToday(false);
+                    }}
+                  >
+                    {weekGraph.map((day) => (
+                      <Pressable
+                        key={day.key}
+                        onPress={() => setSelectedDayKey(day.key)}
+                        style={({ pressed }) => [
+                          styles.dashboardGraphCol,
+                          { width: graphColumnWidth },
+                          day.key === selectedDayKey && styles.dashboardGraphColActive,
+                          pressed && styles.dashboardGraphColPressed,
+                        ]}
+                      >
                       <View
                         style={[
                           styles.dashboardGraphTrackWrap,
@@ -1108,10 +1405,13 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                           )}
                         </View>
                       </View>
-                      <Text style={styles.dashboardGraphLabel}>{day.dayLabel}</Text>
+                      <View style={[styles.dashboardGraphLabelWrap, day.key === todayKey && styles.dashboardGraphLabelWrapToday]}>
+                        <Text numberOfLines={1} style={[styles.dashboardGraphLabel, day.key === todayKey && styles.dashboardGraphLabelToday]}>{day.dayLabel}</Text>
+                      </View>
                       {day.minutes > 0 && <Text style={styles.dashboardGraphValue}>{day.minutes}m</Text>}
                     </Pressable>
                   ))}
+                </ScrollView>
                 </View>
                 <View style={styles.statsRow}>
                   <View style={styles.statCard}>
@@ -1152,7 +1452,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                         const aggregateStats = activityStatsByKey.get(activityKey);
                         const alreadyInHabits = entry.isHabit || existingHabitNames.has(entry.title.trim().toLowerCase());
                         const activityMode = resolveActivityMode(entry);
-                        const displayTags = [...new Set((entry.tags ?? []).filter((tag) => !!tag?.trim()))].slice(0, 2);
+                        const displayTags = getVisibleTags(entry.tags, 2);
                         return (
                         <View key={entry.id} style={styles.dayActivityRow}>
                           <View
@@ -1308,6 +1608,15 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   pinnedHeader: {
     paddingHorizontal: theme.spacing.xl,
+    zIndex: 10,
+    elevation: 10,
+  },
+  headerFade: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    bottom: -10,
+    height: 10,
   },
   scroll: {
     paddingHorizontal: theme.spacing.xl,
@@ -1319,6 +1628,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   logoContainer: {
     alignItems: 'flex-start',
     gap: 2,
+  },
+  logoRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    flexShrink: 1,
+  },
+  headerAvatar: {
+    width: LOGO_HEIGHT + 4,
+    height: LOGO_HEIGHT + 4,
+    borderRadius: (LOGO_HEIGHT + 4) / 2,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
   },
   topBar: {
     flexDirection: 'row',
@@ -1364,12 +1686,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   premiumIconInactive: {
     color: '#9AA0A8',
-  },
-  lastUpdated: {
-    fontFamily: theme.fonts.body,
-    fontSize: 11,
-    color: theme.colors.textMuted,
-    marginTop: theme.spacing.xs,
   },
   header: {
     flexDirection: 'row',
@@ -1557,6 +1873,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontSize: 16,
     flex: 1,
   },
+  subtextLink: {
+    textDecorationLine: 'underline',
+  },
   headerMetaRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1584,17 +1903,39 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderColor: theme.colors.border,
     gap: theme.spacing.md,
   },
+  dashboardGraphWrap: {
+    position: 'relative',
+  },
   dashboardGraph: {
     flexDirection: 'row',
     alignItems: 'flex-end',
-    gap: theme.spacing.sm,
+    gap: theme.spacing.xs,
     paddingVertical: theme.spacing.sm,
     paddingHorizontal: theme.spacing.xs,
     borderRadius: theme.radius.md,
     backgroundColor: theme.colors.backgroundAlt,
   },
+  todayButton: {
+    paddingHorizontal: theme.spacing.sm,
+    paddingVertical: 4,
+    borderRadius: 999,
+    backgroundColor: theme.colors.accent,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 3,
+    elevation: 3,
+  },
+  todayButtonPressed: {
+    opacity: 0.8,
+  },
+  todayButtonText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.colors.accentText,
+  },
   dashboardGraphCol: {
-    flex: 1,
+    width: DASHBOARD_DEFAULT_COL_WIDTH,
     alignItems: 'center',
     gap: 4,
     paddingVertical: 4,
@@ -1663,6 +2004,17 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     fontSize: 11,
     color: theme.colors.textMuted,
+  },
+  dashboardGraphLabelWrap: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 999,
+  },
+  dashboardGraphLabelWrapToday: {
+    backgroundColor: theme.colors.accent,
+  },
+  dashboardGraphLabelToday: {
+    color: theme.colors.accentText,
   },
   dashboardGraphValue: {
     fontFamily: theme.fonts.body,
@@ -2415,6 +2767,18 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: theme.spacing.sm,
     gap: theme.spacing.xs,
   },
+  scheduledSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  scheduledSectionTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  scheduledSectionHeaderPressed: {
+    opacity: 0.75,
+  },
   scheduledSectionTitle: {
     fontFamily: theme.fonts.semibold,
     fontSize: 12,
@@ -2422,6 +2786,13 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     letterSpacing: 0.6,
     color: theme.colors.textMuted,
     marginBottom: 2,
+  },
+  scheduledSectionTriangle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.colors.textMuted,
+    marginBottom: 2,
+    marginLeft: 6,
   },
   scheduledCard: {
     padding: theme.spacing.md,
@@ -2464,13 +2835,37 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   scheduledMetaOverdue: {
     color: theme.colors.danger,
   },
+  scheduledActionColumn: {
+    marginLeft: theme.spacing.sm,
+    justifyContent: 'center' as const,
+    gap: 4,
+  },
+  scheduledActionColumnOverdue: {
+    alignSelf: 'flex-start' as const,
+  },
+  scheduledCheckButton: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  scheduledCheckButtonPressed: {
+    backgroundColor: hexToRgba(theme.colors.success, 0.16),
+  },
+  scheduledCheckLabel: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: theme.colors.success,
+    lineHeight: 16,
+  },
   scheduledDeleteButton: {
     width: 20,
     height: 20,
     borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
-    marginLeft: theme.spacing.sm,
+    marginLeft: 0,
   },
   scheduledDeleteButtonPressed: {
     backgroundColor: theme.colors.border,

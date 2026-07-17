@@ -18,7 +18,7 @@ import {
   TagAffinities,
   UserPrefs,
 } from '../types';
-import { addMinutes, clamp, dateFromLocalClockTime, extractClockLabelFromText, formatTime, fromISO, minutesBetween, isSameCalendarDayInTimeZone, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
+import { addMinutes, clamp, dateFromLocalClockTime, extractClockLabelFromText, fromISO, minutesBetween, isSameCalendarDayInTimeZone, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
 import { chooseTravelMode, estimateDeparture, estimateEtaMinutes, haversineKm } from './travel';
 import { fetchTicketmasterSuggestions } from './ticketmaster';
 import { habitToSuggestion, isHabitDue, matchesTimeOfDay } from '../utils/habits';
@@ -37,6 +37,9 @@ import {
 import { calculateBusinessHabitAlignment, findAlignedBusinesses, businessToSuggestion } from './businessService';
 import { Campaign } from '../types/business';
 import { getCampaignsByStatus } from './business';
+import { evaluateTodoWindowFit, estimateTodoDurationMin, getTodoAtomizedProgress, parseTodoExplicitDurationMin } from '../utils/todoAtomization';
+import { selectChallengeCandidates } from '../utils/challengeMode';
+import { getTodoDeadlineAt, getTodoDueDate, getTodoUrgencyScore, isTodoEligibleForWindow } from '../utils/todos';
 
 const BUFFER_MIN = 10;
 const GEMINI_SOURCE_BOOST = 0.08;
@@ -279,23 +282,6 @@ const parseInstructionDeparture = (
   return null;
 };
 
-const withDepartureInstruction = (
-  suggestion: Suggestion,
-  leaveAt: Date,
-  timeZone?: string | null,
-): Suggestion => {
-  const place = suggestion.place?.name ?? suggestion.event?.venue ?? suggestion.title;
-  const leaveLabel = formatTime(leaveAt, timeZone);
-  const departureLine = `${leaveLabel}: Leave for ${place}.`;
-  const existing = suggestion.instructions ?? [];
-  const withoutOldDeparture = existing.filter((line, index) => (
-    index !== 0 || !/\b(leave|depart|head|go|walk|travel|catch)\b/i.test(line)
-  ));
-  return {
-    ...suggestion,
-    instructions: [departureLine, ...withoutOldDeparture].slice(0, 6),
-  };
-};
 const EMOJI_BY_TAG: Record<string, string[]> = {
   fitness: ['💪', '🏃'],
   cycling: ['🚴', '💪'],
@@ -324,18 +310,58 @@ const EMOJI_BY_TYPE: Record<SuggestionType, string[]> = {
   EVENT: ['🎟️', '🎉'],
 };
 const EMOJI_RULES: { regex: RegExp; emojis: string[] }[] = [
-  { regex: /(coffee|cafe)/, emojis: ['☕'] },
-  { regex: /(walk|stroll)/, emojis: ['🚶'] },
-  { regex: /(run|jog)/, emojis: ['🏃'] },
-  { regex: /(yoga|stretch|breath|meditation)/, emojis: ['🧘'] },
-  { regex: /(cook|meal|recipe)/, emojis: ['🍳'] },
-  { regex: /(gallery|museum|art)/, emojis: ['🎨'] },
-  { regex: /(music|concert|dj|live)/, emojis: ['🎵'] },
+  { regex: /(espresso|latte|cappuccino|coffee|cafe|café)/, emojis: ['☕'] },
+  { regex: /(tea|matcha|chai)/, emojis: ['🍵'] },
+  { regex: /(bakery|pastry|croissant|cake|dessert)/, emojis: ['🧁'] },
+  { regex: /(ramen|noodle|pho|udon)/, emojis: ['🍜'] },
+  { regex: /(sushi|sashimi|poke)/, emojis: ['🍣'] },
+  { regex: /(pizza)/, emojis: ['🍕'] },
+  { regex: /(burger)/, emojis: ['🍔'] },
+  { regex: /(taco|burrito|mexican)/, emojis: ['🌮'] },
+  { regex: /(ice.?cream|gelato)/, emojis: ['🍦'] },
+  { regex: /(street.?food|food.?truck|market|hawker)/, emojis: ['🥢'] },
+  { regex: /(brunch|breakfast)/, emojis: ['🥐'] },
+  { regex: /(dinner|restaurant|dining)/, emojis: ['🍽️'] },
+  { regex: /(bar|pub|beer|cocktail|wine|drinks)/, emojis: ['🍸'] },
+  { regex: /(cook|recipe|meal prep|baking)/, emojis: ['🍳'] },
+  { regex: /(walk|stroll|wander)/, emojis: ['🚶'] },
+  { regex: /(hike|hiking|trek|trail)/, emojis: ['🥾'] },
+  { regex: /(run|jog|sprint)/, emojis: ['🏃'] },
+  { regex: /(cycle|cycling|bike|biking)/, emojis: ['🚴'] },
+  { regex: /(swim|pool|laps)/, emojis: ['🏊'] },
+  { regex: /(surf)/, emojis: ['🏄'] },
+  { regex: /(climb|boulder|climbing)/, emojis: ['🧗'] },
+  { regex: /(skate|skateboard)/, emojis: ['🛹'] },
+  { regex: /(yoga|stretch|breath|meditation|mindful)/, emojis: ['🧘'] },
+  { regex: /(workout|gym|fitness|lift|strength)/, emojis: ['💪'] },
+  { regex: /(dance|dancing)/, emojis: ['💃'] },
+  { regex: /(gallery|museum|exhibit)/, emojis: ['🖼️'] },
+  { regex: /(paint|draw|sketch|art)/, emojis: ['🎨'] },
+  { regex: /(photo|camera|photograph)/, emojis: ['📷'] },
+  { regex: /(write|journal|diary|poetry)/, emojis: ['✍️'] },
+  { regex: /(music|concert|gig|dj|live|band)/, emojis: ['🎵'] },
+  { regex: /(vinyl|record shop)/, emojis: ['💿'] },
+  { regex: /(guitar|piano|instrument|play music)/, emojis: ['🎸'] },
+  { regex: /(karaoke|sing)/, emojis: ['🎤'] },
   { regex: /(movie|cinema|film|screening)/, emojis: ['🎬'] },
-  { regex: /(park|garden|beach|trail|reserve)/, emojis: ['🌿'] },
-  { regex: /(sunset|view|lookout)/, emojis: ['🌅'] },
-  { regex: /(workout|gym|fitness)/, emojis: ['💪'] },
-  { regex: /(study|learn|read|focus)/, emojis: ['📚'] },
+  { regex: /(game|arcade|gaming|board game|chess)/, emojis: ['🎮'] },
+  { regex: /(bowling)/, emojis: ['🎳'] },
+  { regex: /(park|garden|botanic)/, emojis: ['🌳'] },
+  { regex: /(beach|coast|shore|ocean|sea)/, emojis: ['🏖️'] },
+  { regex: /(lake|river|kayak|canoe|paddle)/, emojis: ['🛶'] },
+  { regex: /(sunset|golden hour)/, emojis: ['🌅'] },
+  { regex: /(sunrise)/, emojis: ['🌄'] },
+  { regex: /(stargaz|night sky|astronomy)/, emojis: ['🌌'] },
+  { regex: /(picnic)/, emojis: ['🧺'] },
+  { regex: /(shop|shopping|browse|thrift|vintage)/, emojis: ['🛍️'] },
+  { regex: /(book|read|library|novel)/, emojis: ['📚'] },
+  { regex: /(study|learn|lesson|class|course)/, emojis: ['🧠'] },
+  { regex: /(focus|deep work|productiv|plan)/, emojis: ['🎯'] },
+  { regex: /(clean|tidy|declutter|organize|organise|laundry)/, emojis: ['🧹'] },
+  { regex: /(call|phone|catch up|friend)/, emojis: ['📞'] },
+  { regex: /(garden|plant|repot)/, emojis: ['🪴'] },
+  { regex: /(bath|spa|self.?care|skincare)/, emojis: ['🛁'] },
+  { regex: /(nap|rest|relax|chill)/, emojis: ['😌'] },
 ];
 
 const inferTags = (suggestion: Suggestion): Suggestion => {
@@ -376,76 +402,94 @@ const inferTags = (suggestion: Suggestion): Suggestion => {
 
 const SMART_TODO_MIN_DURATION_MIN = 15;
 const SMART_TODO_MAX_CANDIDATES = 2;
+const SMART_HABIT_MAX_CANDIDATES = 3;
+const ROUTINE_SOURCE_MAX_CARDS = 2;
 
-const parseSmartTodoDurationMin = (todo: SmartTodoItem): number | null => {
-  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
-  if (!text.trim()) return null;
-
-  const hourMinuteMatch = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\s*(\d{1,2})?\s*(?:m|min|mins|minute|minutes)?/.exec(text);
-  if (hourMinuteMatch) {
-    const hours = Number(hourMinuteMatch[1]);
-    const mins = Number(hourMinuteMatch[2] ?? 0);
-    if (Number.isFinite(hours) && Number.isFinite(mins)) {
-      return Math.max(SMART_TODO_MIN_DURATION_MIN, Math.round(hours * 60 + mins));
-    }
-  }
-
-  const minuteMatch = /(\d{1,3})\s*(?:m|min|mins|minute|minutes)\b/.exec(text);
-  if (minuteMatch) {
-    const mins = Number(minuteMatch[1]);
-    if (Number.isFinite(mins)) {
-      return Math.max(SMART_TODO_MIN_DURATION_MIN, Math.round(mins));
-    }
-  }
-
-  return null;
-};
-
-const estimateSmartTodoDurationMin = (todo: SmartTodoItem): number => {
-  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
-  if (/quick|brief|tiny|short|email|reply|call|confirm|book/.test(text)) return 20;
-  if (/deep|project|report|presentation|refactor|research|analy/.test(text)) return 90;
-  if (/clean|organize|study|prepare|write|review|exercise|workout/.test(text)) return 60;
-  return 40;
-};
+const isRoutineSource = (source?: Suggestion['source']): boolean =>
+  source === 'todo' || source === 'habit';
 
 const scoreSmartTodoUrgency = (todo: SmartTodoItem, now: Date): number => {
-  if (!todo.deadlineAt) return 0.2;
-  const deadlineMs = new Date(todo.deadlineAt).getTime();
-  if (Number.isNaN(deadlineMs)) return 0.2;
-  const deltaHours = (deadlineMs - now.getTime()) / 3600000;
-  if (deltaHours <= 0) return 2.2;
-  if (deltaHours <= 24) return 1.8;
-  if (deltaHours <= 72) return 1.2;
-  return 0.6;
+  return getTodoUrgencyScore(todo, now);
 };
 
 const buildSmartTodoSuggestion = (todo: SmartTodoItem, availability: Availability): DeckSuggestion | null => {
-  if (todo.done || todo.scheduledAt || todo.scheduledEndAt || todo.hasFixedSchedule) return null;
+  if (todo.done || todo.hasFixedSchedule) return null;
 
   const title = todo.title.trim();
   if (!title) return null;
 
-  const explicitDuration = parseSmartTodoDurationMin(todo);
-  const estimatedDuration = explicitDuration ?? estimateSmartTodoDurationMin(todo);
-  if (estimatedDuration > availability.durationMin) return null;
+  const availabilityStart = new Date(availability.start);
+  const availabilityEnd = new Date(availability.end);
+  if (!isTodoEligibleForWindow(todo, availabilityStart, availabilityEnd)) return null;
+
+  const fit = evaluateTodoWindowFit(todo, availability.durationMin);
+  if (!fit.fits) return null;
+
+  const explicitDuration = parseTodoExplicitDurationMin(todo);
+  const estimatedDuration = explicitDuration ?? estimateTodoDurationMin(todo);
+  const atomized = getTodoAtomizedProgress(todo);
+  const atomizedProgressLabel = atomized.isAtomized && atomized.totalMin != null
+    ? `${atomized.progressMin}/${atomized.totalMin} min done`
+    : null;
+  const chunkLabel = fit.isPartial
+    ? `Do a ${fit.durationMin}-minute chunk`
+    : atomizedProgressLabel
+      ? `Continue task (${atomizedProgressLabel})`
+      : 'Start this task';
+  const baseDescription = todo.notes?.trim() || 'Pending to-do task';
+  const atomizedProgressCopy = atomizedProgressLabel
+    ? `Progress: ${atomizedProgressLabel}.`
+    : null;
+  const description = fit.isPartial
+    ? `${baseDescription}\nFocus on a concrete sub-step in this slot.${atomizedProgressCopy ? `\n${atomizedProgressCopy}` : ''}`
+    : atomizedProgressCopy
+      ? `${baseDescription}\n${atomizedProgressCopy}`
+      : baseDescription;
+  const deadlineAt = getTodoDeadlineAt(todo);
+  const dueDate = getTodoDueDate(todo);
 
   const suggestion: Suggestion = {
     id: `todo_${todo.id}`,
     type: 'AT_HOME',
     source: 'todo',
     title,
-    hook: todo.deadlineAt ? 'Priority to-do' : 'To-do',
-    cta: 'Start this task',
-    description: todo.notes?.trim() || 'Pending to-do task',
-    durationMin: Math.max(SMART_TODO_MIN_DURATION_MIN, Math.min(estimatedDuration, availability.durationMin)),
+    hook: fit.isPartial || atomized.isAtomized
+      ? 'Atomized to-do'
+      : (deadlineAt ? 'Deadline to-do' : dueDate ? 'Due today' : 'To-do'),
+    cta: chunkLabel,
+    description,
+    durationMin: Math.max(SMART_TODO_MIN_DURATION_MIN, Math.min(fit.durationMin, availability.durationMin)),
     confidence: 0.9,
-    whyNow: todo.deadlineAt
-      ? `Pending task due ${new Date(todo.deadlineAt).toLocaleString()}.`
-      : 'Pending task that fits this free window.',
+    whyNow: deadlineAt
+      ? (fit.isPartial
+        ? `Deadline ${new Date(deadlineAt).toLocaleString()}. This ${fit.durationMin}-minute chunk moves it forward now.`
+        : `Pending task with deadline ${new Date(deadlineAt).toLocaleString()}.`)
+      : dueDate
+        ? (fit.isPartial
+          ? `Due today (${dueDate}). This ${fit.durationMin}-minute chunk moves it forward now.`
+          : `Pending task due today (${dueDate}).`)
+      : (fit.isPartial
+        ? `This free window fits a ${fit.durationMin}-minute chunk of a larger task (~${estimatedDuration} min total).${atomizedProgressLabel ? ` ${atomizedProgressLabel}.` : ''}`
+        : 'Pending task that fits this free window.'),
   };
 
-  return attachEmojis(inferTags(suggestion)) as DeckSuggestion;
+  const deckSuggestion = attachEmojis(inferTags(suggestion)) as DeckSuggestion;
+  if (deadlineAt || dueDate) {
+    deckSuggestion.meta = {
+      ...deckSuggestion.meta,
+      ...(deadlineAt ? { todoDeadlineAt: deadlineAt } : {}),
+      ...(dueDate ? { todoDueDate: dueDate } : {}),
+    };
+  }
+  if (atomized.isAtomized && atomized.totalMin != null) {
+    deckSuggestion.meta = {
+      ...deckSuggestion.meta,
+      todoAtomizedProgressMin: atomized.progressMin,
+      todoAtomizedTotalMin: atomized.totalMin,
+      todoAtomizedRemainingMin: atomized.remainingMin,
+    };
+  }
+  return deckSuggestion;
 };
 
 const attachEmojis = (suggestion: Suggestion): Suggestion => {
@@ -678,7 +722,7 @@ const enrichSuggestion = (
   const now = new Date();
   const availabilityStart = fromISO(availability.start) ?? now;
   const availabilityEnd = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
-  let normalizedSuggestion = suggestion;
+  const normalizedSuggestion = suggestion;
 
   if (location.lat && location.lng && suggestion.place?.lat && suggestion.place?.lng) {
     const distanceKm = haversineKm(location.lat, location.lng, suggestion.place.lat, suggestion.place.lng);
@@ -692,7 +736,6 @@ const enrichSuggestion = (
       meta.startInMin = minutesBetween(now, startAt);
       const leaveBy = estimateDeparture(startAt, distanceKm);
       meta.leaveBy = leaveBy.toISOString();
-      normalizedSuggestion = withDepartureInstruction(normalizedSuggestion, leaveBy, location.timeZone);
     }
 
     if (suggestion.type === 'GO_OUT') {
@@ -712,7 +755,6 @@ const enrichSuggestion = (
         leaveBy = latestLeaveBy;
       }
       meta.leaveBy = leaveBy.toISOString();
-      normalizedSuggestion = withDepartureInstruction(normalizedSuggestion, leaveBy, location.timeZone);
     }
   }
 
@@ -1078,6 +1120,7 @@ const buildInterleavedDeck = (
   // Also enforce max 2 of same type (AT_HOME/GO_OUT/EVENT) for type variety
   const typeCounts = new Map<string, number>();
   const maxPerType = Math.min(3, deckSize);
+  let routineSourceCount = 0;
 
   let stalled = 0;
   while (deck.length < deckSize && stalled < sortedGroups.length) {
@@ -1093,9 +1136,13 @@ const buildInterleavedDeck = (
         if (usedIds.has(candidate.id)) continue;
         const tc = typeCounts.get(candidate.type) ?? 0;
         if (tc >= maxPerType) continue; // skip if type is saturated
+        if (isRoutineSource(candidate.source) && routineSourceCount >= Math.min(ROUTINE_SOURCE_MAX_CARDS, deckSize)) {
+          continue;
+        }
         deck.push(candidate);
         usedIds.add(candidate.id);
         typeCounts.set(candidate.type, tc + 1);
+        if (isRoutineSource(candidate.source)) routineSourceCount += 1;
         cursors.set(group.tag, i + 1);
         picked = true;
         break;
@@ -1130,8 +1177,20 @@ const seedSuggestions = async (
 ): Promise<Suggestion[]> => {
   const now = nowOverride ?? new Date();
   const habitSuggestions = habits
-    .filter((habit) => isHabitDue(habit, now, location.timeZone) && matchesTimeOfDay(habit, now, location.timeZone))
-    .map((habit) => attachEmojis(habitToSuggestion(habit)))
+    .filter((habit) => matchesTimeOfDay(habit, now, location.timeZone))
+    .sort((a, b) => Number(isHabitDue(b, now, location.timeZone)) - Number(isHabitDue(a, now, location.timeZone)))
+    .slice(0, SMART_HABIT_MAX_CANDIDATES)
+    .map((habit) => {
+      const due = isHabitDue(habit, now, location.timeZone);
+      const base = habitToSuggestion(habit);
+      if (due) return attachEmojis(base);
+      return attachEmojis({
+        ...base,
+        hook: base.hook ?? 'Habit momentum',
+        confidence: Math.min(base.confidence ?? 0.8, 0.8),
+        whyNow: 'Fits your current time-of-day. A short repeat keeps momentum.',
+      });
+    })
     .map((item) => markRepetitionFriendly(item)); // Mark habits as repetition-friendly
 
   const curated = prefs.openToGoingOut
@@ -1542,6 +1601,9 @@ export const buildFilteredFallbacks = (
   } else if (filter === 'productive') {
     const prodTags = new Set(['productivity', 'learning', 'creative', 'focus', 'planning', 'work', 'study', 'reading']);
     filtered = enrichedPool.filter((c) => c.tags?.some((t) => prodTags.has(t)));
+  } else if (filter === 'challenge_me') {
+    const challengePool = selectChallengeCandidates(enrichedPool, undefined, { minStrict: 3, minReturn: 3 });
+    filtered = challengePool;
   } else {
     filtered = enrichedPool;
   }

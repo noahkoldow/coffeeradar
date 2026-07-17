@@ -72,4 +72,20 @@ export const badgeDefinitions: BadgeDefinition[] = [
     levels: [3, 7, 14, 30, 60],
     color: '#059669',
   },
+  {
+    id: 'todo',
+    title: 'To-do',
+    description: 'Earned by completing planned to-dos and task-focused sessions.',
+    tags: ['todo'],
+    levels: [1, 3, 6, 10, 15],
+    color: '#0EA5A4',
+  },
+  {
+    id: 'challenge',
+    title: 'Challenge',
+    description: 'Earned by completing time-bound challenge activities.',
+    tags: ['challenge'],
+    levels: [1, 3, 6, 10, 15],
+    color: '#8B5CF6',
+  },
 ];

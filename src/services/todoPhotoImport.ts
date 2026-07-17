@@ -2,6 +2,7 @@ export type TodoPhotoImportItem = {
   title: string;
   notes?: string;
   deadlineAt?: string | null;
+  dueDate?: string | null;
   dueText?: string;
 };
 
@@ -21,6 +22,12 @@ const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MAX_IMPORTED_TODOS = 20;
 
+const toDateKey = (value?: string | null): string | null => {
+  const parsed = value ? new Date(value) : null;
+  if (!parsed || Number.isNaN(parsed.getTime())) return null;
+  return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+};
+
 const normalizeTodoTitleKey = (value: string): string => value
   .toLowerCase()
   .replace(/[^a-z0-9\s]/g, ' ')
@@ -39,6 +46,50 @@ const to24Hour = (hourRaw: number, meridiem?: string): number => {
     return hourRaw === 12 ? 12 : Math.max(0, Math.min(23, hourRaw + 12));
   }
   return boundedHour;
+};
+
+const hasExplicitYear = (value?: string | null): boolean => {
+  const input = String(value ?? '').trim();
+  if (!input) return false;
+  return /(19|20)\d{2}|\b\d{1,2}[\/.-]\d{1,2}[\/.-]\d{2,4}\b/.test(input);
+};
+
+const isIsoLikeDateString = (value?: string | null): boolean => {
+  const input = String(value ?? '').trim();
+  if (!input) return false;
+  return /^\d{4}[\/.-]\d{1,2}[\/.-]\d{1,2}(?:[T\s].*)?$/.test(input);
+};
+
+const normalizeImplicitYear = (
+  isoValue: string | null,
+  evidenceText?: string | null,
+): string | null => {
+  if (!isoValue) return null;
+  if (hasExplicitYear(evidenceText)) return isoValue;
+
+  const parsed = new Date(isoValue);
+  if (Number.isNaN(parsed.getTime())) return null;
+
+  const now = new Date();
+  let year = now.getFullYear();
+  const rebuilt = new Date(
+    year,
+    parsed.getMonth(),
+    parsed.getDate(),
+    parsed.getHours(),
+    parsed.getMinutes(),
+    parsed.getSeconds(),
+    parsed.getMilliseconds(),
+  );
+
+  if (Number.isNaN(rebuilt.getTime())) return isoValue;
+
+  if (rebuilt.getTime() < Date.now() - (24 * 60 * 60 * 1000)) {
+    year += 1;
+    rebuilt.setFullYear(year);
+  }
+
+  return rebuilt.toISOString();
 };
 
 const parseDueTextFallback = (value?: string | null): string | null => {
@@ -127,7 +178,7 @@ const parseDueTextFallback = (value?: string | null): string | null => {
 
   const normalizedInput = input.replace(/(\d{1,2})\s*[Hh]\b/g, '$1:00');
   const parsed = new Date(normalizedInput);
-  if (!Number.isNaN(parsed.getTime())) return parsed.toISOString();
+  if (!Number.isNaN(parsed.getTime())) return normalizeImplicitYear(parsed.toISOString(), input);
   return null;
 };
 
@@ -182,16 +233,27 @@ const normalizeTodos = (payload: GeminiTodoPayload | null): TodoPhotoImportItem[
       const notes = String(todo.notes ?? '').trim();
       const dueText = String(todo.dueText ?? '').trim();
       const dueAtRaw = String(todo.dueAt ?? '').trim();
-      const dueAt = normalizeDeadline(dueAtRaw || null);
-      const dueFromDueAtText = dueAt ? null : parseDueTextFallback(dueAtRaw || null);
+      const implicitYearEvidence = [
+        dueText,
+        title,
+        notes,
+        isIsoLikeDateString(dueAtRaw) ? '' : dueAtRaw,
+      ]
+        .filter((part) => part.trim().length > 0)
+        .join(' ');
+      const dueAt = normalizeImplicitYear(normalizeDeadline(dueAtRaw || null), implicitYearEvidence);
+      const dueFromDueAtText = dueAt ? null : normalizeImplicitYear(parseDueTextFallback(dueAtRaw || null), implicitYearEvidence);
       const combinedDueText = [dueText, title, notes]
         .filter((part) => part.trim().length > 0)
         .join(' ');
-      const dueFromCombinedText = (dueAt || dueFromDueAtText) ? null : parseDueTextFallback(combinedDueText);
+      const dueFromCombinedText = (dueAt || dueFromDueAtText)
+        ? null
+        : normalizeImplicitYear(parseDueTextFallback(combinedDueText), combinedDueText);
       return {
         title,
         notes: notes || undefined,
-        deadlineAt: dueAt ?? dueFromDueAtText ?? dueFromCombinedText,
+        deadlineAt: dueAt,
+        dueDate: dueAt ? null : toDateKey(dueFromDueAtText ?? dueFromCombinedText),
         dueText: dueText || undefined,
       };
     })

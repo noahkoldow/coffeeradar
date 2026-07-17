@@ -1,5 +1,5 @@
 import * as Calendar from 'expo-calendar';
-import { Availability } from '../types';
+import { Availability, DayEventInfo } from '../types';
 import { addMinutes, getPreferredTimeZone, minutesBetween, toISO } from '../utils/time';
 
 export const requestCalendarPermission = async (): Promise<boolean> => {
@@ -108,6 +108,16 @@ const buildAvailabilityFromEvents = (
       .filter((title): title is string => !!title && title.trim().length > 0),
   ].slice(0, 12);
 
+  const dayEvents: DayEventInfo[] = [
+    ...allDayEvents
+      .map((event) => (event.title ?? '').trim())
+      .filter((title) => title.length > 0)
+      .map((title) => ({ title, startAt: toISO(dayStart), endAt: toISO(dayEnd), allDay: true as const })),
+    ...sorted
+      .filter((event) => !!event.title && event.title.trim().length > 0)
+      .map((event) => ({ title: (event.title as string).trim(), startAt: toISO(event.start), endAt: toISO(event.end) })),
+  ].slice(0, 16);
+
   return {
     start: toISO(bestStart),
     end: toISO(bestEnd),
@@ -117,6 +127,7 @@ const buildAvailabilityFromEvents = (
     previousEventTitle: bestPreviousEventTitle,
     previousEventEndAt: bestPreviousEventEnd ? toISO(bestPreviousEventEnd) : null,
     contextEventTitles,
+    dayEvents,
   };
 };
 
@@ -129,13 +140,13 @@ const getWritableCalendarId = async (): Promise<string | null> => {
   return primary ? primary.id : calendars[0].id;
 };
 
-export const getAvailability = async (enabledCalendarIds?: string[]): Promise<Availability> => {
+export const getAvailability = async (disabledCalendarIds?: string[]): Promise<Availability> => {
   const now = new Date();
   const windowEnd = addMinutes(now, 360);
   const calendars = await getCalendars();
-  const calendarIds = enabledCalendarIds && enabledCalendarIds.length
-    ? enabledCalendarIds
-    : calendars.map((cal) => cal.id);
+  const calendarIds = calendars
+    .map((cal) => cal.id)
+    .filter((id) => !(disabledCalendarIds && disabledCalendarIds.includes(id)));
 
   if (!calendarIds.length) {
     const end = addMinutes(now, 360);
@@ -199,14 +210,14 @@ export const getAvailability = async (enabledCalendarIds?: string[]): Promise<Av
 
 export const getAvailabilityForDate = async (
   date: Date,
-  enabledCalendarIds?: string[],
+  disabledCalendarIds?: string[],
 ): Promise<Availability> => {
   const dayStart = startOfLocalDay(date);
   const dayEnd = endOfLocalDay(date);
   const calendars = await getCalendars();
-  const calendarIds = enabledCalendarIds && enabledCalendarIds.length
-    ? enabledCalendarIds
-    : calendars.map((cal) => cal.id);
+  const calendarIds = calendars
+    .map((cal) => cal.id)
+    .filter((id) => !(disabledCalendarIds && disabledCalendarIds.includes(id)));
 
   if (!calendarIds.length) {
     return {
@@ -267,12 +278,12 @@ export const deletePlanEvent = async (eventId: string): Promise<void> => {
 export const getUpcomingEvents = async (
   startDate: Date,
   endDate: Date,
-  enabledCalendarIds?: string[],
+  disabledCalendarIds?: string[],
 ): Promise<Array<{ id?: string; title: string; startDate: Date; endDate: Date; allDay?: boolean; location?: string | null }>> => {
   const calendars = await getCalendars();
-  const calendarIds = enabledCalendarIds && enabledCalendarIds.length
-    ? enabledCalendarIds
-    : calendars.map((cal) => cal.id);
+  const calendarIds = calendars
+    .map((cal) => cal.id)
+    .filter((id) => !(disabledCalendarIds && disabledCalendarIds.includes(id)));
   if (!calendarIds.length) return [];
   const events = await Calendar.getEventsAsync(calendarIds, startDate, endDate);
   return events.map((e) => {

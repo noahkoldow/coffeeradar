@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Easing, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Alert, Animated, Easing, Image, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -21,7 +21,11 @@ import { chooseTravelMode, estimateEtaMinutes, haversineKm } from '../services/t
 import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../services/calendar';
 import { logEvent } from '../services/analytics';
 import { syncBusinessMetric } from '../services/user';
-import { SuggestionCard } from '../components/SuggestionCard';
+import { AD_RULES, buildAdKeywords } from '../services/ads/adConfig';
+import { isAdsAvailable } from '../services/ads/mobileAds';
+import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
+import { VideoAdModal } from '../components/ads/VideoAdModal';
+import { selectChallengeCandidates } from '../utils/challengeMode';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -54,9 +58,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const [showLoadingBackButton, setShowLoadingBackButton] = useState(false);
   const [timerNow, setTimerNow] = useState<number>(Date.now());
   const planDate = route.params?.planDate ?? 'today';
-  const activityMode = useMemo<'all' | 'productive' | 'tomorrow' | 'at_home'>(() => {
+  const activityMode = useMemo<'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me'>(() => {
     if (planDate === 'tomorrow') return 'tomorrow';
     if (route.params?.filter === 'productive') return 'productive';
+    if (route.params?.filter === 'challenge_me') return 'challenge_me';
     if (route.params?.filter === 'at_home') return 'at_home';
     return 'all';
   }, [planDate, route.params?.filter]);
@@ -153,6 +158,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const bedtimePulse = useRef(new Animated.Value(0)).current;
   const bedtimePulseLoop = useRef<Animated.CompositeAnimation | null>(null);
   const deckRef = useRef<SwipeDeckHandle>(null);
+  const inspectDeckRef = useRef<SwipeDeckHandle>(null);
   const commitButtonRef = useRef<View>(null);
   const ripple = useRef(new Animated.Value(0)).current;
   const swipeLockRef = useRef(false);
@@ -277,11 +283,11 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         dayEnd.setHours(23, 59, 59, 999);
 
         const availabilityForTomorrow = state.permissions.calendarGranted
-          ? await getAvailabilityForDate(tomorrow, state.enabledCalendars)
+          ? await getAvailabilityForDate(tomorrow, state.disabledCalendars)
           : buildTomorrowFallbackAvailability();
 
         const dayEvents = state.permissions.calendarGranted
-          ? await getUpcomingEvents(dayStart, dayEnd, state.enabledCalendars)
+          ? await getUpcomingEvents(dayStart, dayEnd, state.disabledCalendars)
           : [];
 
         const mergedTitles = [
@@ -310,7 +316,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     })();
 
     return () => { cancelled = true; };
-  }, [planDate, state.permissions.calendarGranted, state.enabledCalendars, buildTomorrowFallbackAvailability]);
+  }, [planDate, state.permissions.calendarGranted, state.disabledCalendars, buildTomorrowFallbackAvailability]);
 
   const availability: Availability = useMemo(() => {
     if (planDate === 'tomorrow') {
@@ -342,10 +348,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       if (dur !== state.availability.durationMin) {
         const now = new Date();
         return {
+          ...state.availability,
           start: toISO(now),
           end: toISO(addMinutes(now, dur)),
           durationMin: dur,
-          nextEventTitle: state.availability.nextEventTitle,
         };
       }
       return state.availability;
@@ -538,10 +544,70 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       const prodTags = new Set(['productivity', 'learning', 'creative', 'focus', 'planning', 'work', 'study', 'reading']);
       return cards.filter((c) => c.tags?.some((t) => prodTags.has(t)));
     }
+    if (f === 'challenge_me') {
+      const challengeCards = selectChallengeCandidates(
+        cards,
+        {
+          interestTags: state.prefs.interestTags,
+          customInterests: state.prefs.customInterests,
+        },
+        { minStrict: 3, minReturn: 3 },
+      );
+      return challengeCards;
+    }
     return cards;
   }, [route.params?.filter]);
 
   const DESIRED_SIZE = 5;
+
+  /* ── Ads (free users only) ─────────────────────────────────
+   * Native ad slides are injected into every 2nd deck at a random slot 2–5.
+   * A full-screen video ad plays on every 2nd "new set" request. */
+  const adsFreeUser = !state.isPremium && !isAdmin && isAdsAvailable && planDate !== 'tomorrow';
+  const adKeywords = useMemo(
+    () => buildAdKeywords(state.prefs, state.location, activityMode),
+    [state.prefs, state.location, activityMode],
+  );
+  const deckPresentCountRef = useRef(0);
+  const [newSetCount, setNewSetCount] = useState(0);
+  const nextNewSetPlaysAd = adsFreeUser && (newSetCount + 1) % AD_RULES.videoEveryNthNewSet === 0;
+  const [videoAd, setVideoAd] = useState<any>(null);
+  const videoAdResolveRef = useRef<(() => void) | null>(null);
+
+  const isAdCard = (card: DeckSuggestion | null | undefined): boolean => card?.source === 'ad';
+
+  /** Insert a native ad slide into decks per the cadence rules. */
+  const injectAdsIntoDeck = useCallback((cards: DeckSuggestion[]): DeckSuggestion[] => {
+    if (!adsFreeUser || cards.length === 0) return cards;
+    deckPresentCountRef.current += 1;
+    // Every Nth deck starting with the first (1st, 3rd, 5th … for N = 2).
+    const isAdDeck = (deckPresentCountRef.current - 1) % AD_RULES.nativeEveryNthDeck === 0;
+    if (!isAdDeck) return cards;
+
+    const withAd = [...cards];
+    const maxSlot = Math.min(AD_RULES.nativeSlotMax, withAd.length + 1);
+    const minSlot = Math.min(AD_RULES.nativeSlotMin, maxSlot);
+    const slot = Math.floor(Math.random() * (maxSlot - minSlot + 1)) + minSlot; // 1-based
+    const insertIndex = Math.max(0, slot - 1);
+    const adCard: DeckSuggestion = {
+      id: `ad_native_${Date.now()}`,
+      type: 'AT_HOME',
+      source: 'ad',
+      title: 'Sponsored',
+      description: '',
+      durationMin: 0,
+      confidence: 0,
+      adKeywords,
+    };
+    withAd.splice(insertIndex, 0, adCard);
+    logEvent('ad_slide_inserted', { slot, deck_number: deckPresentCountRef.current });
+    return withAd;
+  }, [adsFreeUser, adKeywords]);
+
+  // Preload the first video ad for free users so it is ready on demand.
+  useEffect(() => {
+    if (adsFreeUser) preloadVideoAd(adKeywords);
+  }, [adsFreeUser, adKeywords]);
 
   /** Build deck with filter applied — keeps rebuilding until we have 5 or exhaust retries.
    *  When a filter is active, pads remaining slots from a filter-aware fallback pool
@@ -622,7 +688,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const applyDeck = useCallback((result: { deck: DeckSuggestion[]; usedFallback: boolean }, preloaded: boolean) => {
     const filtered = filterDeck(result.deck);
     console.log('[DeckScreen] applyDeck:', result.deck.length, 'cards →', filtered.length, 'after filter, preloaded:', preloaded);
-    setDeck(filtered.slice(0, DESIRED_SIZE));
+    setDeck(injectAdsIntoDeck(filtered.slice(0, DESIRED_SIZE)));
     setFallbackUsed(result.usedFallback);
     setIndex(0);
     setLoading(false);
@@ -630,7 +696,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     didLoadDeck.current = true;
     recordShown(filtered);
     logEvent('deck_shown', { freeWindowDuration: availability.durationMin, preloaded, filter: route.params?.filter ?? 'all' });
-  }, [availability.durationMin, recordShown, filterDeck, route.params?.filter]);
+  }, [availability.durationMin, recordShown, filterDeck, route.params?.filter, injectAdsIntoDeck]);
 
   /**
    * Single effect that handles all deck-loading scenarios:
@@ -671,7 +737,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       try {
         const result = await buildFilteredDeck();
         if (!cancelled) {
-          setDeck(result.deck);
+          setDeck(injectAdsIntoDeck(result.deck));
           setFallbackUsed(result.usedFallback);
           setIndex(0);
           setLoading(false);
@@ -711,7 +777,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     loadingRef.current = true;
     try {
       const result = await buildFilteredDeck();
-      setDeck(result.deck);
+      setDeck(injectAdsIntoDeck(result.deck));
       setFallbackUsed(result.usedFallback);
       setIndex(0);
       recordShown(result.deck);
@@ -722,7 +788,36 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       setLoading(false);
       loadingRef.current = false;
     }
-  }, [planDate, filterDeck, buildFilteredDeck, recordShown, actions, applyDeck]);
+  }, [planDate, filterDeck, buildFilteredDeck, recordShown, actions, applyDeck, injectAdsIntoDeck]);
+
+  /** "New set" entry point — plays a video ad on every 2nd request for free
+   *  users, while the fresh deck builds/queues in the background. */
+  const handleNewSet = useCallback(async () => {
+    const willPlayAd = adsFreeUser && (newSetCount + 1) % AD_RULES.videoEveryNthNewSet === 0;
+    setNewSetCount((c) => c + 1);
+    // Kick off the deck build immediately so it is ready right after the ad.
+    const buildPromise = rebuildDeck();
+    if (willPlayAd) {
+      const ad = consumeVideoAd(adKeywords);
+      if (ad) {
+        logEvent('ad_video_shown', { new_set_number: newSetCount + 1 });
+        await new Promise<void>((resolve) => {
+          videoAdResolveRef.current = resolve;
+          setVideoAd(ad);
+        });
+      } else {
+        // Nothing ready — warm one up for next time and continue.
+        preloadVideoAd(adKeywords);
+      }
+    }
+    await buildPromise;
+  }, [adsFreeUser, newSetCount, rebuildDeck, adKeywords]);
+
+  const closeVideoAd = useCallback(() => {
+    setVideoAd(null);
+    videoAdResolveRef.current?.();
+    videoAdResolveRef.current = null;
+  }, []);
 
   useEffect(() => {
     historyRef.current = state.history;
@@ -855,6 +950,30 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     setInspectedGridCard(null);
   }, [inspectedGridCard]);
 
+  const saveInspectedSuggestion = useCallback((card: DeckSuggestion) => {
+    if (isAdCard(card)) return;
+    setHeartAnimIds((prev) => new Set([...prev, card.id]));
+    actions.saveSuggestion({
+      id: `saved_${card.id}_${Date.now()}`,
+      savedAt: new Date().toISOString(),
+      source: 'interest_signal',
+      suggestion: card,
+    });
+    if (card.tags?.length) {
+      let aff = decayAffinities(state.tagAffinities, new Date().toISOString());
+      aff = recordInterested(aff, card.tags);
+      aff = recordTypeAccept(aff, card.type);
+      actions.setTagAffinities(aff);
+    }
+    logEvent('save_for_later', { suggestion_id: card.id, type: card.type, source: 'interest_signal' });
+    setSavedPopupVisible(true);
+    savedPopupAnim.setValue(0);
+    Animated.sequence([
+      Animated.spring(savedPopupAnim, { toValue: 1, tension: 100, friction: 9, useNativeDriver: true }),
+      Animated.timing(savedPopupAnim, { toValue: 0, duration: 180, useNativeDriver: true }),
+    ]).start(() => setSavedPopupVisible(false));
+  }, [actions, savedPopupAnim, state.tagAffinities]);
+
   const saveCurrentSuggestion = (source: SavedSuggestion['source'], moveToNext = false) => {
     if (!current) return;
     actions.saveSuggestion({
@@ -878,6 +997,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const handleSwipeLeft = () => {
     if (!current) return;
     if (swipeLockRef.current) return;
+    // Ad slides carry no cost and record no signals — just advance.
+    if (isAdCard(current)) {
+      swipeLockRef.current = true;
+      setIndex((prev) => prev + 1);
+      return;
+    }
     swipeLockRef.current = true;
     // consume swipe from bank (unless Plan Ahead mode or admin)
     if (planDate !== 'tomorrow' && !isAdmin && !actions.spendSwipe()) {
@@ -918,6 +1043,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const handleSaveQuick = () => {
     if (!current) return;
     if (swipeLockRef.current) return;
+    // Ad slides cannot be saved — just advance.
+    if (isAdCard(current)) {
+      swipeLockRef.current = true;
+      setIndex((prev) => prev + 1);
+      return;
+    }
     swipeLockRef.current = true;
 
     // Show heart animation
@@ -1156,6 +1287,11 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const handleCommit = async () => {
+    // Ad slides have no commit action — advance past them.
+    if (isAdCard(current)) {
+      setIndex((prev) => prev + 1);
+      return;
+    }
     if (planDate === 'tomorrow') {
       if (!current) return;
       const suggested = current.meta?.planStartAt ? new Date(current.meta.planStartAt) : null;
@@ -1213,7 +1349,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // Check calendar events
     if (state.permissions.calendarGranted) {
       try {
-        const events = await getUpcomingEvents(startDate, endDate, state.enabledCalendars);
+        const events = await getUpcomingEvents(startDate, endDate, state.disabledCalendars);
         if (events.length > 0) {
           const clash = events[0];
           setClashInfo({
@@ -1263,6 +1399,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       'tomorrow': 'plan_tomorrow' as const,
     };
     const deckType = route.params?.filter === 'productive' ? 'productive' 
+      : route.params?.filter === 'challenge_me' ? 'challenge_me'
       : route.params?.filter === 'at_home' ? 'homebody'
       : deckTypeMap[planDate] ?? 'do_now';
     
@@ -1284,6 +1421,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             </View>
           )}
         </View>
+        <VideoAdModal ad={videoAd} onClose={closeVideoAd} />
       </LinearGradient>
     );
   }
@@ -1295,6 +1433,11 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       return theme.isDark
         ? { bg: '#2A4A5E', text: '#D8F0FF' }
         : { bg: '#A8D8EA', text: '#1A3A4A' };
+    }
+    if (filter === 'challenge_me') {
+      return theme.isDark
+        ? { bg: '#4D2E66', text: '#F0E3FF' }
+        : { bg: '#D7B9F1', text: '#3E2257' };
     }
     if (filter === 'at_home') {
       return theme.isDark
@@ -1310,7 +1453,6 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   };
   const deckColors = getDeckColors();
   const bedtimeBadgeColor = deckColors.bg;
-  const topOverlayOffset = insets.top + theme.spacing.sm + theme.spacing.md;
 
   if (!current) {
     const ranOutEarly = deck.length < DESIRED_SIZE;
@@ -1327,7 +1469,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // Allow a first tap anywhere on the empty area to queue a fresh deck
     return (
       <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
-        <Pressable style={styles.emptyState} onPress={rebuildDeck}>
+        <Pressable style={styles.emptyState} onPress={handleNewSet}>
           <Text style={styles.title}>Nothing clicked.</Text>
           <Text style={styles.subtitle}>
             {ranOutEarly
@@ -1335,7 +1477,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               : 'Want a new set?'}
           </Text>
           <View style={styles.actions}>
-            <PrimaryButton label="New set" onPress={rebuildDeck} />
+            <PrimaryButton label={nextNewSetPlaysAd ? 'New set  (▶)' : 'New set'} onPress={handleNewSet} />
             <Pressable onPress={() => navigation.navigate('Settings')}>
               <Text style={styles.refineLink}>
                 {ranOutEarly ? '⚙️  Expand your interests' : 'Refine what to do'}
@@ -1346,46 +1488,13 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             </Pressable>
           </View>
         </Pressable>
+        <VideoAdModal ad={videoAd} onClose={closeVideoAd} deckColors={deckColors} />
       </LinearGradient>
     );
   }
 
-  const freeLabel = planDate === 'tomorrow'
-    ? (availability.nextEventTitle
-      ? `Free until ${availability.nextEventTitle}`
-      : `Tomorrow plan · ${formatDuration(availability.durationMin)} free`)
-    : (availability.durationMin > 120
-      ? 'You are free today'
-      : `You have ${formatDuration(availability.durationMin)} free`);
-  const area = state.location.areaLabel ? `near ${state.location.areaLabel}` : 'near you';
-
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
-      <View pointerEvents="box-none" style={[styles.topOverlayRow, { top: topOverlayOffset }]}>
-        {isPastBedTime && (
-          <Animated.View
-            pointerEvents="none"
-            style={[
-              styles.pageBedtimeBadge,
-              {
-                borderColor: bedtimeBadgeColor,
-                opacity: bedtimePulse,
-              },
-            ]}
-          >
-            <Text style={[styles.pageBedtimeBadgeText, { color: bedtimeBadgeColor }]}>🛏️ Past bedtime 💤</Text>
-          </Animated.View>
-        )}
-        <View style={styles.topOverlayBank}>
-          <ChargeBar
-            current={state.swipeBank?.current ?? 0}
-            max={state.swipeBank?.max ?? 20}
-            onPress={() => navigation.navigate('Bank')}
-            disabled={(state.swipeBank?.current ?? 0) <= 0}
-          />
-        </View>
-      </View>
-
       <Animated.View
         style={[{
           opacity: uiAppear,
@@ -1400,43 +1509,79 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         }, styles.mainContent]}
       >
       <View style={styles.header}>
-        <Pressable
-          onPress={() => {
-            Alert.alert('Exit without choosing?', 'You can keep swiping or exit now.', [
-              { text: 'Continue', style: 'cancel' },
-              { text: 'Exit', style: 'destructive', onPress: goBack },
-            ]);
-          }}
-        >
-          <Text style={styles.back}>Back</Text>
-        </Pressable>
-        <View style={[styles.headerTypeTag, { backgroundColor: deckColors.bg }]}>
-          <Text style={[styles.headerTypeTagText, { color: deckColors.text }]}>
-            {planDate === 'tomorrow' ? 'PLAN AHEAD' : route.params?.filter === 'productive' ? 'BE PRODUCTIVE' : route.params?.filter === 'at_home' ? 'HOMEBODY IT' : 'DO SOMETHING NOW'}
-          </Text>
+        <View style={styles.headerLeft}>
+          <Pressable
+            onPress={() => {
+              Alert.alert('Exit without choosing?', 'You can keep swiping or exit now.', [
+                { text: 'Continue', style: 'cancel' },
+                { text: 'Exit', style: 'destructive', onPress: goBack },
+              ]);
+            }}
+            hitSlop={8}
+          >
+            <Text style={styles.back}>Back</Text>
+          </Pressable>
         </View>
-        <View style={styles.headerMetaRow}>
-          <Text style={styles.headerText}>{freeLabel} {planDate === 'tomorrow' ? '' : area}</Text>
-          <View style={styles.counterStack}>
-            <Pressable
-              onPress={handleUndoSlide}
-              disabled={!canUndoSlide || confirming}
-              style={({ pressed }) => [
-                styles.counterUndoButton,
-                (!canUndoSlide || confirming) && styles.counterUndoButtonDisabled,
-                pressed && canUndoSlide && !confirming && styles.counterUndoPressed,
+
+        <View style={styles.headerCenter} pointerEvents="box-none">
+          <View style={[styles.headerTypeTag, { backgroundColor: deckColors.bg }]}>
+            <Text style={[styles.headerTypeTagText, { color: deckColors.text }]}>
+              {planDate === 'tomorrow'
+                ? 'PLAN AHEAD'
+                : route.params?.filter === 'productive'
+                  ? 'BE PRODUCTIVE'
+                  : route.params?.filter === 'challenge_me'
+                    ? 'CHALLENGE ME'
+                    : route.params?.filter === 'at_home'
+                      ? 'HOMEBODY IT'
+                      : 'DO SOMETHING NOW'}
+            </Text>
+          </View>
+          {isPastBedTime && (
+            <Animated.View
+              pointerEvents="none"
+              style={[
+                styles.pageBedtimeBadge,
+                {
+                  borderColor: bedtimeBadgeColor,
+                  opacity: bedtimePulse,
+                },
               ]}
-              hitSlop={8}
             >
-              <Image
-                source={require('../../assets/backarrow.png')}
-                style={[
-                  styles.counterUndoIcon,
-                  (!canUndoSlide || confirming) && styles.counterUndoIconDisabled,
+              <Text style={[styles.pageBedtimeBadgeText, { color: bedtimeBadgeColor }]}>🛏️ Past bedtime 💤</Text>
+            </Animated.View>
+          )}
+        </View>
+
+        <View style={styles.headerRight}>
+          <ChargeBar
+            current={state.swipeBank?.current ?? 0}
+            max={state.swipeBank?.max ?? 20}
+            onPress={() => navigation.navigate('Bank')}
+            disabled={(state.swipeBank?.current ?? 0) <= 0}
+          />
+          <View style={styles.headerRightMeta}>
+            <View style={styles.counterStack}>
+              <Pressable
+                onPress={handleUndoSlide}
+                disabled={!canUndoSlide || confirming}
+                style={({ pressed }) => [
+                  styles.counterUndoButton,
+                  (!canUndoSlide || confirming) && styles.counterUndoButtonDisabled,
+                  pressed && canUndoSlide && !confirming && styles.counterUndoPressed,
                 ]}
-              />
-            </Pressable>
-            <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
+                hitSlop={8}
+              >
+                <Image
+                  source={require('../../assets/backarrow.png')}
+                  style={[
+                    styles.counterUndoIcon,
+                    (!canUndoSlide || confirming) && styles.counterUndoIconDisabled,
+                  ]}
+                />
+              </Pressable>
+              <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
+            </View>
           </View>
         </View>
       </View>
@@ -1592,33 +1737,47 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           <Pressable style={StyleSheet.absoluteFill} onPress={declineInspectedCard} />
           <View style={styles.inspectSheet}>
             <Text style={styles.inspectTitle}>Inspect this activity</Text>
-            <Text style={styles.inspectSubtitle}>Tap the card for more details, then accept or decline.</Text>
-            <ScrollView
-              style={styles.inspectScroll}
-              contentContainerStyle={styles.inspectScrollContent}
-              showsVerticalScrollIndicator={false}
-            >
-              {inspectedGridCard && (
-                <View style={styles.inspectCardWrap}>
-                  <SuggestionCard suggestion={inspectedGridCard} showSourceDebug={isAdmin} />
+            <Text style={styles.inspectSubtitle}>Swipe the card or use the controls below to decide.</Text>
+            {inspectedGridCard && (
+              <>
+                <View style={styles.inspectDeckWrap}>
+                  <SwipeDeck
+                    ref={inspectDeckRef}
+                    current={inspectedGridCard}
+                    next={null}
+                    onSwipeLeft={declineInspectedCard}
+                    onSwipeRight={() => acceptInspectedCard(inspectedGridCard)}
+                    deckColors={deckColors}
+                    showSourceDebug={isAdmin}
+                  />
                 </View>
-              )}
-            </ScrollView>
-            <View style={styles.inspectActions}>
-              <PrimaryButton
-                label="Decline"
-                onPress={declineInspectedCard}
-                variant="muted"
-                style={styles.inspectActionButton}
-              />
-              {inspectedGridCard && (
-                <PrimaryButton
-                  label="Use this one"
-                  onPress={() => acceptInspectedCard(inspectedGridCard)}
-                  style={styles.inspectActionButton}
-                />
-              )}
-            </View>
+                <View style={styles.inspectControls}>
+                  <Pressable
+                    onPress={() => inspectDeckRef.current?.swipeLeft()}
+                    style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
+                  >
+                    <Text style={styles.controlText}>X</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => saveInspectedSuggestion(inspectedGridCard)}
+                    style={({ pressed }) => [styles.controlButton, pressed && styles.controlPressed]}
+                  >
+                    <Text style={[
+                      styles.controlText,
+                      heartAnimIds.has(inspectedGridCard.id) && { color: theme.colors.danger },
+                    ]}>
+                      {heartAnimIds.has(inspectedGridCard.id) ? '❤️' : '♡'}
+                    </Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={() => inspectDeckRef.current?.swipeRight()}
+                    style={({ pressed }) => [styles.controlButton, styles.controlPrimary, pressed && styles.controlPressed]}
+                  >
+                    <Text style={[styles.controlText, styles.controlTextPrimary]}>Do it</Text>
+                  </Pressable>
+                </View>
+              </>
+            )}
           </View>
         </View>
       </Modal>
@@ -1786,6 +1945,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           </Pressable>
         </Pressable>
       </Modal>
+      <VideoAdModal ad={videoAd} onClose={closeVideoAd} deckColors={deckColors} />
     </LinearGradient>
   );
 };
@@ -1799,18 +1959,44 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flex: 1,
   },
   header: {
+    position: 'relative',
+    flexDirection: 'row',
+    justifyContent: 'space-between',
     marginTop: theme.spacing.md,
     marginBottom: theme.spacing.xl,
+    minHeight: 44,
+  },
+  headerLeft: {
+    alignItems: 'flex-start',
+    justifyContent: 'flex-start',
+    zIndex: 2,
+  },
+  headerCenter: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    zIndex: 1,
+  },
+  headerRight: {
+    alignItems: 'flex-end',
     gap: theme.spacing.xs,
+    zIndex: 2,
+  },
+  headerRightMeta: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+    marginTop: theme.spacing.xs,
   },
   back: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
-    marginBottom: theme.spacing.xs,
   },
   headerTypeTag: {
-    alignSelf: 'flex-start',
-    marginTop: theme.spacing.sm,
+    alignSelf: 'center',
     paddingHorizontal: theme.spacing.md,
     paddingVertical: theme.spacing.xs,
     borderRadius: theme.radius.sm,
@@ -1880,8 +2066,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   deckWrap: {
     flex: 1,
-    justifyContent: 'center',
-    paddingVertical: theme.spacing.md,
+    justifyContent: 'flex-start',
+    paddingTop: theme.spacing.xl,
+    paddingBottom: theme.spacing.md,
   },
   topOverlayRow: {
     position: 'absolute',
@@ -2268,7 +2455,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingVertical: theme.spacing.lg,
   },
   inspectSheet: {
-    maxHeight: '82%',
+    maxHeight: '92%',
     borderRadius: theme.radius.xl,
     backgroundColor: theme.colors.background,
     padding: theme.spacing.lg,
@@ -2305,6 +2492,15 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   inspectActionButton: {
     flex: 1,
+  },
+  inspectDeckWrap: {
+    marginTop: theme.spacing.md,
+    marginBottom: theme.spacing.md,
+  },
+  inspectControls: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: theme.spacing.md,
   },
   homeButtonContainer: {
     paddingVertical: theme.spacing.sm,

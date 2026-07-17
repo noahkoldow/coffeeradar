@@ -1,10 +1,14 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Animated, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import Svg, { RadialGradient, Rect, Stop } from 'react-native-svg';
 import { DeckSuggestion } from '../types';
 import { useTheme } from '../theme/ThemeProvider';
 import { dateFromLocalClockTime, extractClockLabelFromText, formatDuration, formatTime, fromISO, minutesBetween } from '../utils/time';
 import { MapThumbnail } from './MapThumbnail';
 import { chooseTravelMode } from '../services/travel';
+import { NativeAdSlide } from './ads/NativeAdSlide';
+import { getVisibleTags } from '../utils/visibleTags';
 
 type Props = {
   suggestion: DeckSuggestion;
@@ -25,6 +29,81 @@ const SOURCE_DEBUG_CONFIG: Record<string, { bg: string; text: string; emoji: str
   community:    { bg: 'rgba(0,188,212,0.92)',   text: '#fff', emoji: '👥' },
 };
 
+/* ── Per-type card identity ───────────────────────────────── */
+
+type CardTheme = {
+  accent: string;
+  wash: string;
+  crownCircle: string;
+  headerGradient: [string, string];
+  slideBorderColors: [string, string];
+  tagColor: string;
+  rail: string;
+  border: string;
+};
+
+const lightenColor = (hex: string, amount: number): string => {
+  const h = hex.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  if (full.length !== 6) return hex;
+  const num = parseInt(full, 16);
+  if (Number.isNaN(num)) return hex;
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  const mix = (c: number) => Math.round(c + (255 - c) * amount);
+  return `rgb(${mix(r)}, ${mix(g)}, ${mix(b)})`;
+};
+
+const hexToRgba = (color: string, alpha: number): string => {
+  const h = color.replace('#', '');
+  const full = h.length === 3 ? h.split('').map((c) => c + c).join('') : h;
+  if (full.length !== 6) return color;
+  const num = parseInt(full, 16);
+  if (Number.isNaN(num)) return color;
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+};
+
+const getCardTheme = (
+  suggestion: DeckSuggestion,
+  theme: ReturnType<typeof useTheme>,
+  deckColors?: { bg: string; text: string },
+): CardTheme => {
+  const dark = theme.isDark;
+  const cardBg = dark ? theme.colors.card : '#FFFFFF';
+  const primaryTag = getVisibleTags(suggestion.tags, 1)[0];
+  const family = primaryTag
+    ? getTagFamily(primaryTag.toLowerCase())
+    : { hue: 224, saturation: 20, textColor: theme.colors.textMuted };
+  const { hue, saturation, textColor } = family;
+  const wash = dark ? `hsl(${hue} ${saturation}% 16%)` : `hsl(${hue} ${saturation}% 96%)`;
+  const rail = dark ? `hsl(${hue} ${saturation}% 62%)` : `hsl(${hue} ${saturation + 8}% 50%)`;
+  const border = dark ? 'rgba(255,255,255,0.12)' : 'rgba(0,0,0,0.08)';
+  const modeColor = deckColors?.bg ?? theme.colors.accent;
+  const crownCircle = lightenColor(modeColor, dark ? 0.34 : 0.7);
+  // Thick inner border: tag colour (top) → mode colour (bottom) framing the card,
+  // smoothly transitioning inward to white via a radial overlay in renderFront.
+  const tagBorder = dark
+    ? `hsl(${hue} ${saturation}% 34%)`
+    : `hsl(${hue} ${Math.min(82, saturation + 20)}% 80%)`;
+  const modeBorder = lightenColor(modeColor, dark ? 0.24 : 0.6);
+  const slideBorderColors: [string, string] = [tagBorder, modeBorder];
+  const tagColor = dark ? `hsl(${hue} ${saturation}% 66%)` : `hsl(${hue} ${saturation + 6}% 46%)`;
+  return {
+    accent: textColor,
+    wash,
+    crownCircle,
+    headerGradient: [cardBg, cardBg],
+    slideBorderColors,
+    tagColor,
+    rail,
+    border,
+  };
+};
+
 /* ── Helpers ──────────────────────────────────────────────── */
 
 const formatEta = (suggestion: DeckSuggestion): string | null => {
@@ -39,8 +118,17 @@ const formatEta = (suggestion: DeckSuggestion): string | null => {
   return `~${hours}h ${mins}m ${modeLabel}`;
 };
 
+const stripLeadingStepTime = (line: string): string => {
+  const cleaned = line
+    .replace(/^\s*(?:at\s+|by\s+|around\s+)?(?:[01]?\d|2[0-3]):[0-5]\d\s*(?:am|pm)?\s*[:.\-–—)]?\s*/i, '')
+    .trim();
+  if (!cleaned) return line.trim();
+  // Re-capitalise the first letter if the time prefix left it lowercase.
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+};
+
 const getInstructions = (suggestion: DeckSuggestion): string[] => {
-  if (suggestion.instructions?.length) return suggestion.instructions;
+  if (suggestion.instructions?.length) return suggestion.instructions.map(stripLeadingStepTime);
   if (suggestion.type === 'AT_HOME') {
     return (suggestion.steps || []).map((step) => step.label);
   }
@@ -72,6 +160,60 @@ const getInstructionDepartureAt = (suggestion: DeckSuggestion, now: Date): Date 
     return candidate;
   }
   return null;
+};
+
+const formatTodoDueLabel = (deadlineAt?: string | null, dueDateText?: string | null): string | null => {
+  if (!deadlineAt) {
+    const trimmedDueText = dueDateText?.trim();
+    if (!trimmedDueText) return null;
+    if (trimmedDueText === 'today') return 'Due today';
+    if (trimmedDueText === 'tomorrow') return 'Due tomorrow';
+    if (/^\d{4}-\d{2}-\d{2}$/.test(trimmedDueText)) {
+      const [yearRaw, monthRaw, dayRaw] = trimmedDueText.split('-');
+      const parsed = new Date(Number(yearRaw), Number(monthRaw) - 1, Number(dayRaw));
+      if (!Number.isNaN(parsed.getTime())) {
+        const now = new Date();
+        const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        const startOfTomorrow = new Date(startOfToday);
+        startOfTomorrow.setDate(startOfToday.getDate() + 1);
+        const startOfDayAfterTomorrow = new Date(startOfTomorrow);
+        startOfDayAfterTomorrow.setDate(startOfTomorrow.getDate() + 1);
+
+        if (parsed >= startOfToday && parsed < startOfTomorrow) return 'Due today';
+        if (parsed >= startOfTomorrow && parsed < startOfDayAfterTomorrow) return 'Due tomorrow';
+
+        const dateLabel = parsed.toLocaleDateString('en-US', {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+        });
+        return `Due ${dateLabel}`;
+      }
+    }
+    return `Due ${trimmedDueText}`;
+  }
+  const dueDate = new Date(deadlineAt);
+  if (Number.isNaN(dueDate.getTime())) return null;
+
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const startOfTomorrow = new Date(startOfToday);
+  startOfTomorrow.setDate(startOfToday.getDate() + 1);
+  const startOfDayAfterTomorrow = new Date(startOfTomorrow);
+  startOfDayAfterTomorrow.setDate(startOfTomorrow.getDate() + 1);
+
+  if (dueDate >= startOfToday && dueDate < startOfTomorrow) {
+    return `Deadline today at ${formatTime(dueDate)}`;
+  }
+  if (dueDate >= startOfTomorrow && dueDate < startOfDayAfterTomorrow) {
+    return `Deadline tomorrow at ${formatTime(dueDate)}`;
+  }
+  const dateLabel = dueDate.toLocaleDateString('en-US', {
+    weekday: 'short',
+    month: 'short',
+    day: 'numeric',
+  });
+  return `Deadline ${dateLabel} at ${formatTime(dueDate)}`;
 };
 
 /** Map tags to emoji shorthand for the "good for" row */
@@ -213,6 +355,9 @@ type TagFamily = {
 
 const getTagFamily = (tag: string): TagFamily => {
   const t = tag.toLowerCase();
+  if (/(challenge|quest|mission|sprint|hard|intense|push)/.test(t)) {
+    return { hue: 280, saturation: 44, textColor: '#6A2B8E' };
+  }
   if (/(nature|outdoor|park|walk|hike|garden|forest|tree|green|trail|fresh air|sunset|view)/.test(t)) {
     return { hue: 132, saturation: 40, textColor: '#3C7D50' };
   }
@@ -280,7 +425,11 @@ const buildSocialAvatarLabels = (count: number): string[] => {
 
 export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColors, showSourceDebug }) => {
   const theme = useTheme();
-  const styles = useMemo(() => createStyles(theme, deckColors), [theme, deckColors]);
+  const visibleTags = useMemo(() => getVisibleTags(suggestion.tags), [suggestion.tags]);
+  const cardTheme = useMemo(() => getCardTheme(suggestion, theme, deckColors), [suggestion.tags, suggestion.type, theme, deckColors]);
+  const styles = useMemo(() => createStyles(theme, deckColors, cardTheme), [theme, deckColors, cardTheme]);
+  const slideCoreColor = theme.isDark ? theme.colors.card : '#FFFFFF';
+  const slideCoreTransparent = theme.isDark ? hexToRgba(theme.colors.card, 0) : 'rgba(255,255,255,0)';
   const [flipped, setFlipped] = useState(false);
   const [frontCanScroll, setFrontCanScroll] = useState(false);
   const [backCanScroll, setBackCanScroll] = useState(false);
@@ -310,18 +459,6 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
     return () => clearInterval(timer);
   }, [preview]);
 
-  const handleFlip = () => {
-    if (preview) return; // no flip for preview cards
-    const toValue = flipped ? 0 : 1;
-    Animated.spring(flipAnim, {
-      toValue,
-      friction: 8,
-      tension: 80,
-      useNativeDriver: true,
-    }).start();
-    setFlipped(!flipped);
-  };
-
   // Front rotates 0→90, Back rotates 90→0
   const frontRotate = flipAnim.interpolate({
     inputRange: [0, 0.5, 1],
@@ -341,6 +478,14 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
   });
 
   const emojis = useMemo(() => buildEmojiRow(suggestion), [suggestion]);
+  const instructions = useMemo(() => getInstructions(suggestion), [suggestion]);
+  const isTodoSuggestion = suggestion.source === 'todo';
+  const hasChecklist = instructions.length > 0;
+  const flipDisabled = preview || (isTodoSuggestion && !hasChecklist);
+  const todoDueLabel = useMemo(
+    () => formatTodoDueLabel(suggestion.meta?.todoDeadlineAt, suggestion.meta?.todoDueDate),
+    [suggestion.meta?.todoDeadlineAt, suggestion.meta?.todoDueDate],
+  );
 
   const eta = formatEta(suggestion);
   const isGoOut = suggestion.type === 'GO_OUT' || suggestion.type === 'EVENT';
@@ -348,6 +493,18 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
   const isSocialActivity = useMemo(() => isSocialActivitySuggestion(suggestion), [suggestion]);
   const socialProofCount = useMemo(() => getConfirmedSocialProofCount(suggestion), [suggestion]);
   const now = new Date(nowMs);
+
+  const handleFlip = () => {
+    if (flipDisabled) return;
+    const toValue = flipped ? 0 : 1;
+    Animated.spring(flipAnim, {
+      toValue,
+      friction: 8,
+      tension: 80,
+      useNativeDriver: true,
+    }).start();
+    setFlipped(!flipped);
+  };
 
   /* ── Front side ────────────────────────────────── */
   const renderFront = () => {
@@ -399,10 +556,28 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
       subParts.push(`⏱ ${formatDuration(suggestion.durationMin)}`);
     }
 
-    const hasMap = isGoOut && !!suggestion.place?.lat && !!suggestion.place?.lng;
-    const frontSteps = hasMap ? [] : getInstructions(suggestion).slice(0, 3);
+    const hasCoords = !!suggestion.place?.lat && !!suggestion.place?.lng;
+    const hasMapHero = suggestion.type === 'GO_OUT' && hasCoords;
+    const hasMapBody = suggestion.type === 'EVENT' && hasCoords;
+    const isEventHero = suggestion.type === 'EVENT';
+    const hasMap = hasMapHero;
+    const frontSteps = hasMap ? [] : instructions.slice(0, 3);
     const sourceBadge = getSourceBadge(suggestion.source);
     const socialAvatarLabels = buildSocialAvatarLabels(socialProofCount);
+    const timingLine = subParts.join(' · ');
+    const titleNode = isTodoSuggestion ? (
+      <View style={styles.ctaBlock}>
+        <Text style={styles.title}>{suggestion.title}</Text>
+        {todoDueLabel && <Text style={styles.todoDueText}>{todoDueLabel}</Text>}
+      </View>
+    ) : suggestion.cta ? (
+      <View style={styles.ctaBlock}>
+        <Text style={styles.ctaText}>{suggestion.cta}</Text>
+        <Text style={styles.titleSubline}>{suggestion.title}</Text>
+      </View>
+    ) : (
+      <Text style={styles.title}>{suggestion.title}</Text>
+    );
 
     return (
       <ScrollView
@@ -467,31 +642,65 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
           )}
         </View>
 
-        {suggestion.hook && (
-          <View style={styles.hookBlock}>
-            <Text style={styles.hookText}>{suggestion.hook}</Text>
-          </View>
-        )}
-
-        {/* CTA / motivational headline */}
-        {suggestion.cta ? (
-          <View style={styles.ctaBlock}>
-            <Text style={styles.ctaText}>{suggestion.cta}</Text>
-            <Text style={styles.titleSubline}>{suggestion.title}</Text>
-          </View>
+        {hasMapHero ? (
+          <>
+            <View style={styles.headerContainer}>
+              {suggestion.hook && (
+                <View style={styles.hookBlock}>
+                  <Text style={styles.hookText}>{suggestion.hook}</Text>
+                </View>
+              )}
+              {titleNode}
+              <View style={styles.infoRow}>
+                <Text style={styles.infoChip}>{timingLine}</Text>
+                {eta && (
+                  <Text style={styles.infoChipRight}>{eta}</Text>
+                )}
+              </View>
+            </View>
+            <View style={styles.mapCard}>
+              <MapThumbnail lat={suggestion.place!.lat!} lng={suggestion.place!.lng!} height={150} />
+              {suggestion.place?.name && (
+                <View style={styles.mapCaption}>
+                  <Text style={styles.mapCaptionText} numberOfLines={1}>📍 {suggestion.place.name}</Text>
+                </View>
+              )}
+            </View>
+          </>
+        ) : isEventHero ? (
+          <LinearGradient
+            colors={cardTheme.headerGradient}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 1, y: 1 }}
+            style={styles.eventHero}
+          >
+            <Text style={styles.heroEyebrow}>🎟️  Event</Text>
+            {titleNode}
+            <View style={styles.heroPillRow}>
+              <View style={styles.heroPillSolid}><Text style={styles.heroPillSolidText}>{timingLine}</Text></View>
+              {eta && (
+                <Text style={styles.infoChipRight}>{eta}</Text>
+              )}
+            </View>
+          </LinearGradient>
         ) : (
-          <Text style={styles.title}>{suggestion.title}</Text>
+          <View style={styles.headerContainer}>
+            {suggestion.hook && (
+              <View style={styles.hookBlock}>
+                <Text style={styles.hookText}>{suggestion.hook}</Text>
+              </View>
+            )}
+            {titleNode}
+            <View style={styles.infoRow}>
+              <Text style={styles.infoChip}>{timingLine}</Text>
+              {eta && (
+                <Text style={styles.infoChipRight}>{eta}</Text>
+              )}
+            </View>
+          </View>
         )}
 
-        {/* Weather + timing line */}
-        <View style={styles.infoRow}>
-          <Text style={styles.infoChip}>{subParts.join(' · ')}</Text>
-          {eta && (
-            <Text style={styles.infoChipRight}>📍 {eta}</Text>
-          )}
-        </View>
-
-        {hasPlanTimeline && (
+        {hasPlanTimeline && !(isTodoSuggestion && !hasChecklist) && (
           <View style={styles.timelineCard}>
             <Text style={styles.timelineTitle}>How this fits your day</Text>
             <View style={styles.timelineRow}>
@@ -514,37 +723,35 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
           </View>
         )}
 
-        {/* Map + ETA for go-out / event */}
-        {isGoOut && suggestion.place?.lat && suggestion.place?.lng && (
+        {/* Map + ETA for events (go-out maps are promoted to the hero above) */}
+        {hasMapBody && (
           <View style={styles.mapSection}>
-            <MapThumbnail lat={suggestion.place.lat} lng={suggestion.place.lng} height={110} />
+            <MapThumbnail lat={suggestion.place!.lat!} lng={suggestion.place!.lng!} height={110} />
             {eta && <Text style={styles.etaLabel}>{eta}</Text>}
           </View>
         )}
 
-        {/* Description + step preview for non-map cards */}
-        {!hasMap && (
-          <View style={styles.frontExtra}>
-            <Text style={styles.frontDescription} numberOfLines={3}>
-              {suggestion.description}
-            </Text>
-            {frontSteps.length > 0 && (
-              <View style={styles.frontSteps}>
-                {frontSteps.map((step, i) => (
-                  <View key={`fs_${i}`} style={styles.frontStepRow}>
-                    <Text style={styles.frontStepNum}>{i + 1}</Text>
-                    <Text style={styles.frontStepLabel} numberOfLines={1}>{step}</Text>
-                  </View>
-                ))}
-              </View>
-            )}
-          </View>
-        )}
+        {/* Description + step preview */}
+        <View style={styles.frontExtra}>
+          <Text style={styles.frontDescription} numberOfLines={3}>
+            {suggestion.description}
+          </Text>
+          {!hasMap && frontSteps.length > 0 && (
+            <View style={styles.frontSteps}>
+              {frontSteps.map((step, i) => (
+                <View key={`fs_${i}`} style={styles.frontStepRow}>
+                  <Text style={styles.frontStepNum}>{i + 1}</Text>
+                  <Text style={styles.frontStepLabel} numberOfLines={1}>{step}</Text>
+                </View>
+              ))}
+            </View>
+          )}
+        </View>
 
         {/* Decorative emoji row is now part of the crown above (uses the same emojis) */}
 
         {/* Flip hint */}
-        {!preview && (
+        {!flipDisabled && (
           <Text style={styles.flipHint}>Tap for details →</Text>
         )}
       </ScrollView>
@@ -553,7 +760,6 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
 
   /* ── Back side ─────────────────────────────────── */
   const renderBack = () => {
-    const instructions = getInstructions(suggestion);
     const backRatingLabel = typeof suggestion.rating === 'number'
       ? `⭐ ${suggestion.rating.toFixed(1)}${typeof suggestion.ratingCount === 'number' ? ` · ${suggestion.ratingCount}` : ''}`
       : null;
@@ -594,15 +800,19 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
             </Text>
           </>
         )}
-        <Text style={styles.eyebrow}>What you'll do</Text>
-        <View style={styles.backSteps}>
-          {instructions.map((step, i) => (
-            <View key={`back_step_${i}`} style={styles.backStepRow}>
-              <Text style={styles.backStepNum}>{i + 1}</Text>
-              <Text style={styles.backStepText}>{step}</Text>
+        {instructions.length > 0 && (
+          <>
+            <Text style={styles.eyebrow}>What you'll do</Text>
+            <View style={styles.backSteps}>
+              {instructions.map((step, i) => (
+                <View key={`back_step_${i}`} style={styles.backStepRow}>
+                  <Text style={styles.backStepNum}>{i + 1}</Text>
+                  <Text style={styles.backStepText}>{step}</Text>
+                </View>
+              ))}
             </View>
-          ))}
-        </View>
+          </>
+        )}
 
         {/* Meta details */}
         <View style={styles.metaRow}>
@@ -619,9 +829,9 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
         </View>
 
         {/* Tags as text on the back */}
-        {(suggestion.tags?.length ?? 0) > 0 && (
+        {visibleTags.length > 0 && (
           <View style={styles.tagsRow}>
-            {suggestion.tags!.map((tag) => {
+            {visibleTags.map((tag) => {
               const palette = getTagPalette(tag);
               return (
                 <View
@@ -641,11 +851,15 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
           </View>
         )}
 
-        <Text style={styles.flipHint}>← Tap to flip back</Text>
+        {!flipDisabled && <Text style={styles.flipHint}>← Tap to flip back</Text>}
       </ScrollView>
     );
   };
 
+  // Native ad slide — rendered to look like a regular suggestion card.
+  if (suggestion.source === 'ad') {
+    return <NativeAdSlide suggestion={suggestion} preview={preview} deckColors={deckColors} />;
+  }
   return (
     <Animated.View
       style={[
@@ -714,7 +928,7 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
         })()}
       </View>
 
-      <Pressable onPress={handleFlip} style={styles.cardOuterPressable}>
+      <Pressable onPress={handleFlip} disabled={flipDisabled} style={styles.cardOuterPressable}>
       {/* Front */}
       <Animated.View
         style={[
@@ -723,6 +937,64 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
         ]}
         pointerEvents={flipped ? 'none' : 'auto'}
       >
+        <LinearGradient
+          colors={cardTheme.slideBorderColors}
+          style={styles.slideBg}
+          pointerEvents="none"
+        />
+        <View style={[styles.slideCore, { backgroundColor: slideCoreColor }]} pointerEvents="none" />
+        <LinearGradient
+          colors={[slideCoreTransparent, slideCoreColor]}
+          style={styles.slideFadeTop}
+          pointerEvents="none"
+        />
+        <LinearGradient
+          colors={[slideCoreColor, slideCoreTransparent]}
+          style={styles.slideFadeBottom}
+          pointerEvents="none"
+        />
+        <LinearGradient
+          colors={[slideCoreTransparent, slideCoreColor]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.slideFadeLeft}
+          pointerEvents="none"
+        />
+        <LinearGradient
+          colors={[slideCoreColor, slideCoreTransparent]}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 1, y: 0 }}
+          style={styles.slideFadeRight}
+          pointerEvents="none"
+        />
+        <Svg style={[styles.slideCornerTL]} pointerEvents="none">
+          <RadialGradient id="slideFadeTL" cx="100%" cy="100%" r="100%">
+            <Stop offset="0" stopColor={slideCoreColor} stopOpacity={1} />
+            <Stop offset="1" stopColor={slideCoreColor} stopOpacity={0} />
+          </RadialGradient>
+          <Rect x="0" y="0" width="100%" height="100%" fill="url(#slideFadeTL)" />
+        </Svg>
+        <Svg style={[styles.slideCornerTR]} pointerEvents="none">
+          <RadialGradient id="slideFadeTR" cx="0%" cy="100%" r="100%">
+            <Stop offset="0" stopColor={slideCoreColor} stopOpacity={1} />
+            <Stop offset="1" stopColor={slideCoreColor} stopOpacity={0} />
+          </RadialGradient>
+          <Rect x="0" y="0" width="100%" height="100%" fill="url(#slideFadeTR)" />
+        </Svg>
+        <Svg style={[styles.slideCornerBL]} pointerEvents="none">
+          <RadialGradient id="slideFadeBL" cx="100%" cy="0%" r="100%">
+            <Stop offset="0" stopColor={slideCoreColor} stopOpacity={1} />
+            <Stop offset="1" stopColor={slideCoreColor} stopOpacity={0} />
+          </RadialGradient>
+          <Rect x="0" y="0" width="100%" height="100%" fill="url(#slideFadeBL)" />
+        </Svg>
+        <Svg style={[styles.slideCornerBR]} pointerEvents="none">
+          <RadialGradient id="slideFadeBR" cx="0%" cy="0%" r="100%">
+            <Stop offset="0" stopColor={slideCoreColor} stopOpacity={1} />
+            <Stop offset="1" stopColor={slideCoreColor} stopOpacity={0} />
+          </RadialGradient>
+          <Rect x="0" y="0" width="100%" height="100%" fill="url(#slideFadeBR)" />
+        </Svg>
         {renderFront()}
       </Animated.View>
 
@@ -763,10 +1035,12 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
 
 const CARD_HEIGHT = 420;
 
+const SLIDE_BORDER_WIDTH = 24;
+
 export { CARD_HEIGHT };
 
-const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: string; text: string }) => {
-  const accent = deckColors?.bg ?? theme.colors.accent;
+const createStyles = (theme: ReturnType<typeof useTheme>, deckColors: { bg: string; text: string } | undefined, cardTheme: CardTheme) => {
+  const accent = cardTheme.accent;
   const accentText = deckColors?.text ?? theme.colors.accentText;
   const cardBackground = theme.isDark ? theme.colors.card : '#FFFFFF';
   return StyleSheet.create({
@@ -797,7 +1071,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     minHeight: CARD_HEIGHT,
     backgroundColor: cardBackground,
     borderWidth: 1,
-    borderColor: '#E5E7EB',
+    borderColor: cardTheme.border,
     borderRadius: theme.radius.lg,
     padding: theme.spacing.lg,
     shadowColor: theme.colors.shadow,
@@ -815,6 +1089,132 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     left: 0,
     right: 0,
     minHeight: CARD_HEIGHT,
+  },
+  slideBg: {
+    ...StyleSheet.absoluteFillObject,
+  },
+  slideCore: {
+    position: 'absolute',
+    top: SLIDE_BORDER_WIDTH,
+    left: SLIDE_BORDER_WIDTH,
+    right: SLIDE_BORDER_WIDTH,
+    bottom: SLIDE_BORDER_WIDTH,
+  },
+  slideFadeTop: {
+    position: 'absolute',
+    top: 0,
+    left: SLIDE_BORDER_WIDTH,
+    right: SLIDE_BORDER_WIDTH,
+    height: SLIDE_BORDER_WIDTH,
+  },
+  slideFadeBottom: {
+    position: 'absolute',
+    bottom: 0,
+    left: SLIDE_BORDER_WIDTH,
+    right: SLIDE_BORDER_WIDTH,
+    height: SLIDE_BORDER_WIDTH,
+  },
+  slideFadeLeft: {
+    position: 'absolute',
+    top: SLIDE_BORDER_WIDTH,
+    bottom: SLIDE_BORDER_WIDTH,
+    left: 0,
+    width: SLIDE_BORDER_WIDTH,
+  },
+  slideFadeRight: {
+    position: 'absolute',
+    top: SLIDE_BORDER_WIDTH,
+    bottom: SLIDE_BORDER_WIDTH,
+    right: 0,
+    width: SLIDE_BORDER_WIDTH,
+  },
+  slideCornerTL: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    width: SLIDE_BORDER_WIDTH,
+    height: SLIDE_BORDER_WIDTH,
+  },
+  slideCornerTR: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    width: SLIDE_BORDER_WIDTH,
+    height: SLIDE_BORDER_WIDTH,
+  },
+  slideCornerBL: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    width: SLIDE_BORDER_WIDTH,
+    height: SLIDE_BORDER_WIDTH,
+  },
+  slideCornerBR: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    width: SLIDE_BORDER_WIDTH,
+    height: SLIDE_BORDER_WIDTH,
+  },
+  mapCard: {
+    marginTop: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: cardTheme.border,
+    backgroundColor: cardBackground,
+  },
+  mapCaption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  mapCaptionText: {
+    flex: 1,
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: theme.colors.text,
+  },
+  mapCaptionEta: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 12,
+    color: theme.colors.textMuted,
+  },
+  heroPillRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: 8,
+  },
+  eventHero: {
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    marginTop: theme.spacing.xs,
+    gap: 8,
+    borderWidth: 1,
+    borderColor: cardTheme.border,
+  },
+  heroEyebrow: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: cardTheme.accent,
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
+  heroPillSolid: {
+    alignSelf: 'flex-start',
+    backgroundColor: cardTheme.accent,
+    paddingHorizontal: 12,
+    paddingVertical: 5,
+    borderRadius: 999,
+  },
+  heroPillSolidText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: '#FFFFFF',
   },
   frontContent: {
     minHeight: '100%',
@@ -883,7 +1283,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     letterSpacing: 0.7,
   },
   hookBlock: {
-    alignSelf: 'flex-start',
+    alignSelf: 'center',
     backgroundColor: theme.colors.accentSoft,
     paddingHorizontal: 12,
     paddingVertical: 6,
@@ -895,13 +1295,34 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     fontSize: 13,
     color: deckColors?.text ?? theme.colors.accentDark,
     lineHeight: 18,
+    textAlign: 'center',
+  },
+  headerContainer: {
+    alignSelf: 'center',
+    alignItems: 'center',
+    maxWidth: '94%',
+    marginTop: -theme.spacing.xs,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.lg,
+    backgroundColor: cardBackground,
+    borderWidth: 1,
+    borderColor: cardTheme.border,
+    gap: 6,
+    shadowColor: theme.colors.shadow,
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.1,
+    shadowRadius: 12,
+    elevation: 3,
   },
   title: {
     fontFamily: theme.fonts.heading,
     fontSize: 24,
     color: theme.colors.text,
+    textAlign: 'center',
   },
   ctaBlock: {
+    alignItems: 'center',
     gap: 4,
   },
   ctaText: {
@@ -909,6 +1330,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     fontSize: 22,
     lineHeight: 28,
     color: accent,
+    textAlign: 'center',
   },
   titleSubline: {
     fontFamily: theme.fonts.semibold,
@@ -916,11 +1338,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     color: theme.colors.textMuted,
     textTransform: 'uppercase',
     letterSpacing: 0.6,
+    textAlign: 'center',
+  },
+  todoDueText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
   },
   infoRow: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
+    justifyContent: 'center',
     alignItems: 'center',
+    gap: theme.spacing.sm,
   },
   infoChipRight: {
     fontFamily: theme.fonts.semibold,
@@ -985,7 +1415,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     fontFamily: theme.fonts.semibold,
     fontSize: 13,
     color: theme.colors.textMuted,
-    flex: 1,
+    textAlign: 'center',
   },
   ratingChip: {
     fontFamily: theme.fonts.semibold,
@@ -1112,7 +1542,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors?: { bg: str
     position: 'absolute',
     width: 210,
     height: 90,
-    backgroundColor: '#EAF3FF',
+    backgroundColor: '#EDEDED',
     opacity: 0.95,
     borderTopLeftRadius: 105,
     borderTopRightRadius: 105,

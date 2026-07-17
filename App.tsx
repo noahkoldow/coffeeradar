@@ -24,6 +24,7 @@ import { PlanScreen } from './src/screens/PlanScreen';
 import { ActivityChatScreen } from './src/screens/ActivityChatScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
 import { ProfileScreen } from './src/screens/ProfileScreen';
+import { MyActivitiesScreen } from './src/screens/MyActivitiesScreen';
 import { BusinessHubScreen } from './src/screens/BusinessHubScreen';
 import { ApprovalQueueScreen } from './src/screens/ApprovalQueueScreen';
 import { HabitFormScreen } from './src/screens/HabitFormScreen';
@@ -43,6 +44,7 @@ import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { lightTheme } from './src/theme';
 import { logEvent } from './src/services/analytics';
 import { firebaseEnabled } from './src/services/firebase';
+import { initializeAds } from './src/services/ads/mobileAds';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -58,6 +60,10 @@ const AppNavigator = () => {
   useEffect(() => {
     if (!state.loading) logEvent('app_open');
   }, [state.loading]);
+
+  useEffect(() => {
+    void initializeAds();
+  }, []);
 
   if (state.loading || !state.authChecked) {
     return (
@@ -134,6 +140,7 @@ const AppNavigator = () => {
           <Stack.Screen name="ActivityChat" component={ActivityChatScreen} />
           <Stack.Screen name="Settings" component={SettingsScreen} />
           <Stack.Screen name="Profile" component={ProfileScreen} />
+          <Stack.Screen name="MyActivities" component={MyActivitiesScreen} />
           <Stack.Screen name="BusinessHub" component={BusinessHubScreen} options={businessScreenOptions} />
           <Stack.Screen name="ApprovalQueue" component={ApprovalQueueScreen} options={businessScreenOptions} />
           <Stack.Screen name="BusinessCampaignForm" component={BusinessCampaignFormScreen} options={businessScreenOptions} />

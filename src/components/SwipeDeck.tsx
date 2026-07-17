@@ -96,23 +96,16 @@ export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
       onSwipeRightRef.current = onSwipeRight;
     }, [onSwipeLeft, onSwipeRight]);
 
-    const isFirstCard = useRef(true);
-
     useEffect(() => {
       pan.setValue({ x: 0, y: 0 });
       animatingRef.current = false;
-      if (isFirstCard.current) {
-        isFirstCard.current = false;
-        enter.setValue(0);
-        Animated.timing(enter, {
-          toValue: 1,
-          duration: 220,
-          easing: Easing.out(Easing.cubic),
-          useNativeDriver: true,
-        }).start();
-      } else {
-        enter.setValue(1);
-      }
+      enter.setValue(0);
+      Animated.timing(enter, {
+        toValue: 1,
+        duration: 170,
+        easing: Easing.out(Easing.cubic),
+        useNativeDriver: true,
+      }).start();
     }, [current?.id, pan]);
 
     const resetPosition = useCallback(() => {
@@ -232,11 +225,11 @@ export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
     const webTouch = Platform.OS === 'web' ? ({ touchAction: 'none' } as any) : undefined;
     const enterScale = enter.interpolate({
       inputRange: [0, 1],
-      outputRange: [0.96, 1],
+      outputRange: [0.94, 1],
     });
     const enterOpacity = enter.interpolate({
       inputRange: [0, 1],
-      outputRange: [0.92, 1],
+      outputRange: [0.88, 1],
     });
     const cardStyle = {
       transform: [...pan.getTranslateTransform(), { rotate }, { scale: enterScale }],
@@ -278,6 +271,7 @@ export const SwipeDeck = forwardRef<SwipeDeckHandle, Props>(
             pointerEvents="none"
           >
             <SuggestionCard suggestion={next} preview deckColors={deckColors} />
+            <View style={styles.previewTint} pointerEvents="none" />
             <Animated.View style={[styles.blurOverlay, { opacity: blurOpacity }]}>
               <BlurView intensity={14} tint={blurTint} style={StyleSheet.absoluteFillObject} />
             </Animated.View>
@@ -328,6 +322,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     ...StyleSheet.absoluteFillObject,
     borderRadius: theme.radius.lg,
     overflow: 'hidden',
+  },
+  previewTint: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.isDark ? 'rgba(9,13,20,0.32)' : 'rgba(20,28,46,0.14)',
   },
   empty: {
     height: CARD_HEIGHT,

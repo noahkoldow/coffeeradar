@@ -125,6 +125,10 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
             onPress={() => navigation.navigate('Settings')}
           />
           <PrimaryButton
+            label="My activities"
+            onPress={() => navigation.navigate('MyActivities')}
+          />
+          <PrimaryButton
             label="Submit a business ad"
             onPress={() => navigation.navigate('BusinessHub')}
           />

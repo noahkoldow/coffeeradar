@@ -4,7 +4,7 @@ import { ActivityLog, DeckSuggestion, Habit, HistoryState, InProgressPlanSession
 const KEYS = {
   prefs: 'prefs',
   history: 'history',
-  calendars: 'enabled_calendars',
+  calendars: 'disabled_calendars',
   onboarding: 'onboarding_complete',
   habits: 'habits',
   activity: 'activity_log',
@@ -45,12 +45,12 @@ export const saveHistory = async (history: HistoryState, userId?: string | null)
   await AsyncStorage.setItem(keyFor(KEYS.history, userId), JSON.stringify(history));
 };
 
-export const loadEnabledCalendars = async (userId?: string | null): Promise<string[] | null> => {
+export const loadDisabledCalendars = async (userId?: string | null): Promise<string[] | null> => {
   const raw = await AsyncStorage.getItem(keyFor(KEYS.calendars, userId));
   return raw ? (JSON.parse(raw) as string[]) : null;
 };
 
-export const saveEnabledCalendars = async (calendarIds: string[], userId?: string | null): Promise<void> => {
+export const saveDisabledCalendars = async (calendarIds: string[], userId?: string | null): Promise<void> => {
   await AsyncStorage.setItem(keyFor(KEYS.calendars, userId), JSON.stringify(calendarIds));
 };
 

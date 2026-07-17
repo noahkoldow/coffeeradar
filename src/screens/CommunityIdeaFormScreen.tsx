@@ -11,6 +11,9 @@ import { submitCommunityIdea } from '../services/communityIdeas';
 import { useAppState } from '../state/AppState';
 import { DeckSuggestion } from '../types';
 import { HabitTimeOfDay, SuggestionType } from '../types';
+import { atHomeSuggestions } from '../data/atHome';
+import { fallbackSuggestions } from '../data/fallback';
+import { goOutSuggestions } from '../data/goOut';
 
 type Props = StackScreenProps<RootStackParamList, 'CommunityIdeaForm'>;
 
@@ -19,6 +22,42 @@ const IDEA_TYPES: Array<{ label: string; value: SuggestionType }> = [
   { label: 'Go out', value: 'GO_OUT' },
   { label: 'Event', value: 'EVENT' },
 ];
+
+const TYPE_TONES: Record<SuggestionType, { background: string; border: string; text: string; mutedBackground: string }> = {
+  AT_HOME: {
+    background: '#EAF1FF',
+    border: '#C7D8FF',
+    text: '#2F5DB8',
+    mutedBackground: '#F6F9FF',
+  },
+  GO_OUT: {
+    background: '#E8F7EF',
+    border: '#B7DEC8',
+    text: '#2E8055',
+    mutedBackground: '#F2FBF6',
+  },
+  EVENT: {
+    background: '#FFF1E7',
+    border: '#F1D0B9',
+    text: '#A05A2D',
+    mutedBackground: '#FFF8F3',
+  },
+};
+
+const tagsForType = (value: SuggestionType): string[] => {
+  const source = value === 'AT_HOME'
+    ? [...atHomeSuggestions, ...fallbackSuggestions.filter((item) => item.type === 'AT_HOME')]
+    : [...goOutSuggestions, ...fallbackSuggestions.filter((item) => item.type !== 'AT_HOME')];
+
+  return Array.from(
+    new Set(
+      source
+        .flatMap((item) => item.tags ?? [])
+        .map((tag) => tag.trim().toLowerCase())
+        .filter(Boolean),
+    ),
+  ).sort((a, b) => a.localeCompare(b));
+};
 
 const TIME_OF_DAY_OPTIONS: Array<{ label: string; value: HabitTimeOfDay }> = [
   { label: 'Any time', value: 'any' },
@@ -34,17 +73,21 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
   const { actions } = useAppState();
 
   const [title, setTitle] = useState('');
-  const [hook, setHook] = useState('');
   const [description, setDescription] = useState('');
   const [type, setType] = useState<SuggestionType>('AT_HOME');
   const [durationMin, setDurationMin] = useState('30');
   const [timeOfDay, setTimeOfDay] = useState<HabitTimeOfDay>('any');
-  const [tags, setTags] = useState('');
-  const [emojiLine, setEmojiLine] = useState('');
+  const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [placeName, setPlaceName] = useState('');
   const [placeAddress, setPlaceAddress] = useState('');
   const [localImageUri, setLocalImageUri] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
+
+  const availableTags = useMemo(() => tagsForType(type), [type]);
+
+  const toggleTag = (tag: string) => {
+    setSelectedTags((prev) => (prev.includes(tag) ? prev.filter((item) => item !== tag) : [...prev, tag]));
+  };
 
   const pickImage = async () => {
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -68,12 +111,11 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
 
   const handleSubmit = async () => {
     const cleanTitle = title.trim();
-    const cleanHook = hook.trim();
     const cleanDescription = description.trim();
     const parsedDuration = Number(durationMin);
 
-    if (!cleanTitle || !cleanHook || !cleanDescription || !Number.isFinite(parsedDuration) || parsedDuration <= 0) {
-      Alert.alert('Missing details', 'Please add a title, hook, description, and a valid duration.');
+    if (!cleanTitle || !cleanDescription || !Number.isFinite(parsedDuration) || parsedDuration <= 0) {
+      Alert.alert('Missing details', 'Please add a title, description, and a valid duration.');
       return;
     }
 
@@ -82,18 +124,19 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
       const cleanPlaceName = placeName.trim();
       const cleanPlaceAddress = placeAddress.trim();
       const submissionId = `community_${Date.now()}`;
+      const syntheticHook = cleanTitle;
       const ideaSuggestion: DeckSuggestion = {
         id: submissionId,
         type,
         source: 'community',
         title: cleanTitle,
-        hook: cleanHook,
+        hook: syntheticHook,
         cta: 'Try it now',
         description: cleanDescription,
         durationMin: parsedDuration,
         timeOfDay,
-        tags: tags.split(',').map((item) => item.trim()).filter((item) => item.length > 0),
-        emojis: emojiLine.split(' ').map((item) => item.trim()).filter((item) => item.length > 0),
+        tags: selectedTags,
+        emojis: [],
         place: cleanPlaceName ? {
           name: cleanPlaceName,
           ...(cleanPlaceAddress ? { address: cleanPlaceAddress } : {}),
@@ -108,13 +151,13 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
       });
       void submitCommunityIdea({
         title: cleanTitle,
-        hook: cleanHook,
+        hook: syntheticHook,
         description: cleanDescription,
         type,
         durationMin: parsedDuration,
         timeOfDay,
-        tags: tags.split(',').map((item) => item.trim()).filter((item) => item.length > 0),
-        emojis: emojiLine.split(' ').map((item) => item.trim()).filter((item) => item.length > 0),
+        tags: selectedTags,
+        emojis: [],
         place: cleanPlaceName ? {
           name: cleanPlaceName,
           ...(cleanPlaceAddress ? { address: cleanPlaceAddress } : {}),
@@ -132,11 +175,11 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
       navigation.replace('CommunityIdeaSuccess', {
         submissionId,
         title: cleanTitle,
-        hook: cleanHook,
+        hook: syntheticHook,
         description: cleanDescription,
         durationMin: parsedDuration,
-        tags: tags.split(',').map((item) => item.trim()).filter((item) => item.length > 0),
-        emojis: emojiLine.split(' ').map((item) => item.trim()).filter((item) => item.length > 0),
+        tags: selectedTags,
+        emojis: [],
         previewImageUri: localImageUri,
       });
     } catch (error) {
@@ -155,20 +198,30 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
           </Pressable>
 
           <Text style={styles.title}>Share your idea</Text>
-          <Text style={styles.subtitle}>Send a community activity for review. Location and image are optional.</Text>
+          <Text style={styles.subtitle}>Send a community activity for review. After admin approval, AI polishes wording and fills missing details.</Text>
 
           <View style={styles.section}>
             <Text style={styles.label}>Type</Text>
             <View style={styles.typeRow}>
               {IDEA_TYPES.map((item) => {
                 const selected = type === item.value;
+                const tone = TYPE_TONES[item.value];
                 return (
                   <Pressable
                     key={item.value}
-                    onPress={() => setType(item.value)}
-                    style={[styles.typeChip, selected && styles.typeChipActive]}
+                    onPress={() => {
+                      setType(item.value);
+                      setSelectedTags((prev) => prev.filter((tag) => tagsForType(item.value).includes(tag)));
+                    }}
+                    style={[
+                      styles.typeChip,
+                      {
+                        borderColor: tone.border,
+                        backgroundColor: selected ? tone.background : tone.mutedBackground,
+                      },
+                    ]}
                   >
-                    <Text style={[styles.typeChipText, selected && styles.typeChipTextActive]}>{item.label}</Text>
+                    <Text style={[styles.typeChipText, { color: tone.text }]}>{item.label}</Text>
                   </Pressable>
                 );
               })}
@@ -178,11 +231,6 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
           <View style={styles.section}>
             <Text style={styles.label}>Title</Text>
             <TextInput value={title} onChangeText={setTitle} placeholder="A quick sunset walk" placeholderTextColor={theme.colors.textMuted} style={styles.input} />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.label}>Hook</Text>
-            <TextInput value={hook} onChangeText={setHook} placeholder="Why should someone tap it?" placeholderTextColor={theme.colors.textMuted} style={styles.input} />
           </View>
 
           <View style={styles.section}>
@@ -223,12 +271,21 @@ export const CommunityIdeaFormScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.section}>
             <Text style={styles.label}>Tags</Text>
-            <TextInput value={tags} onChangeText={setTags} placeholder="coffee, outdoor, friends" placeholderTextColor={theme.colors.textMuted} style={styles.input} />
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.label}>Emojis</Text>
-            <TextInput value={emojiLine} onChangeText={setEmojiLine} placeholder="✨ ☕ 🚶" placeholderTextColor={theme.colors.textMuted} style={styles.input} />
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.tagScrollContent}>
+              {availableTags.map((tag) => {
+                const selected = selectedTags.includes(tag);
+                return (
+                  <Pressable
+                    key={tag}
+                    onPress={() => toggleTag(tag)}
+                    style={[styles.tagChip, selected && styles.tagChipActive]}
+                  >
+                    <Text style={[styles.tagChipText, selected && styles.tagChipTextActive]}>{tag}</Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+            {!!selectedTags.length && <Text style={styles.tagsHint}>Selected: {selectedTags.join(', ')}</Text>}
           </View>
 
           <View style={styles.section}>
@@ -335,16 +392,39 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.card,
   },
-  typeChipActive: {
-    backgroundColor: theme.colors.accent,
-    borderColor: theme.colors.accent,
-  },
   typeChipText: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
   },
-  typeChipTextActive: {
+  tagScrollContent: {
+    gap: 8,
+    paddingRight: theme.spacing.lg,
+  },
+  tagChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    backgroundColor: theme.colors.card,
+  },
+  tagChipActive: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accent,
+  },
+  tagChipText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+    textTransform: 'capitalize',
+  },
+  tagChipTextActive: {
     color: theme.colors.accentText,
+  },
+  tagsHint: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 13,
+    lineHeight: 18,
   },
   spacedInput: {
     marginTop: 8,

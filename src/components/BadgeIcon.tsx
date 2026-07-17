@@ -204,6 +204,50 @@ const HabitsIcon = ({ color, s }: { color: string; s: number }) => (
   </Svg>
 );
 
+/* ── To-do — checklist with pencil ──────────────────────── */
+const TodoIcon = ({ color, s }: { color: string; s: number }) => (
+  <Svg width={s} height={s} viewBox="0 0 40 40">
+    {/* Clipboard */}
+    <Rect x={7} y={6} width={24} height={30} rx={3} stroke={color} strokeWidth={1.4} fill="none" />
+    <Rect x={14} y={4} width={10} height={5} rx={1.5} stroke={color} strokeWidth={1.1} fill="none" />
+    {/* Checklist rows */}
+    <Rect x={11} y={13} width={4} height={4} rx={0.8} stroke={color} strokeWidth={1} fill="none" />
+    <Line x1={18} y1={15} x2={27} y2={15} stroke={color} strokeWidth={1.1} strokeLinecap="round" />
+
+    <Rect x={11} y={20} width={4} height={4} rx={0.8} stroke={color} strokeWidth={1} fill="none" />
+    <Path d="M11.6 22.2 L13.2 23.6 L15.4 20.8" stroke={color} strokeWidth={1.2} fill="none" strokeLinecap="round" />
+    <Line x1={18} y1={22} x2={27} y2={22} stroke={color} strokeWidth={1.1} strokeLinecap="round" />
+
+    <Rect x={11} y={27} width={4} height={4} rx={0.8} stroke={color} strokeWidth={1} fill="none" />
+    <Line x1={18} y1={29} x2={24} y2={29} stroke={color} strokeWidth={1.1} strokeLinecap="round" />
+    {/* Pencil */}
+    <Path d="M25 31 L30 26 L33 29 L28 34 L24 35 Z" stroke={color} strokeWidth={1} fill="none" />
+    <Line x1={29.2} y1={26.8} x2={32} y2={29.6} stroke={color} strokeWidth={1} />
+  </Svg>
+);
+
+/* ── Challenge — mountain flag and runner ───────────────── */
+const ChallengeIcon = ({ color, s }: { color: string; s: number }) => (
+  <Svg width={s} height={s} viewBox="0 0 40 40">
+    {/* Mountain ridge */}
+    <Path d="M4 34 L14 20 L20 28 L27 16 L36 34" stroke={color} strokeWidth={1.4} fill="none" strokeLinecap="round" strokeLinejoin="round" />
+    {/* Summit flag */}
+    <Line x1={27} y1={16} x2={27} y2={8} stroke={color} strokeWidth={1.2} />
+    <Path d="M27 8 L33 10 L27 12" stroke={color} strokeWidth={1.1} fill="none" strokeLinejoin="round" />
+    {/* Runner */}
+    <Circle cx={10} cy={14} r={2.2} stroke={color} strokeWidth={1.2} fill="none" />
+    <Line x1={10} y1={16} x2={12} y2={21} stroke={color} strokeWidth={1.2} />
+    <Line x1={12} y1={21} x2={16} y2={22} stroke={color} strokeWidth={1.2} />
+    <Line x1={11} y1={18} x2={8} y2={21} stroke={color} strokeWidth={1.1} />
+    <Line x1={12} y1={19} x2={15} y2={17} stroke={color} strokeWidth={1.1} />
+    {/* Finish burst */}
+    <Circle cx={33} cy={8} r={1.4} fill={color} opacity={0.6} />
+    <Line x1={33} y1={4.5} x2={33} y2={2.8} stroke={color} strokeWidth={0.8} />
+    <Line x1={36} y1={8} x2={37.8} y2={8} stroke={color} strokeWidth={0.8} />
+    <Line x1={30} y1={8} x2={28.2} y2={8} stroke={color} strokeWidth={0.8} />
+  </Svg>
+);
+
 /* ── Lookup ──────────────────────────────────────────────── */
 
 const ICON_MAP: Record<string, React.FC<{ color: string; s: number }>> = {
@@ -215,6 +259,8 @@ const ICON_MAP: Record<string, React.FC<{ color: string; s: number }>> = {
   art: ArtIcon,
   food: FoodIcon,
   habits: HabitsIcon,
+  todo: TodoIcon,
+  challenge: ChallengeIcon,
 };
 
 export const BadgeIcon: React.FC<Props> = ({ badgeId, size = 56, color }) => {

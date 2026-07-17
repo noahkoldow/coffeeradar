@@ -48,7 +48,7 @@ export const CalendarPermissionScreen: React.FC<Props> = ({ navigation }) => {
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
         <Text style={styles.title}>Connect your calendar 📅</Text>
         <Text style={styles.subtitle}>
-          We read your next event to find real free time, and write a plan when you commit.
+          CoffeeRadar reads your schedule to spot real free time and suggest things that fit your day. Your calendar stays yours — used only to personalize your ideas, never sold or shown to other people.
         </Text>
       </View>
       <PrimaryButton

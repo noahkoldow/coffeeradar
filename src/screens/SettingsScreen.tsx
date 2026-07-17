@@ -416,19 +416,18 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.sectionTitle}>Calendars</Text>
           {state.permissions.calendarGranted ? (
             calendars.map((cal) => {
-              const enabled = state.enabledCalendars.length
-                ? state.enabledCalendars.includes(cal.id)
-                : true;
+              const enabled = !state.disabledCalendars.includes(cal.id);
               return (
                 <Pressable
                   key={cal.id}
                   style={styles.calendarRow}
                   onPress={() => {
-                    const current = state.enabledCalendars.length ? state.enabledCalendars : calendars.map((c) => c.id);
                     const updated = enabled
-                      ? current.filter((id) => id !== cal.id)
-                      : [...current, cal.id];
-                    actions.setEnabledCalendars(updated);
+                      ? [...state.disabledCalendars, cal.id]
+                      : state.disabledCalendars.filter((id) => id !== cal.id);
+                    // Keep at least one calendar enabled.
+                    if (calendars.length && updated.length >= calendars.length) return;
+                    actions.setDisabledCalendars(updated);
                   }}
                 >
                   <Text style={styles.calendarTitle}>{cal.title}</Text>

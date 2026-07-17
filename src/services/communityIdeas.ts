@@ -1,7 +1,7 @@
-import { collection, doc, getDoc, getDocs, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, increment, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { auth, db, ensureAuth, firebaseEnabled, storage } from './firebase';
-import { CommunityIdeaSubmission, CommunityIdeaSubmissionInput, DeckSuggestion, Suggestion } from '../types';
+import { CommunityIdeaSubmission, CommunityIdeaSubmissionInput, DeckSuggestion, HabitTimeOfDay, Suggestion } from '../types';
 
 const canSync = (): boolean => {
   if (!firebaseEnabled || !db || !auth) return false;
@@ -79,25 +79,53 @@ const normalizeSingleLine = (value: unknown): string => {
   return value.replace(/\s+/g, ' ').trim();
 };
 
-const polishCommunityIdeaCopy = async (idea: CommunityIdeaSubmission): Promise<{ hook: string; description: string; cta?: string } | null> => {
+type CommunityIdeaPolishResult = {
+  hook: string;
+  description: string;
+  cta?: string;
+  tags?: string[];
+  emojis?: string[];
+  timeOfDay?: HabitTimeOfDay;
+};
+
+const normalizeEmojiList = (value: unknown): string[] => {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter((item) => item.length > 0)
+    .slice(0, 6);
+};
+
+const normalizeTimeOfDay = (value: unknown): HabitTimeOfDay | undefined => {
+  if (value === 'any' || value === 'morning' || value === 'afternoon' || value === 'evening') {
+    return value;
+  }
+  return undefined;
+};
+
+const polishCommunityIdeaCopy = async (idea: CommunityIdeaSubmission): Promise<CommunityIdeaPolishResult | null> => {
   if (!isCommunityIdeaPolishEnabled()) return null;
 
   const model = env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.0-flash';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.EXPO_PUBLIC_GEMINI_API_KEY}`;
   const prompt = [
     'Return ONLY valid JSON.',
-    'Schema: {"hook":string,"description":string,"cta":string|null}',
-    'Task: Improve readability and appeal for this community activity copy without changing factual content.',
+    'Schema: {"hook":string,"description":string,"cta":string|null,"tags":string[]|null,"emojis":string[]|null,"timeOfDay":"any"|"morning"|"afternoon"|"evening"|null}',
+    'Task: Improve readability and appeal for this community activity copy and fill optional missing fields without changing factual content.',
     'Hard constraints:',
     '- Keep the same activity intent, type, duration, place/event facts, and safety level.',
     '- Do not add new offers, prices, venues, schedules, claims, or instructions.',
     '- Keep tone concise and neutral-positive.',
+    '- Keep tags short, lowercase, and broad (e.g. wellness, fitness, explore).',
+    '- Keep emojis optional and minimal (0-3).',
     `Current hook: ${idea.hook}`,
     `Current description: ${idea.description}`,
     `Current cta: ${idea.cta ?? ''}`,
     `Type: ${idea.type}`,
     `Duration minutes: ${idea.durationMin}`,
     `Tags: ${(idea.tags ?? []).join(', ')}`,
+    `Emojis: ${(idea.emojis ?? []).join(' ')}`,
+    `Time of day: ${idea.timeOfDay ?? ''}`,
   ].join('\n');
 
   const response = await fetch(url, {
@@ -126,11 +154,17 @@ const polishCommunityIdeaCopy = async (idea: CommunityIdeaSubmission): Promise<{
   const hook = normalizeSingleLine(parsed.hook) || idea.hook;
   const description = normalizeSingleLine(parsed.description) || idea.description;
   const cta = normalizeSingleLine(parsed.cta);
+  const tags = normalizeTags(parsed.tags);
+  const emojis = normalizeEmojiList(parsed.emojis);
+  const timeOfDay = normalizeTimeOfDay(parsed.timeOfDay);
 
   return {
     hook,
     description,
     ...(cta ? { cta } : {}),
+    ...(tags.length > 0 ? { tags } : {}),
+    ...(emojis.length > 0 ? { emojis } : {}),
+    ...(timeOfDay ? { timeOfDay } : {}),
   };
 };
 
@@ -148,10 +182,28 @@ const applyCommunityIdeaPolish = async (ideaId: string): Promise<void> => {
   const polished = await polishCommunityIdeaCopy(current);
   if (!polished) return;
 
-  const changed = polished.hook !== current.hook || polished.description !== current.description || (polished.cta ?? '') !== (current.cta ?? '');
+  const nextTags = polished.tags && polished.tags.length > 0 ? polished.tags : (current.tags ?? []);
+  const nextEmojis = polished.emojis && polished.emojis.length > 0 ? polished.emojis : (current.emojis ?? []);
+  const nextTimeOfDay = polished.timeOfDay ?? current.timeOfDay;
+
+  const changed = polished.hook !== current.hook
+    || polished.description !== current.description
+    || (polished.cta ?? '') !== (current.cta ?? '')
+    || JSON.stringify(nextTags) !== JSON.stringify(current.tags ?? [])
+    || JSON.stringify(nextEmojis) !== JSON.stringify(current.emojis ?? [])
+    || nextTimeOfDay !== current.timeOfDay;
 
   await updateDoc(ideaRef, {
-    ...(changed ? polished : {}),
+    ...(changed
+      ? {
+        hook: polished.hook,
+        description: polished.description,
+        ...(polished.cta ? { cta: polished.cta } : {}),
+        tags: nextTags,
+        emojis: nextEmojis,
+        ...(nextTimeOfDay ? { timeOfDay: nextTimeOfDay } : {}),
+      }
+      : {}),
     aiPolish: {
       version: COMMUNITY_POLISH_VERSION,
       model: env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.0-flash',
@@ -161,6 +213,9 @@ const applyCommunityIdeaPolish = async (ideaId: string): Promise<void> => {
         hook: current.hook,
         description: current.description,
         cta: current.cta ?? null,
+        tags: current.tags ?? [],
+        emojis: current.emojis ?? [],
+        timeOfDay: current.timeOfDay ?? null,
       },
     },
   });
@@ -286,6 +341,56 @@ export const loadApprovedCommunityIdeas = async (): Promise<CommunityIdeaSubmiss
   } catch (error) {
     console.warn('Community ideas load error', error);
     return [];
+  }
+};
+
+/** Load the current user's own submitted community ideas (any status). */
+export const loadMyCommunityIdeas = async (): Promise<CommunityIdeaSubmission[]> => {
+  if (!canSync()) return [];
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return [];
+    const snap = await getDocs(query(collection(db!, communityIdeaCollection), where('submittedBy', '==', uid)));
+    return snap.docs
+      .map((item) => ({ id: item.id, ...(item.data() as Omit<CommunityIdeaSubmission, 'id'>) }))
+      .sort((a, b) => b.submittedAt.localeCompare(a.submittedAt));
+  } catch (error) {
+    console.warn('My community ideas load error', error);
+    return [];
+  }
+};
+
+/** Prefix used when a community idea is turned into a deck suggestion id. */
+const COMMUNITY_SUGGESTION_PREFIX = 'community_';
+
+/** Extract the community idea id from a suggestion id, or null if not a community suggestion. */
+export const getCommunityIdeaIdFromSuggestion = (suggestionId?: string | null): string | null => {
+  if (!suggestionId || !suggestionId.startsWith(COMMUNITY_SUGGESTION_PREFIX)) return null;
+  const ideaId = suggestionId.slice(COMMUNITY_SUGGESTION_PREFIX.length);
+  return ideaId.length > 0 ? ideaId : null;
+};
+
+/**
+ * Increment the completion stats for a community idea when someone does the activity.
+ * Tracks how many people did it and the total minutes contributed.
+ */
+export const recordCommunityIdeaCompletion = async (
+  suggestionId: string,
+  durationMin: number,
+): Promise<void> => {
+  if (!canSync()) return;
+  const ideaId = getCommunityIdeaIdFromSuggestion(suggestionId);
+  if (!ideaId) return;
+  const safeMinutes = Number.isFinite(durationMin) && durationMin > 0 ? Math.round(durationMin) : 0;
+  try {
+    const uid = await ensureAuth();
+    if (!uid) return;
+    await updateDoc(doc(db!, communityIdeaCollection, ideaId), {
+      completionCount: increment(1),
+      helpMinutes: increment(safeMinutes),
+    });
+  } catch (error) {
+    console.warn('Community idea completion tracking skipped', error);
   }
 };
 

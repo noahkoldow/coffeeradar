@@ -37,7 +37,8 @@
         "backgroundColor": "#F6F7FB"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.bits.app.android"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -45,7 +46,18 @@
     "plugins": [
       "expo-web-browser",
       "expo-apple-authentication",
-      "@react-native-community/datetimepicker"
+      "@react-native-community/datetimepicker",
+      [
+        "react-native-google-mobile-ads",
+        {
+          "androidAppId": "ca-app-pub-5666991539216529~8814610819",
+          "iosAppId": "ca-app-pub-5666991539216529~5496136737",
+          "userTrackingUsageDescription": "This identifier will be used to deliver personalized ads to you.",
+          "skAdNetworkItems": [
+            "cstr6suwn9.skadnetwork"
+          ]
+        }
+      ]
     ],
     "scheme": "bits",
     "extra": {

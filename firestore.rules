@@ -392,6 +392,17 @@ service cloud.firestore {
           && request.resource.data.submittedAt == resource.data.submittedAt
           && request.resource.data.submittedAtTs == resource.data.submittedAtTs
           && request.resource.data.createdAt == resource.data.createdAt
+        )
+        || (
+          // Any signed-in user may increment completion stats on approved ideas.
+          isSignedIn()
+          && resource.data.status == 'approved'
+          && request.resource.data.diff(resource.data).affectedKeys()
+            .hasOnly(['completionCount', 'helpMinutes'])
+          && request.resource.data.completionCount is number
+          && request.resource.data.helpMinutes is number
+          && request.resource.data.completionCount >= resource.data.get('completionCount', 0)
+          && request.resource.data.helpMinutes >= resource.data.get('helpMinutes', 0)
         );
 
       allow delete: if isAdmin();

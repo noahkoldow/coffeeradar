@@ -3,7 +3,7 @@ import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 import { findOrGenerateActivity } from '../services/activityGeneration';
 
-type DeckType = 'do_now' | 'productive' | 'plan_tomorrow' | 'homebody';
+type DeckType = 'do_now' | 'productive' | 'plan_tomorrow' | 'homebody' | 'challenge_me';
 type LoaderConfig = { messages: Array<{ text: string; emoji: string }>; emojis: string[]; color?: string };
 
 const LOADER_CONFIG: Record<DeckType | 'default', LoaderConfig> = {
@@ -42,6 +42,15 @@ const LOADER_CONFIG: Record<DeckType | 'default', LoaderConfig> = {
       { text: 'Relaxation incoming...', emoji: '✨' },
     ],
     emojis: ['🏠', '☕', '🛋️', '🎬', '🎨'],
+  },
+  challenge_me: {
+    messages: [
+      { text: 'Finding a challenge that fits your time...', emoji: '🔥' },
+      { text: 'Curating a mission for right now...', emoji: '🎯' },
+      { text: 'Picking something bold but doable...', emoji: '⚡' },
+      { text: 'Your next challenge is almost ready...', emoji: '🏁' },
+    ],
+    emojis: ['🔥', '🎯', '⚡', '🏁', '💥'],
   },
   default: {
     messages: [
@@ -103,6 +112,11 @@ export const DeckLoader: React.FC<Props> = ({ deckType, request, onResult }) => 
       return theme.isDark
         ? { bg: '#2E4F45', text: '#D9F6EA' }
         : { bg: '#B5EAD7', text: '#1A4A3A' };
+    }
+    if (deckType === 'challenge_me') {
+      return theme.isDark
+        ? { bg: '#4D2E66', text: '#F0E3FF' }
+        : { bg: '#D7B9F1', text: '#3E2257' };
     }
     return { bg: theme.colors.accent, text: theme.colors.accentText };
   };

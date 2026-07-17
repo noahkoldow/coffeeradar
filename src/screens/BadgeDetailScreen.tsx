@@ -45,6 +45,14 @@ const progressBenefitCopy: Record<string, [string, string]> = {
     'Habits are how small actions become real life change. Every completed streak proves you can stay consistent even when motivation is not at its peak.',
     'Building this badge means you are training discipline, identity, and momentum so positive behavior becomes automatic instead of effortful.',
   ],
+  todo: [
+    'To-do completions convert intention into action. Each finished task reduces mental load and gives your day a clear sense of progress.',
+    'This badge rewards reliable follow-through: planning realistic tasks, executing them, and building trust in your own system over time.',
+  ],
+  challenge: [
+    'Challenge sessions build grit by training you to act under pressure with a clear deadline. They help you turn effort into measurable wins.',
+    'This progress shows you can choose hard things on purpose and finish before time runs out, which strengthens confidence and consistency.',
+  ],
 };
 
 export const BadgeDetailScreen: React.FC<Props> = ({ navigation, route }) => {

@@ -24,6 +24,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const { commitment, suggestion } = route.params;
   const fromDoSomethingNow = route.params?.fromDoSomethingNow === true;
   const activityMode = route.params?.activityMode ?? (suggestion.type === 'AT_HOME' ? 'at_home' : 'all');
+  const isChallengeMode = activityMode === 'challenge_me';
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
 
@@ -33,6 +34,10 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const [activityLogged, setActivityLogged] = useState(false);
   const [movementKm, setMovementKm] = useState(0);
   const [showChecklistLock, setShowChecklistLock] = useState(true);
+  const challengeDurationSec = useMemo(() => Math.max(60, Math.round(Math.max(1, suggestion.durationMin) * 60)), [suggestion.durationMin]);
+  const [challengeRemainingSec, setChallengeRemainingSec] = useState(challengeDurationSec);
+  const [challengeFailed, setChallengeFailed] = useState(false);
+  const [challengeFailedAt, setChallengeFailedAt] = useState<string | null>(null);
 
   const cancelledRef = useRef(false);
   const finishingRef = useRef(false);
@@ -123,6 +128,13 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return `${pad(hours)}:${pad(minutes)}:${pad(seconds)}`;
   }, [now]);
 
+  const formatCountdown = useCallback((totalSeconds: number) => {
+    const safeSeconds = Math.max(0, totalSeconds);
+    const minutes = Math.floor(safeSeconds / 60);
+    const seconds = safeSeconds % 60;
+    return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
+  }, []);
+
   const guideSteps = useMemo(() => {
     const isTodoActivity = (suggestion.tags ?? []).includes('todo') || /(^|\s)to-?do(\s|$)/i.test(suggestion.hook ?? '');
     if (isTodoActivity) {
@@ -160,6 +172,12 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     setManualStartAt(restoredStartAt);
     setActivityLogged(!!session.activityLogged);
     setMovementKm(typeof session.movementKm === 'number' ? session.movementKm : 0);
+    setChallengeFailed(!!session.challengeFailed);
+    setChallengeFailedAt(session.challengeFailedAt ?? null);
+    if (isChallengeMode && restoredStartAt) {
+      const elapsed = Math.max(0, Math.floor((Date.now() - restoredStartAt.getTime()) / 1000));
+      setChallengeRemainingSec(Math.max(0, challengeDurationSec - elapsed));
+    }
     setGuideChecks(guideSteps.map((_, index) => !!session.guideChecks?.[index]));
     lastPersistedSessionSnapshotRef.current = JSON.stringify({
       key: session.key,
@@ -169,6 +187,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       guideChecks: guideSteps.map((_, index) => !!session.guideChecks?.[index]),
       activityLogged: !!session.activityLogged,
       movementKm: typeof session.movementKm === 'number' ? session.movementKm : 0,
+      challengeFailed: !!session.challengeFailed,
+      challengeFailedAt: session.challengeFailedAt ?? null,
       createdAt: session.createdAt || sessionCreatedAtRef.current,
     });
 
@@ -177,7 +197,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       checklistLockOpacity.setValue(0);
       checklistLockScale.setValue(1);
     }
-  }, [checklistLockOpacity, checklistLockScale, guideSteps, sessionKey, state.inProgressPlanSession]);
+  }, [challengeDurationSec, checklistLockOpacity, checklistLockScale, guideSteps, isChallengeMode, sessionKey, state.inProgressPlanSession]);
 
   useEffect(() => {
     setGuideChecks((prev) => {
@@ -211,6 +231,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       guideChecks: guideSteps.map((_, index) => !!guideChecks[index]),
       activityLogged,
       movementKm,
+      challengeFailed,
+      challengeFailedAt,
       createdAt: existingCreatedAt,
     };
 
@@ -222,7 +244,20 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       ...nextSessionBase,
       updatedAt: new Date().toISOString(),
     });
-  }, [actions, activityLogged, commitment, guideChecks, guideSteps, manualStartAt, movementKm, sessionKey, state.inProgressPlanSession, suggestion]);
+  }, [actions, activityLogged, challengeFailed, challengeFailedAt, commitment, guideChecks, guideSteps, manualStartAt, movementKm, sessionKey, state.inProgressPlanSession, suggestion]);
+
+  useEffect(() => {
+    if (!isChallengeMode || !manualStartAt || challengeFailed) return;
+    const elapsedSeconds = Math.max(0, Math.floor((now.getTime() - manualStartAt.getTime()) / 1000));
+    const remaining = Math.max(0, challengeDurationSec - elapsedSeconds);
+    setChallengeRemainingSec((prev) => (prev === remaining ? prev : remaining));
+    if (remaining === 0) {
+      const failedAt = new Date().toISOString();
+      setChallengeFailed(true);
+      setChallengeFailedAt(failedAt);
+      void logEvent('challenge_failed_timeout', { suggestion_id: suggestion.id, activity_mode: activityMode });
+    }
+  }, [activityMode, challengeDurationSec, challengeFailed, isChallengeMode, manualStartAt, now, suggestion.id]);
 
   useEffect(() => {
     if (!manualStartAt || !isSocialActivity) return undefined;
@@ -276,11 +311,24 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
     setManualStartAt(new Date());
     setActivityLogged(false);
+    setChallengeFailed(false);
+    setChallengeFailedAt(null);
+    setChallengeRemainingSec(challengeDurationSec);
     setGuideChecks(guideSteps.map(() => false));
     movementStartRef.current = state.location.lat != null && state.location.lng != null
       ? { lat: state.location.lat, lng: state.location.lng }
       : null;
-  }, [checklistLockOpacity, checklistLockScale, commitment.type, guideSteps, manualStartAt, showChecklistLock, state.location.lat, state.location.lng, suggestion.id]);
+  }, [challengeDurationSec, checklistLockOpacity, checklistLockScale, commitment.type, guideSteps, manualStartAt, showChecklistLock, state.location.lat, state.location.lng, suggestion.id]);
+
+  const retryChallenge = useCallback(() => {
+    if (!isChallengeMode) return;
+    setManualStartAt(new Date());
+    setActivityLogged(false);
+    setChallengeFailed(false);
+    setChallengeFailedAt(null);
+    setChallengeRemainingSec(challengeDurationSec);
+    setGuideChecks(guideSteps.map(() => false));
+  }, [challengeDurationSec, guideSteps, isChallengeMode]);
 
   const beginActivity = useCallback(() => {
     if (manualStartAt) return;
@@ -303,7 +351,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return guideChecks.findIndex((checked) => !checked);
   }, [guideChecks, manualStartAt]);
 
-  const canFinish = manualStartAt !== null && guideChecks.every(Boolean);
+  const canFinish = manualStartAt !== null && guideChecks.every(Boolean) && !challengeFailed;
   const finishOpacity = useMemo(() => {
     if (guideSteps.length === 0) return 1;
     const checkedCount = guideChecks.filter(Boolean).length;
@@ -311,22 +359,31 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return 0.2 + progress * 0.8;
   }, [guideChecks, guideSteps.length]);
 
+  const completionTags = useMemo(() => {
+    if (!isChallengeMode) return suggestion.tags;
+    return Array.from(new Set([...(suggestion.tags ?? []), 'challenge']));
+  }, [isChallengeMode, suggestion.tags]);
+
   const navigateToCompletion = useCallback((durationMin: number) => {
     if (cancelledRef.current || finishingRef.current === false) return;
     navigation.replace('Completion', {
       title: suggestion.title,
       durationMin,
       emojis: suggestion.emojis,
-      tags: suggestion.tags,
+      tags: completionTags,
       suggestionType: suggestion.type,
       suggestionId: suggestion.id,
       habitId: suggestion.habitId,
       description: suggestion.description,
       movementKm,
     });
-  }, [navigation, movementKm, suggestion.description, suggestion.emojis, suggestion.habitId, suggestion.id, suggestion.tags, suggestion.title, suggestion.type]);
+  }, [completionTags, navigation, movementKm, suggestion.description, suggestion.emojis, suggestion.habitId, suggestion.id, suggestion.title, suggestion.type]);
 
   const finishActivity = useCallback(() => {
+    if (challengeFailed) {
+      Alert.alert('Challenge failed', 'Time ran out. Retry this challenge to complete it.');
+      return;
+    }
     if (finishingRef.current || !manualStartAt || !canFinish) return;
     finishingRef.current = true;
 
@@ -380,7 +437,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
         source: suggestion.source,
         isHabit: !!suggestion.habitId,
         habitId: suggestion.habitId,
-        tags: suggestion.tags,
+        tags: completionTags,
         suggestionType: suggestion.type,
         movementKm,
       });
@@ -388,10 +445,14 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       setActivityLogged(true);
     }
 
+    if (scheduledToReplace) {
+      actions.removeScheduledActivity(scheduledToReplace.id);
+    }
+
     actions.setInProgressPlanSession(null);
 
     navigateToCompletion(durationMin);
-  }, [activityLogged, actions, activityMode, canFinish, commitment.calendarEventId, commitment.calendarWriteFailed, commitment.endAt, commitment.startAt, commitment.suggestionId, manualStartAt, movementKm, navigateToCompletion, state.scheduledActivities, suggestion.habitId, suggestion.id, suggestion.source, suggestion.tags, suggestion.title, suggestion.type]);
+  }, [activityLogged, actions, activityMode, canFinish, challengeFailed, commitment.calendarEventId, commitment.calendarWriteFailed, commitment.endAt, commitment.startAt, commitment.suggestionId, completionTags, manualStartAt, movementKm, navigateToCompletion, state.scheduledActivities, suggestion.habitId, suggestion.id, suggestion.source, suggestion.title, suggestion.type]);
 
   const cancelPlan = useCallback(async () => {
     cancelledRef.current = true;
@@ -448,7 +509,10 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     [confirmCancel, screenWidth, swipeX],
   );
 
-  const challengeLabel = useMemo(() => /challenge|quest|mission|sprint|try this/i.test([suggestion.title, suggestion.cta, suggestion.hook, suggestion.description].join(' ')), [suggestion]);
+  const challengeLabel = useMemo(() => {
+    if (isChallengeMode) return true;
+    return /challenge|quest|mission|sprint|try this/i.test([suggestion.title, suggestion.cta, suggestion.hook, suggestion.description].join(' '));
+  }, [isChallengeMode, suggestion]);
 
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
@@ -475,7 +539,17 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
             {!manualStartAt ? (
               <PrimaryButton label="Start" onPress={beginActivity} glow style={styles.startButton} />
             ) : (
-              <View style={styles.timerPanel}><Text style={styles.timerValue}>{formatElapsed(manualStartAt)}</Text></View>
+              <View style={[styles.timerPanel, challengeFailed && styles.timerPanelFailed]}>
+                <Text style={[styles.timerLabel, challengeFailed && styles.timerLabelFailed]}>
+                  {isChallengeMode ? 'Challenge Timer' : 'Elapsed'}
+                </Text>
+                <Text style={[styles.timerValue, challengeFailed && styles.timerValueFailed]}>
+                  {isChallengeMode ? formatCountdown(challengeRemainingSec) : formatElapsed(manualStartAt)}
+                </Text>
+                {isChallengeMode && challengeFailed && (
+                  <Text style={styles.timerFailedText}>Time is up. Retry to complete this challenge.</Text>
+                )}
+              </View>
             )}
           </View>
 
@@ -519,8 +593,14 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
               disabled={!canFinish || showChecklistLock}
             >
               <Text style={styles.finishChecklistTitle}>Finish activity</Text>
-              <Text style={[styles.finishChecklistMeta, canFinish && styles.finishChecklistMetaHidden]}>(Complete checklist)</Text>
+              <Text style={[styles.finishChecklistMeta, canFinish && !challengeFailed && styles.finishChecklistMetaHidden]}>
+                {challengeFailed ? '(Challenge failed - retry required)' : '(Complete checklist)'}
+              </Text>
             </Pressable>
+
+            {isChallengeMode && challengeFailed && (
+              <PrimaryButton label="Retry challenge" onPress={retryChallenge} style={styles.retryButton} />
+            )}
 
             {showChecklistLock && (
               <Animated.View
@@ -572,7 +652,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   socialBadgeText: { fontFamily: theme.fonts.semibold, color: theme.colors.infoText, fontSize: 10, textTransform: 'uppercase', letterSpacing: 0.7 },
   startButton: { alignSelf: 'stretch' },
   timerPanel: { backgroundColor: theme.colors.card, borderRadius: theme.radius.lg, paddingVertical: theme.spacing.sm, paddingHorizontal: theme.spacing.lg, borderWidth: 1, borderColor: theme.colors.border, minHeight: 64, justifyContent: 'center', alignItems: 'center' },
+  timerPanelFailed: { borderColor: theme.colors.danger, backgroundColor: `${theme.colors.danger}14` },
+  timerLabel: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted, fontSize: 12, marginBottom: 2, textTransform: 'uppercase', letterSpacing: 0.6 },
+  timerLabelFailed: { color: theme.colors.danger },
   timerValue: { fontFamily: theme.fonts.heading, color: theme.colors.text, fontSize: 28, textAlign: 'center' },
+  timerValueFailed: { color: theme.colors.danger },
+  timerFailedText: { fontFamily: theme.fonts.body, color: theme.colors.danger, fontSize: 12, textAlign: 'center', marginTop: 4 },
   locationRowCard: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', maxWidth: '100%', backgroundColor: theme.colors.backgroundAlt, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
   locationRowPressed: { opacity: 0.85 },
   locationPin: { fontSize: 14 },
@@ -629,6 +714,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   finishChecklistTitle: { fontFamily: theme.fonts.semibold, color: theme.colors.accentText, textAlign: 'center' },
   finishChecklistMeta: { fontFamily: theme.fonts.body, color: theme.colors.accentText, fontSize: 12, opacity: 0.85, textAlign: 'center' },
   finishChecklistMetaHidden: { opacity: 0 },
+  retryButton: { marginTop: theme.spacing.xs },
   mapBlock: { borderRadius: theme.radius.md, overflow: 'hidden', marginTop: theme.spacing.xs },
   cancel: { textAlign: 'center', fontFamily: theme.fonts.semibold, color: theme.colors.textMuted, marginBottom: theme.spacing.xs, opacity: 0.7 },
 });

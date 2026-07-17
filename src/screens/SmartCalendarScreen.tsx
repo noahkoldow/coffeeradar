@@ -1,9 +1,11 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Alert, Animated, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
+import { PanGestureHandler, State } from 'react-native-gesture-handler';
 import * as ImagePicker from 'expo-image-picker';
+import * as Haptics from 'expo-haptics';
 import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { SwipeDeck, SwipeDeckHandle } from '../components/SwipeDeck';
@@ -11,10 +13,17 @@ import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { createPlanEvent, deletePlanEvent, getUpcomingEvents } from '../services/calendar';
-import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, buildGapSuggestions, findCalendarGaps } from '../services/smartCalendar';
+import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, WeekPlanContext, WeekPlanDayInput, WeekPlanItem, buildGapSuggestions, findCalendarGaps, planWeekWithGemini } from '../services/smartCalendar';
 import { importTodosFromPhoto } from '../services/todoPhotoImport';
+import { buildAdKeywords } from '../services/ads/adConfig';
+import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
+import { isAdsAvailable } from '../services/ads/mobileAds';
+import { isBusinessAdmin } from '../services/user';
+import { VideoAdModal } from '../components/ads/VideoAdModal';
 import { Commitment, DeckSuggestion, ScheduledActivity, SmartTodoItem } from '../types';
 import { formatClockMinutes, formatTime } from '../utils/time';
+import { getLocalDateKey, getTodoDeadlineAt, getTodoDueDate, isTodoEligibleForWindow, isTodoOverdue } from '../utils/todos';
+import { applyTodoChunkCompletion, evaluateTodoWindowFit, estimateTodoDurationMin, getTodoAtomizedProgress, parseTodoExplicitDurationMin } from '../utils/todoAtomization';
 
 type Props = StackScreenProps<RootStackParamList, 'SmartCalendar'>;
 
@@ -40,15 +49,20 @@ const TIMELINE_LANE_GAP = 4;
 const EVENT_TITLE_LINE_HEIGHT = 14;
 const EVENT_TIME_LINE_HEIGHT = 13;
 const EVENT_VERTICAL_PADDING = 8;
+// Cap how many title lines drive the timeline scale. Beyond this, titles are
+// truncated with an ellipsis instead of forcing the whole timeline taller.
+const MAX_EVENT_TITLE_LINES = 2;
 const GAP_MIN_HEIGHT = 40;
 const BASE_PX_PER_MINUTE = 0.45;
+const EVENT_TINT_ALTERNATE_ALPHA = 0.72;
 const HOUR_SEPARATOR_WIDTH = 8;
 const HOUR_AXIS_LABEL_WIDTH = 28;
 const HOUR_SEPARATOR_LABEL_OFFSET_MIN = 70;
 const ALL_DAY_CHIP_ESTIMATED_HEIGHT = 24;
 const ALL_DAY_CHIP_GAP = 4;
 const GAP_CACHE_KEY = 'smart_calendar_gap_cache_v1';
-
+const WEEK_PLAN_LAST_USED_KEY = 'smart_calendar_week_plan_last_used_v1';
+const WEEK_PLAN_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 type SmartSuggestionDeckEntry = {
   suggestion: SmartCalendarSuggestion;
   deck: DeckSuggestion;
@@ -72,10 +86,11 @@ const mergeTodoNotesWithDueText = (
   notes?: string,
   dueText?: string,
   deadlineAt?: string | null,
+  dueDate?: string | null,
 ): string | undefined => {
   const trimmedNotes = String(notes ?? '').trim();
   const trimmedDueText = String(dueText ?? '').trim();
-  if (!trimmedDueText || !!deadlineAt) return trimmedNotes || undefined;
+  if (!trimmedDueText || !!deadlineAt || !!dueDate) return trimmedNotes || undefined;
 
   if (!trimmedNotes) return `Due: ${trimmedDueText}`;
   if (trimmedNotes.toLowerCase().includes(trimmedDueText.toLowerCase())) return trimmedNotes;
@@ -121,12 +136,6 @@ type ManualPreviewState = {
   durationMin: number;
 };
 
-type FutureGapWindow = {
-  startAt: Date;
-  endAt: Date;
-  durationMin: number;
-};
-
 type TodoSchedulingContext = {
   isSocialCall: boolean;
   avoidBeforeMin: number;
@@ -146,7 +155,8 @@ const resolveTodoSchedulingContext = (todo: SmartTodoItem): TodoSchedulingContex
   const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
   const isSocialCall = SOCIAL_CALL_INTENT_RE.test(text) && PERSONAL_RELATION_RE.test(text);
 
-  const deadlineMs = todo.deadlineAt ? new Date(todo.deadlineAt).getTime() : Number.NaN;
+  const deadlineAt = getTodoDeadlineAt(todo);
+  const deadlineMs = deadlineAt ? new Date(deadlineAt).getTime() : Number.NaN;
   const hasDeadline = Number.isFinite(deadlineMs);
   const hoursToDeadline = hasDeadline ? (deadlineMs - Date.now()) / 3600000 : null;
 
@@ -258,6 +268,77 @@ const parseHourMinute = (value: string | undefined, fallbackHour: number): numbe
 
 const minuteOfDay = (date: Date): number => date.getHours() * 60 + date.getMinutes();
 
+type NowIndicatorProps = {
+  minStartMin: number;
+  maxEndMin: number;
+  pxPerMinute: number;
+  calendarMinimized: boolean;
+  timeZone: string;
+  styles: ReturnType<typeof createStyles>;
+};
+
+/**
+ * Renders the moving "current time" line + label for today's column.
+ *
+ * It owns its own per-minute timer so that only this small component
+ * re-renders on the minute tick, instead of forcing the whole calendar
+ * screen to re-render (which previously caused a visible flicker and made
+ * the timeline jump back to "now").
+ */
+const NowIndicator: React.FC<NowIndicatorProps> = React.memo(
+  ({ minStartMin, maxEndMin, pxPerMinute, calendarMinimized, timeZone, styles }) => {
+    const [nowMinute, setNowMinute] = useState(() => minuteOfDay(new Date()));
+    const [labelWidth, setLabelWidth] = useState(44);
+
+    useEffect(() => {
+      const update = () => setNowMinute(minuteOfDay(new Date()));
+      update();
+      // Align the tick to the start of each minute so the line advances
+      // exactly on the minute rather than drifting.
+      const now = new Date();
+      const msUntilNextMinute = 60000 - (now.getSeconds() * 1000 + now.getMilliseconds());
+      let interval: ReturnType<typeof setInterval> | null = null;
+      const timeout = setTimeout(() => {
+        update();
+        interval = setInterval(update, 60000);
+      }, msUntilNextMinute);
+      return () => {
+        clearTimeout(timeout);
+        if (interval) clearInterval(interval);
+      };
+    }, []);
+
+    const clamped = Math.max(minStartMin, Math.min(maxEndMin, nowMinute));
+    const top = TIMELINE_VERTICAL_INSET + (clamped - minStartMin) * pxPerMinute;
+
+    return (
+      <>
+        {!calendarMinimized && (
+          <View
+            pointerEvents="none"
+            style={[styles.currentTimeLabel, { top }]}
+            onLayout={(event) => {
+              const measuredWidth = Math.ceil(event.nativeEvent.layout.width);
+              if (measuredWidth > 0 && measuredWidth !== labelWidth) {
+                setLabelWidth(measuredWidth);
+              }
+            }}
+          >
+            <Text style={styles.currentTimeLabelText}>{formatMinuteLabel(nowMinute, timeZone)}</Text>
+          </View>
+        )}
+        <View
+          pointerEvents="none"
+          style={[
+            styles.currentTimeBar,
+            { left: 8 + (calendarMinimized ? 0 : labelWidth), top },
+          ]}
+        />
+      </>
+    );
+  },
+);
+
 const isSameDay = (a: Date, b: Date): boolean => (
   a.getFullYear() === b.getFullYear()
   && a.getMonth() === b.getMonth()
@@ -322,7 +403,10 @@ const estimateEventMinHeight = (title: string, laneCount: number): number => {
   const laneWidth = (segmentTrackWidth - TIMELINE_LANE_GAP * (safeLaneCount - 1)) / safeLaneCount;
   const textWidth = Math.max(36, laneWidth - 16);
   const charsPerLine = Math.max(8, Math.floor(textWidth / 6.6));
-  const estimatedTitleLines = Math.max(1, Math.ceil((title || '').trim().length / charsPerLine));
+  const estimatedTitleLines = Math.min(
+    MAX_EVENT_TITLE_LINES,
+    Math.max(1, Math.ceil((title || '').trim().length / charsPerLine)),
+  );
   return EVENT_VERTICAL_PADDING * 2 + estimatedTitleLines * EVENT_TITLE_LINE_HEIGHT + EVENT_TIME_LINE_HEIGHT + 4;
 };
 
@@ -409,49 +493,10 @@ const buildTimelineSegments = (column: DayColumn): DaySegment[] => {
 };
 
 const computeTodoDurationMin = (todo: SmartTodoItem, availableDurationMin: number): number => {
-  const desired = SMART_TODO_DEFAULT_DURATION_MIN;
+  const fit = evaluateTodoWindowFit(todo, availableDurationMin);
+  if (fit.fits) return fit.durationMin;
   const hardMax = Math.max(15, availableDurationMin);
-  return Math.max(15, Math.min(desired, hardMax));
-};
-
-const normalizeTodoDurationMin = (value: number, fallback = SMART_TODO_DEFAULT_DURATION_MIN): number => {
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(15, Math.min(240, Math.round(value / 5) * 5));
-};
-
-const clampTodoDurationToSlot = (durationMin: number, availableDurationMin: number): number => {
-  const normalized = normalizeTodoDurationMin(durationMin);
-  return Math.max(15, Math.min(normalized, Math.max(15, availableDurationMin)));
-};
-
-const extractExplicitTodoDurationMin = (todo: SmartTodoItem): number | null => {
-  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
-  if (!text.trim()) return null;
-
-  const hourMinuteMatch = /(\d+(?:\.\d+)?)\s*(?:h|hr|hrs|hour|hours)\s*(\d{1,2})?\s*(?:m|min|mins|minute|minutes)?/.exec(text);
-  if (hourMinuteMatch) {
-    const hours = Number(hourMinuteMatch[1]);
-    const mins = Number(hourMinuteMatch[2] ?? 0);
-    if (Number.isFinite(hours) && Number.isFinite(mins)) {
-      return normalizeTodoDurationMin(hours * 60 + mins);
-    }
-  }
-
-  const minuteMatch = /(\d{1,3})\s*(?:m|min|mins|minute|minutes)\b/.exec(text);
-  if (minuteMatch) {
-    const mins = Number(minuteMatch[1]);
-    if (Number.isFinite(mins)) return normalizeTodoDurationMin(mins);
-  }
-
-  return null;
-};
-
-const estimateTodoDurationMinFallback = (todo: SmartTodoItem): number => {
-  const text = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
-  if (/quick|brief|tiny|short|email|reply|call|confirm|book/.test(text)) return 20;
-  if (/deep|project|report|presentation|refactor|research|analy/.test(text)) return 90;
-  if (/clean|organize|study|prepare|write|review|exercise|workout/.test(text)) return 60;
-  return 40;
+  return Math.max(15, Math.min(SMART_TODO_DEFAULT_DURATION_MIN, hardMax));
 };
 
 const buildTodoDeckSuggestion = (todo: SmartTodoItem, startAt: Date, endAt: Date, tag: string): DeckSuggestion => ({
@@ -459,8 +504,8 @@ const buildTodoDeckSuggestion = (todo: SmartTodoItem, startAt: Date, endAt: Date
   type: 'AT_HOME',
   source: 'todo',
   title: todo.title,
-  hook: 'To-do',
-  cta: 'Complete this task',
+  hook: getTodoAtomizedProgress(todo).isAtomized ? 'Atomized to-do' : 'To-do',
+  cta: getTodoAtomizedProgress(todo).isAtomized ? 'Complete this chunk' : 'Complete this task',
   description: todo.notes?.trim() || 'Scheduled to-do task',
   durationMin: Math.max(15, Math.round((endAt.getTime() - startAt.getTime()) / 60000)),
   confidence: 0.88,
@@ -468,27 +513,205 @@ const buildTodoDeckSuggestion = (todo: SmartTodoItem, startAt: Date, endAt: Date
   meta: {
     planStartAt: startAt.toISOString(),
     planEndAt: endAt.toISOString(),
+    ...(getTodoAtomizedProgress(todo).isAtomized
+      ? {
+          todoAtomizedProgressMin: getTodoAtomizedProgress(todo).progressMin,
+          todoAtomizedTotalMin: getTodoAtomizedProgress(todo).totalMin ?? undefined,
+          todoAtomizedRemainingMin: getTodoAtomizedProgress(todo).remainingMin,
+        }
+      : {}),
   },
 });
 
+const buildWeekPlanDeckSuggestion = (item: WeekPlanItem): DeckSuggestion => ({
+  id: `weekplan_${item.id}`,
+  type: 'AT_HOME',
+  source: item.source === 'todo' ? 'todo' : item.source === 'habit' ? 'habit' : 'gemini',
+  title: item.title,
+  hook: item.category,
+  cta: 'Open',
+  description: item.reason,
+  durationMin: item.durationMin,
+  confidence: 0.9,
+  tags: ['smart_calendar', 'week_plan', item.source],
+  meta: {
+    planStartAt: item.startAt.toISOString(),
+    planEndAt: item.endAt.toISOString(),
+  },
+});
+
+type EditableEventBlockProps = {
+  title: string;
+  timeLabel: string;
+  top: number;
+  height: number;
+  leftPct: number;
+  widthPct: number;
+  backgroundColor: string;
+  zIndex: number;
+  editMode: boolean;
+  movable: boolean;
+  styles: any;
+  /** Parent-owned translate value; only applied while THIS block is being dragged. */
+  dragTranslateY: Animated.Value;
+  isBeingDragged: boolean;
+  hasOverlap: boolean;
+  onPress: () => void;
+  onLongPress: () => void;
+  onDragGesture: (translationY: number, translationX: number, absoluteX: number, absoluteY: number) => void;
+  onDragStateChange: (state: number, oldState: number, translationY: number, translationX: number, absoluteX: number, absoluteY: number) => void;
+  onDelete?: () => void;
+};
+
+/**
+ * Renders a single timeline event. In edit mode, movable (smart-scheduled)
+ * events can be dragged vertically to a new time via a gesture-handler pan;
+ * immovable external calendar events show a block sign and cannot be moved.
+ *
+ * Drag state (translate + auto-scroll compensation) is owned by the parent so
+ * the block stays glued to the finger even while the timeline auto-scrolls.
+ */
+const EditableEventBlock: React.FC<EditableEventBlockProps> = ({
+  title,
+  timeLabel,
+  top,
+  height,
+  leftPct,
+  widthPct,
+  backgroundColor,
+  zIndex,
+  editMode,
+  movable,
+  styles,
+  dragTranslateY,
+  isBeingDragged,
+  hasOverlap,
+  onPress,
+  onLongPress,
+  onDragGesture,
+  onDragStateChange,
+  onDelete,
+}) => {
+  const positionStyle = {
+    top,
+    height,
+    left: `${leftPct}%` as any,
+    width: `${widthPct}%` as any,
+    backgroundColor,
+    zIndex: isBeingDragged ? 999 : zIndex,
+  };
+
+  if (editMode && movable) {
+    return (
+      <PanGestureHandler
+        maxPointers={1}
+        activeOffsetY={[-6, 6]}
+        activeOffsetX={[-8, 8]}
+        onGestureEvent={(event) =>
+          onDragGesture(
+            event.nativeEvent.translationY,
+            event.nativeEvent.translationX,
+            event.nativeEvent.absoluteX,
+            event.nativeEvent.absoluteY,
+          )
+        }
+        onHandlerStateChange={(event) =>
+          onDragStateChange(
+            event.nativeEvent.state,
+            event.nativeEvent.oldState,
+            event.nativeEvent.translationY,
+            event.nativeEvent.translationX,
+            event.nativeEvent.absoluteX,
+            event.nativeEvent.absoluteY,
+          )
+        }
+      >
+        <Animated.View
+          style={[
+            styles.eventBlock,
+            styles.eventBlockEditing,
+            hasOverlap && styles.eventBlockOverlap,
+            positionStyle,
+            isBeingDragged && styles.eventBlockDragging,
+            { transform: [{ translateY: isBeingDragged ? dragTranslateY : 0 }] },
+          ]}
+        >
+          {hasOverlap && (
+            <View style={styles.overlapBadge}>
+              <Text style={styles.overlapBadgeText}>Overlap!</Text>
+            </View>
+          )}
+          {onDelete && (
+            <Pressable onPress={onDelete} hitSlop={8} style={styles.deleteEventBtn}>
+              <Text style={styles.deleteEventBtnText}>✕</Text>
+            </Pressable>
+          )}
+          <Pressable
+            onPress={onPress}
+            onLongPress={onLongPress}
+            delayLongPress={350}
+            style={[{ flex: 1 }, onDelete ? styles.eventBlockContentWithDelete : undefined]}
+          >
+            <Text style={styles.eventTitle} numberOfLines={MAX_EVENT_TITLE_LINES} ellipsizeMode="tail">{title}</Text>
+            <Text style={styles.eventTime}>{timeLabel}</Text>
+          </Pressable>
+          <View style={styles.dragHandleBadge}>
+            <Text style={styles.dragHandleText}>⇅</Text>
+          </View>
+        </Animated.View>
+      </PanGestureHandler>
+    );
+  }
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onLongPress={onLongPress}
+      delayLongPress={350}
+      style={[
+        styles.eventBlock,
+        hasOverlap && styles.eventBlockOverlap,
+        editMode && !movable && styles.eventBlockImmovable,
+        positionStyle,
+      ]}
+    >
+      {hasOverlap && (
+        <View style={styles.overlapBadge}>
+          <Text style={styles.overlapBadgeText}>Overlap!</Text>
+        </View>
+      )}
+      {editMode && !movable && (
+        <View style={styles.immovableBadge}>
+          <Text style={styles.immovableBadgeText}>🚫</Text>
+        </View>
+      )}
+      <Text style={styles.eventTitle} numberOfLines={MAX_EVENT_TITLE_LINES} ellipsizeMode="tail">{title}</Text>
+      <Text style={styles.eventTime}>{timeLabel}</Text>
+      {editMode && !movable && <Text style={styles.immovableHint}>Locked</Text>}
+    </Pressable>
+  );
+};
+
 const buildTodoCandidateSlots = (
   columns: DayColumn[],
+  todo: SmartTodoItem,
   now: Date,
+  timeZone: string | null | undefined,
   minDurationMin: number,
 ): TodoCandidateSlot[] => {
   const slots: TodoCandidateSlot[] = [];
   for (const column of columns) {
     for (const gap of column.gaps) {
-      const futureWindow = resolveFutureGapWindow(gap, now);
-      if (!futureWindow) continue;
-      if (futureWindow.durationMin < minDurationMin) continue;
+      if (gap.endAt.getTime() <= now.getTime()) continue;
+      if (gap.durationMin < minDurationMin) continue;
+      if (!isTodoEligibleForWindow(todo, gap.startAt, gap.endAt, timeZone)) continue;
       slots.push({
         id: gap.id,
         dayId: column.id,
         dayLabel: column.label,
-        startAt: futureWindow.startAt,
-        endAt: futureWindow.endAt,
-        durationMin: futureWindow.durationMin,
+        startAt: gap.startAt,
+        endAt: gap.endAt,
+        durationMin: gap.durationMin,
         beforeTitle: gap.before?.title,
         afterTitle: gap.after?.title,
       });
@@ -503,28 +726,26 @@ const snapMinutesToGrid = (value: number, step = 5): number => {
   return Math.round(value / step) * step;
 };
 
-const resolveFutureGapWindow = (gap: CalendarGap, now = new Date()): FutureGapWindow | null => {
-  const startMs = Math.max(gap.startAt.getTime(), now.getTime());
-  const endMs = gap.endAt.getTime();
-  if (endMs <= startMs) return null;
-
-  const startAt = new Date(startMs);
-  const endAt = new Date(endMs);
-  const durationMin = Math.max(1, Math.round((endMs - startMs) / 60000));
-  return { startAt, endAt, durationMin };
+const hasClearTodoDateTime = (value?: string | null): boolean => {
+  if (!value) return false;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return false;
+  // Date-only values are usually normalized to midnight. Treat those as
+  // non-explicit times to avoid accidental auto-scheduling.
+  return parsed.getHours() !== 0 || parsed.getMinutes() !== 0;
 };
 
 const computeManualStartInGap = (
-  gapWindow: FutureGapWindow,
+  gap: CalendarGap,
   pressLocationY: number,
   renderedGapHeight: number,
   todoDurationMin: number,
 ): Date => {
   const safeHeight = Math.max(1, renderedGapHeight);
   const ratio = Math.max(0, Math.min(1, pressLocationY / safeHeight));
-  const maxOffset = Math.max(0, gapWindow.durationMin - todoDurationMin);
+  const maxOffset = Math.max(0, gap.durationMin - todoDurationMin);
   const offsetMin = Math.max(0, Math.min(maxOffset, snapMinutesToGrid(ratio * maxOffset, 5)));
-  return new Date(gapWindow.startAt.getTime() + offsetMin * 60000);
+  return new Date(gap.startAt.getTime() + offsetMin * 60000);
 };
 
 const parseSmartSlotJson = (text: string): {
@@ -546,6 +767,10 @@ const parseSmartSlotJson = (text: string): {
   }
   return null;
 };
+
+const cloneScheduledActivities = (items: ScheduledActivity[]): ScheduledActivity[] => (
+  JSON.parse(JSON.stringify(items)) as ScheduledActivity[]
+);
 
 const formatScheduleActivityLines = (columns: DayColumn[]): string => {
   const lines: string[] = [];
@@ -569,7 +794,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
-  const { width: viewportWidth } = useWindowDimensions();
+  const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const { state, actions } = useAppState();
 
   const [columns, setColumns] = useState<DayColumn[]>([]);
@@ -584,6 +809,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const [canUndoSuggestion, setCanUndoSuggestion] = useState(false);
   const [deckExhausted, setDeckExhausted] = useState(false);
   const [todoModalOpen, setTodoModalOpen] = useState(false);
+  const [todoFormModalOpen, setTodoFormModalOpen] = useState(false);
   const [todoTitle, setTodoTitle] = useState('');
   const [todoDeadlineAt, setTodoDeadlineAt] = useState<Date | null>(null);
   const [todoHasExplicitTime, setTodoHasExplicitTime] = useState(false);
@@ -597,19 +823,48 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const [smartTodoSlotLoading, setSmartTodoSlotLoading] = useState(false);
   const [manualPreview, setManualPreview] = useState<ManualPreviewState | null>(null);
   const [selectedScheduledActivity, setSelectedScheduledActivity] = useState<ScheduledActivity | null>(null);
+  const [eventEditTitle, setEventEditTitle] = useState('');
+  const [eventEditDescription, setEventEditDescription] = useState('');
+  const [eventEditStartAt, setEventEditStartAt] = useState<Date | null>(null);
+  const [eventEditDatePickerVisible, setEventEditDatePickerVisible] = useState(false);
+  const [eventEditTimePickerVisible, setEventEditTimePickerVisible] = useState(false);
   const [calendarMinimized, setCalendarMinimized] = useState(false);
-  const [nowMinute, setNowMinute] = useState(minuteOfDay(new Date()));
-  const [currentTimeLabelWidth, setCurrentTimeLabelWidth] = useState(44);
+  const [editMode, setEditMode] = useState(false);
+  const [editHasChanges, setEditHasChanges] = useState(false);
+  const [planningWeek, setPlanningWeek] = useState(false);
+  const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
+  const [weekPlanLastUsedAt, setWeekPlanLastUsedAt] = useState<number | null>(null);
+  const [videoAd, setVideoAd] = useState<any>(null);
+  const videoAdResolveRef = useRef<(() => void) | null>(null);
   const [timelineTopOffsets, setTimelineTopOffsets] = useState<Record<string, number>>({});
+  const [calendarViewportHeight, setCalendarViewportHeight] = useState(0);
   const suggestionDeckRef = useRef<SwipeDeckHandle>(null);
   const manualScheduleInFlightRef = useRef(false);
   const previousSuggestionIndexRef = useRef(0);
   const columnsScrollRef = useRef<ScrollView | null>(null);
   const calendarVerticalScrollRef = useRef<ScrollView | null>(null);
   const dayColumnXRef = useRef<Record<string, number>>({});
+  const columnsContentWidthRef = useRef(0);
+  const columnsViewportWidthRef = useRef(0);
+  const columnsViewportLeftRef = useRef(0);
   const lastColumnsScrollXRef = useRef(0);
+  const snapInFlightRef = useRef(false);
   const autoScrolledRef = useRef(false);
   const lastAutoFocusedRankedSlotRef = useRef<string | null>(null);
+  // --- Drag-to-move (edit mode) auto-scroll plumbing ---
+  const verticalScrollYRef = useRef(0);
+  const verticalViewportRef = useRef({ top: 0, height: 0 });
+  const dragStartScrollYRef = useRef(0);
+  const autoScrollVectorRef = useRef({ vy: 0, hx: 0 });
+  const autoScrollIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const dragTranslateY = useRef(new Animated.Value(0)).current;
+  const dragBaseTranslationRef = useRef(0);
+  const dragActivityRef = useRef<ScheduledActivity | null>(null);
+  const editSnapshotRef = useRef<ScheduledActivity[] | null>(null);
+  const dragStartColumnIndexRef = useRef<number | null>(null);
+  const dragTargetColumnIndexRef = useRef<number | null>(null);
+  const hasLoadedCalendarRef = useRef(false);
+  const pendingViewportFocusRef = useRef<{ dayId: string; minute: number } | null>(null);
 
   useEffect(() => {
     const prevIndex = previousSuggestionIndexRef.current;
@@ -627,16 +882,103 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   }, [gapSuggestions, selectedGap]);
 
   const premiumEnabled = state.isPremium;
+  const isAdminUser = useMemo(() => isBusinessAdmin(state.userEmail), [state.userEmail]);
+  const hasSwipesRemaining = (state.swipeBank?.current ?? 0) > 0;
+  // Non-premium users see a short video ad while the week planner works.
+  const adsFreeUser = !premiumEnabled && isAdsAvailable;
+  const adKeywords = useMemo(
+    () => buildAdKeywords(state.prefs, state.location, 'all'),
+    [state.prefs, state.location],
+  );
+  // The "plan my whole week" button can be used once per 7 days (bool, no stacking).
+  const weekPlanAvailable = isAdminUser
+    || !weekPlanLastUsedAt
+    || (Date.now() - weekPlanLastUsedAt >= WEEK_PLAN_COOLDOWN_MS);
+
+  useEffect(() => {
+    let active = true;
+    AsyncStorage.getItem(WEEK_PLAN_LAST_USED_KEY)
+      .then((raw) => {
+        if (!active || !raw) return;
+        const ts = Number(raw);
+        if (Number.isFinite(ts)) setWeekPlanLastUsedAt(ts);
+      })
+      .catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  useEffect(() => {
+    if (adsFreeUser) preloadVideoAd(adKeywords);
+  }, [adsFreeUser, adKeywords]);
+
+  const closeVideoAd = () => {
+    setVideoAd(null);
+    videoAdResolveRef.current?.();
+    videoAdResolveRef.current = null;
+  };
+
   const timeZone = useMemo(() => Intl.DateTimeFormat().resolvedOptions().timeZone, []);
   const formatCalendarTime = (value: Date): string => formatTime(value, timeZone);
-  const activeTodos = useMemo(() => state.smartTodos.filter((todo) => !todo.done), [state.smartTodos]);
+  const activeTodos = useMemo(() => {
+    const now = Date.now();
+    const pending = state.smartTodos.filter((todo) => !todo.done);
+    // Surface overdue to-dos first (earliest deadline first), keeping the rest
+    // in their original order.
+    const overdue = pending.filter((todo) => isTodoOverdue(todo, now, timeZone));
+    const rest = pending.filter((todo) => !isTodoOverdue(todo, now, timeZone));
+    overdue.sort(
+      (a, b) => {
+        const aDeadlineAt = getTodoDeadlineAt(a);
+        const bDeadlineAt = getTodoDeadlineAt(b);
+        if (aDeadlineAt && bDeadlineAt) {
+          return new Date(aDeadlineAt).getTime() - new Date(bDeadlineAt).getTime();
+        }
+
+        const aDueDate = getTodoDueDate(a, timeZone);
+        const bDueDate = getTodoDueDate(b, timeZone);
+        if (aDueDate && bDueDate) return aDueDate.localeCompare(bDueDate);
+        if (aDeadlineAt || aDueDate) return -1;
+        if (bDeadlineAt || bDueDate) return 1;
+        return 0;
+      },
+    );
+    return [...overdue, ...rest];
+  }, [state.smartTodos, timeZone]);
   const doneTodos = useMemo(() => state.smartTodos.filter((todo) => todo.done), [state.smartTodos]);
   const schedulingActive = !!todoSchedulingMode && !!todoSchedulingTarget;
+  const scheduledActivityById = useMemo(
+    () => new Map(state.scheduledActivities.map((item) => [item.id, item] as const)),
+    [state.scheduledActivities],
+  );
 
   const laneLayoutByDay = useMemo(() => {
     const map: Record<string, Record<string, EventLaneMeta>> = {};
     for (const column of columns) {
       map[column.id] = resolveEventLanes(column);
+    }
+    return map;
+  }, [columns]);
+
+  const overlapBlockIdsByDay = useMemo(() => {
+    const map: Record<string, Set<string>> = {};
+    for (const column of columns) {
+      const overlaps = new Set<string>();
+      const timedBlocks = column.blocks.filter((block) => !block.allDay);
+      for (let i = 0; i < timedBlocks.length; i += 1) {
+        const a = timedBlocks[i];
+        const aStart = a.startAt.getTime();
+        const aEnd = a.endAt.getTime();
+        for (let j = i + 1; j < timedBlocks.length; j += 1) {
+          const b = timedBlocks[j];
+          const bStart = b.startAt.getTime();
+          const bEnd = b.endAt.getTime();
+          if (Math.max(aStart, bStart) < Math.min(aEnd, bEnd)) {
+            overlaps.add(a.id);
+            overlaps.add(b.id);
+          }
+        }
+      }
+      map[column.id] = overlaps;
     }
     return map;
   }, [columns]);
@@ -649,6 +991,46 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     ),
     [state.scheduledActivities],
   );
+
+  const eventTintAlphaByDay = useMemo(() => {
+    const map: Record<string, Record<string, number>> = {};
+
+    for (const column of columns) {
+      const tintByBlockId: Record<string, number> = {};
+      const timedBlocks = column.blocks
+        .filter((block) => !block.allDay)
+        .slice()
+        .sort((a, b) => {
+          const startDelta = a.startAt.getTime() - b.startAt.getTime();
+          if (startDelta !== 0) return startDelta;
+          const endDelta = a.endAt.getTime() - b.endAt.getTime();
+          if (endDelta !== 0) return endDelta;
+          return a.id.localeCompare(b.id);
+        });
+
+      let previousColorKey: 'smart' | 'external' | null = null;
+      let useAlternateTint = false;
+
+      for (const block of timedBlocks) {
+        const colorKey: 'smart' | 'external' = block.source === 'scheduled' && smartCalendarScheduledIds.has(block.id)
+          ? 'smart'
+          : 'external';
+
+        if (colorKey === previousColorKey) {
+          useAlternateTint = !useAlternateTint;
+        } else {
+          useAlternateTint = false;
+        }
+
+        tintByBlockId[block.id] = useAlternateTint ? EVENT_TINT_ALTERNATE_ALPHA : 1;
+        previousColorKey = colorKey;
+      }
+
+      map[column.id] = tintByBlockId;
+    }
+
+    return map;
+  }, [columns, smartCalendarScheduledIds]);
 
   const globalTimelineHeight = useMemo(() => {
     if (!columns.length) return Math.ceil(BASE_PX_PER_MINUTE * 480);
@@ -682,21 +1064,6 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     };
   }, [columns]);
 
-  const timelineHeight = useMemo(() => {
-    if (!calendarMinimized) return globalTimelineHeight;
-    const minutesInView = Math.max(60, globalTimelineRange.maxEndMin - globalTimelineRange.minStartMin);
-    const compactPxPerMinute = 0.26;
-    return Math.max(220, Math.ceil(minutesInView * compactPxPerMinute));
-  }, [calendarMinimized, globalTimelineHeight, globalTimelineRange.maxEndMin, globalTimelineRange.minStartMin]);
-
-  const pxPerMinute = useMemo(() => {
-    if (!columns.length) return timelineHeight / 60;
-    const globalRangeMin = Math.min(...columns.map((column) => column.timelineStartMin));
-    const globalRangeMax = Math.max(...columns.map((column) => column.timelineEndMin));
-    const globalRangeDuration = Math.max(60, globalRangeMax - globalRangeMin);
-    return timelineHeight / Math.max(1, globalRangeDuration);
-  }, [columns, timelineHeight]);
-
   const syncedAllDaySectionHeight = useMemo(() => {
     const maxAllDayCount = columns.length
       ? Math.max(0, ...columns.map((column) => column.allDayBlocks.length))
@@ -714,20 +1081,26 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     return offsets.length ? Math.max(...offsets) : 0;
   }, [timelineTopOffsets]);
 
+  const timelineHeight = useMemo(() => {
+    const expandedMaxHeight = viewportHeight > 0 ? viewportHeight * 2 : Number.POSITIVE_INFINITY;
+    const minimizedViewportHeight = Math.max(0, calendarViewportHeight - sharedTimelineTopOffset - TIMELINE_VERTICAL_INSET * 2);
+    const minimizedMaxHeight = minimizedViewportHeight > 0 ? minimizedViewportHeight * 0.75 : Number.POSITIVE_INFINITY;
+    if (!calendarMinimized) return Math.min(globalTimelineHeight, expandedMaxHeight);
+    return Math.min(globalTimelineHeight, minimizedMaxHeight);
+  }, [calendarMinimized, calendarViewportHeight, globalTimelineHeight, sharedTimelineTopOffset, viewportHeight]);
+
+  const pxPerMinute = useMemo(() => {
+    if (!columns.length) return timelineHeight / 60;
+    const globalRangeMin = Math.min(...columns.map((column) => column.timelineStartMin));
+    const globalRangeMax = Math.max(...columns.map((column) => column.timelineEndMin));
+    const globalRangeDuration = Math.max(60, globalRangeMax - globalRangeMin);
+    return timelineHeight / Math.max(1, globalRangeDuration);
+  }, [columns, timelineHeight]);
+
   const horizontalEdgePadding = useMemo(() => {
     return Math.max(theme.spacing.lg, (viewportWidth - DAY_COLUMN_WIDTH) / 2);
   }, [theme.spacing.lg, viewportWidth]);
 
-  useEffect(() => {
-    const updateNowMinute = () => setNowMinute(minuteOfDay(new Date()));
-    updateNowMinute();
-    const interval = setInterval(updateNowMinute, 60000);
-    return () => clearInterval(interval);
-  }, []);
-
-  useEffect(() => {
-    autoScrolledRef.current = false;
-  }, [columns]);
 
   useEffect(() => {
     setTimelineTopOffsets({});
@@ -754,17 +1127,21 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     if (Math.abs(targetOffsetX - offsetX) < 1) return;
 
     lastColumnsScrollXRef.current = targetOffsetX;
+    // Mark this scroll as programmatic so the resulting momentum-end event does
+    // not re-trigger snapping and leave the ScrollView stuck in a scrolling
+    // state (which blocks taps on child buttons).
+    snapInFlightRef.current = true;
     columnsScrollRef.current?.scrollTo({ x: targetOffsetX, y: 0, animated });
   };
 
-  const focusRankedTodoSlot = (slot: RankedTodoSlot, animated: boolean): boolean => {
+  const focusRankedTodoSlot = (slot: RankedTodoSlot, animated: boolean) => {
     const targetColumn = columns.find((column) => column.id === slot.slot.dayId);
-    if (!targetColumn) return false;
+    if (!targetColumn) return;
 
     const colX = dayColumnXRef.current[targetColumn.id];
-    if (!Number.isFinite(colX)) return false;
-
-    columnsScrollRef.current?.scrollTo({ x: Math.max(0, colX - 10), y: 0, animated });
+    if (Number.isFinite(colX)) {
+      columnsScrollRef.current?.scrollTo({ x: Math.max(0, colX - 10), y: 0, animated });
+    }
 
     const targetMinute = Math.max(
       globalTimelineRange.minStartMin,
@@ -773,7 +1150,28 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const top = TIMELINE_VERTICAL_INSET + (targetMinute - globalTimelineRange.minStartMin) * pxPerMinute;
     const offsetY = Math.max(0, top - DAY_TIMELINE_VIEWPORT_HEIGHT * 0.28);
     calendarVerticalScrollRef.current?.scrollTo({ y: offsetY, animated });
-    return true;
+  };
+
+  const focusCalendarViewport = (dayId: string, minute: number, animated = false) => {
+    const targetColumn = columns.find((column) => column.id === dayId);
+    if (!targetColumn) return;
+
+    const colX = dayColumnXRef.current[targetColumn.id];
+    const viewport = columnsViewportWidthRef.current > 0 ? columnsViewportWidthRef.current : viewportWidth;
+    if (Number.isFinite(colX)) {
+      const targetOffsetX = Math.max(0, colX + DAY_COLUMN_WIDTH / 2 - viewport / 2);
+      columnsScrollRef.current?.scrollTo({ x: targetOffsetX, y: 0, animated });
+      lastColumnsScrollXRef.current = targetOffsetX;
+    }
+
+    const clampedMinute = Math.max(
+      globalTimelineRange.minStartMin,
+      Math.min(globalTimelineRange.maxEndMin, minute),
+    );
+    const top = TIMELINE_VERTICAL_INSET + (clampedMinute - globalTimelineRange.minStartMin) * pxPerMinute;
+    const targetOffsetY = Math.max(0, top - DAY_TIMELINE_VIEWPORT_HEIGHT * 0.32);
+    calendarVerticalScrollRef.current?.scrollTo({ y: targetOffsetY, animated });
+    verticalScrollYRef.current = targetOffsetY;
   };
 
   useEffect(() => {
@@ -788,13 +1186,18 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     if (!todayColumn) return;
     if (autoScrolledRef.current) return;
 
-    const clampedNowMinute = Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinute));
+    // Compute "now" locally at run-time. This effect intentionally does NOT
+    // depend on a per-minute state value, so it only scrolls to "now" once
+    // per data load (guarded by autoScrolledRef) instead of jumping back to
+    // the current time every minute.
+    const nowMinuteLocal = minuteOfDay(new Date());
+    const clampedNowMinute = Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinuteLocal));
     const nowTop = TIMELINE_VERTICAL_INSET + (clampedNowMinute - globalTimelineRange.minStartMin) * pxPerMinute;
     const targetOffset = Math.max(0, nowTop - DAY_TIMELINE_VIEWPORT_HEIGHT * 0.35);
 
     calendarVerticalScrollRef.current?.scrollTo({ y: targetOffset, animated: false });
     autoScrolledRef.current = true;
-  }, [calendarMinimized, columns, loading, nowMinute, pxPerMinute, globalTimelineRange.maxEndMin, globalTimelineRange.minStartMin]);
+  }, [calendarMinimized, columns, loading, pxPerMinute, globalTimelineRange.maxEndMin, globalTimelineRange.minStartMin]);
 
   useEffect(() => {
     if (todoSchedulingMode !== 'smart') return;
@@ -805,30 +1208,35 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const focusId = `${best.slot.dayId}_${best.rank}_${best.suggestedStartAt.getTime()}`;
     if (lastAutoFocusedRankedSlotRef.current === focusId) return;
 
-    let cancelled = false;
-    let retryCount = 0;
-    const maxRetries = 6;
-    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    lastAutoFocusedRankedSlotRef.current = focusId;
+    const timer = setTimeout(() => {
+      focusRankedTodoSlot(best, true);
+    }, 80);
+    return () => clearTimeout(timer);
+  }, [columns, rankedTodoSlots, smartTodoSlotLoading, todoSchedulingMode, pxPerMinute]);
 
+  useEffect(() => {
+    if (loading) return;
+    const pending = pendingViewportFocusRef.current;
+    if (!pending) return;
+
+    let cancelled = false;
+    let attempts = 0;
     const tryFocus = () => {
       if (cancelled) return;
-      const focused = focusRankedTodoSlot(best, true);
-      if (focused) {
-        lastAutoFocusedRankedSlotRef.current = focusId;
+      attempts += 1;
+      const hasMeasuredX = Number.isFinite(dayColumnXRef.current[pending.dayId]);
+      if (hasMeasuredX || attempts >= 8) {
+        focusCalendarViewport(pending.dayId, pending.minute, false);
+        pendingViewportFocusRef.current = null;
         return;
       }
-      if (retryCount >= maxRetries) return;
-      retryCount += 1;
-      retryTimer = setTimeout(tryFocus, 120);
+      setTimeout(tryFocus, 30);
     };
 
-    const timer = setTimeout(tryFocus, 80);
-    return () => {
-      cancelled = true;
-      clearTimeout(timer);
-      if (retryTimer) clearTimeout(retryTimer);
-    };
-  }, [columns, rankedTodoSlots, smartTodoSlotLoading, todoSchedulingMode, pxPerMinute]);
+    setTimeout(tryFocus, 10);
+    return () => { cancelled = true; };
+  }, [columns, loading, pxPerMinute, globalTimelineRange.maxEndMin, globalTimelineRange.minStartMin, viewportWidth]);
 
   const showPremiumInfo = () => {
     Alert.alert(
@@ -883,7 +1291,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     let active = true;
 
     const load = async () => {
-      setLoading(true);
+      const shouldShowBlockingLoader = !hasLoadedCalendarRef.current;
+      if (shouldShowBlockingLoader) setLoading(true);
       try {
         const base = new Date();
         base.setHours(0, 0, 0, 0);
@@ -900,7 +1309,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           const dayEnd = new Date(day);
           dayEnd.setHours(23, 59, 59, 999);
 
-          const calendarEvents = await getUpcomingEvents(dayStart, dayEnd, state.enabledCalendars).catch(() => []);
+          const calendarEvents = await getUpcomingEvents(dayStart, dayEnd, state.disabledCalendars).catch(() => []);
           const scheduled = state.scheduledActivities
             .filter((item) => {
               const at = new Date(item.startAt);
@@ -975,7 +1384,13 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             label: day.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' }),
             allDayBlocks,
             blocks,
-            gaps: findCalendarGaps(day, blocks, { dayStartMin: wakeStartMin, dayEndMin: wakeEndMin }),
+            gaps: findCalendarGaps(day, blocks, {
+              dayStartMin: wakeStartMin,
+              dayEndMin: wakeEndMin,
+              // For today, a free slot that is already underway is suggested from
+              // "now" until its end instead of from its (passed) beginning.
+              minStartAt: isSameDay(day, new Date()) ? new Date() : undefined,
+            }),
             timelineStartMin,
             timelineEndMin,
           });
@@ -996,22 +1411,23 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               timelineEndMin: sharedTimelineEndMin,
             })),
           );
+          hasLoadedCalendarRef.current = true;
         }
       } finally {
-        if (active) setLoading(false);
+        if (active && !hasLoadedCalendarRef.current) {
+          hasLoadedCalendarRef.current = true;
+        }
+        if (active && shouldShowBlockingLoader) setLoading(false);
       }
     };
 
     load();
     return () => { active = false; };
-  }, [state.enabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, state.scheduledActivities]);
+  }, [state.disabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, state.scheduledActivities]);
 
   const toDeckEntries = (gap: CalendarGap, suggestions: SmartCalendarSuggestion[]): SmartSuggestionDeckEntry[] => {
-    const futureWindow = resolveFutureGapWindow(gap, new Date());
-    if (!futureWindow) return [];
-
     return suggestions.slice(0, 3).map((suggestion, idx) => {
-      const startAt = futureWindow.startAt;
+      const startAt = gap.startAt;
       const endAt = new Date(startAt.getTime() + suggestion.durationMin * 60000);
       const deck: DeckSuggestion = {
         id: `smart_gap_${gap.id}_${idx}_${suggestion.source}`,
@@ -1056,24 +1472,6 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       showPremiumInfo();
       return;
     }
-
-    const now = new Date();
-    const futureWindow = resolveFutureGapWindow(gap, now);
-    if (!futureWindow) {
-      setGapSuggestions([]);
-      setSuggestionIndex(0);
-      setDeckExhausted(false);
-      Alert.alert('Gap expired', 'This free slot is already in the past. Please choose an upcoming gap.');
-      return;
-    }
-
-    const gapForSuggestions: CalendarGap = {
-      ...gap,
-      startAt: futureWindow.startAt,
-      endAt: futureWindow.endAt,
-      durationMin: futureWindow.durationMin,
-    };
-
     const cacheKey = gapBatchCacheKey(gap, batchIndex);
     const cached = !forceRefresh ? gapSuggestionCache[cacheKey] : undefined;
     if (cached?.length) {
@@ -1085,13 +1483,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     setSuggestionsLoading(true);
     const aiSuggestionCount = aiCountForBatch(batchIndex);
-    buildGapSuggestions(gapForSuggestions, state.habits, state.smartTodos, {
+    buildGapSuggestions(gap, state.habits, state.smartTodos.filter((t) => !t.done && !t.linkedScheduledActivityId), {
       defaultLocation: {
         lat: state.location.lat ?? undefined,
         lng: state.location.lng ?? undefined,
       },
       dayStartMin: parseHourMinute(state.prefs.wakeStartTime, DAY_START_HOUR),
       dayEndMin: parseHourMinute(state.prefs.wakeEndTime, DAY_END_HOUR),
+      timeZone,
       generationSpeedFactor: premiumEnabled ? PREMIUM_GENERATION_SPEED_FACTOR : 1,
       aiTargetCount: aiSuggestionCount,
     })
@@ -1160,16 +1559,28 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         {
           text: 'Yes, done',
           onPress: () => {
+            const linkedActivity = pending.linkedScheduledActivityId
+              ? scheduledActivityById.get(pending.linkedScheduledActivityId)
+              : undefined;
+            const completion = applyTodoChunkCompletion(pending, linkedActivity?.durationMin);
             actions.updateSmartTodo({
-              ...pending,
-              done: true,
+              ...completion.todo,
               completionPromptedAt: new Date().toISOString(),
             });
+            if (completion.usedAtomizedProgress && completion.totalMin != null) {
+              const progressCopy = `${completion.progressMin}/${completion.totalMin} min`;
+              Alert.alert(
+                completion.becameDone ? 'To-do completed' : 'Chunk completed',
+                completion.becameDone
+                  ? `Great work. "${pending.title}" is now fully complete (${progressCopy}).`
+                  : `Progress saved for "${pending.title}": ${progressCopy}.`,
+              );
+            }
           },
         },
       ],
     );
-  }, [actions, state.smartTodos]);
+  }, [actions, scheduledActivityById, state.smartTodos]);
 
   const setDeadlinePreset = (offsetDays: number, hour: number, minute: number) => {
     const value = new Date();
@@ -1245,10 +1656,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const formatTodoDeadlineSummary = (value: Date | null): string => {
-    if (!value) return 'No deadline set';
+    if (!value) return 'No due date or deadline set';
     const datePart = value.toLocaleDateString();
-    if (!todoHasExplicitTime) return `Due ${datePart}`;
-    return `Due ${datePart} ${formatCalendarTime(value)}`;
+    if (!todoHasExplicitTime) return `Due date ${datePart}`;
+    return `Deadline ${datePart} ${formatCalendarTime(value)}`;
   };
 
   const addTodo = () => {
@@ -1262,7 +1673,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       id: `todo_${Date.now()}`,
       title,
       notes: undefined,
-      deadlineAt: todoDeadlineAt ? todoDeadlineAt.toISOString() : null,
+      atomizedTotalMin: null,
+      atomizedProgressMin: 0,
+      deadlineAt: todoDeadlineAt && todoHasExplicitTime ? todoDeadlineAt.toISOString() : null,
+      dueDate: todoDeadlineAt && !todoHasExplicitTime ? getLocalDateKey(todoDeadlineAt, timeZone) : null,
       hasFixedSchedule: !!todoDeadlineAt && todoHasExplicitTime,
       scheduledAt: null,
       scheduledEndAt: null,
@@ -1274,9 +1688,18 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     };
 
     actions.addSmartTodo(todo);
+    if (todo.hasFixedSchedule && todo.deadlineAt && hasClearTodoDateTime(todo.deadlineAt)) {
+      const fixedStart = new Date(todo.deadlineAt);
+      if (!Number.isNaN(fixedStart.getTime())) {
+        void scheduleTodoAt(todo, fixedStart, 'fixed', SMART_TODO_DEFAULT_DURATION_MIN);
+      }
+    }
     setTodoTitle('');
     setTodoDeadlineAt(null);
     setTodoHasExplicitTime(false);
+    setTodoDatePickerVisible(false);
+    setTodoTimePickerVisible(false);
+    setTodoFormModalOpen(false);
   };
 
   const importTodosViaPhoto = async () => {
@@ -1318,6 +1741,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       const existingByTitle = new Map(
         state.smartTodos.map((todo) => [normalizeTodoTitleKey(todo.title), todo] as const),
       );
+      const queuedAutoSchedules: SmartTodoItem[] = [];
       const seenInBatch = new Set<string>();
       let addedCount = 0;
       let mergedCount = 0;
@@ -1326,7 +1750,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       extracted.forEach((item, idx) => {
         const title = String(item.title ?? '').trim();
         const titleKey = normalizeTodoTitleKey(title);
-        const importedNotes = mergeTodoNotesWithDueText(item.notes, item.dueText, item.deadlineAt ?? null);
+        const importedNotes = mergeTodoNotesWithDueText(item.notes, item.dueText, item.deadlineAt ?? null, item.dueDate ?? null);
         if (!title || !titleKey) {
           skippedCount += 1;
           return;
@@ -1341,15 +1765,28 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         if (existing) {
           const mergedNotes = existing.notes || importedNotes || undefined;
           const mergedDeadline = existing.deadlineAt ?? item.deadlineAt ?? null;
-          const hasChange = mergedNotes !== existing.notes || mergedDeadline !== (existing.deadlineAt ?? null);
+          const mergedDueDate = existing.dueDate ?? item.dueDate ?? null;
+          const hasChange = mergedNotes !== existing.notes
+            || mergedDeadline !== (existing.deadlineAt ?? null)
+            || mergedDueDate !== (existing.dueDate ?? null);
 
           if (hasChange) {
-            actions.updateSmartTodo({
+            const updatedTodo: SmartTodoItem = {
               ...existing,
               notes: mergedNotes,
               deadlineAt: mergedDeadline,
+              dueDate: mergedDueDate,
               hasFixedSchedule: existing.hasFixedSchedule || !!mergedDeadline,
-            });
+            };
+            actions.updateSmartTodo(updatedTodo);
+            if (
+              updatedTodo.hasFixedSchedule
+              && updatedTodo.deadlineAt
+              && hasClearTodoDateTime(updatedTodo.deadlineAt)
+              && !updatedTodo.linkedScheduledActivityId
+            ) {
+              queuedAutoSchedules.push(updatedTodo);
+            }
             mergedCount += 1;
           } else {
             skippedCount += 1;
@@ -1361,7 +1798,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           id: `todo_photo_${now}_${idx}`,
           title,
           notes: importedNotes,
+          atomizedTotalMin: null,
+          atomizedProgressMin: 0,
           deadlineAt: item.deadlineAt ?? null,
+          dueDate: item.dueDate ?? null,
           hasFixedSchedule: !!item.deadlineAt,
           scheduledAt: null,
           scheduledEndAt: null,
@@ -1372,9 +1812,19 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           createdAt: new Date().toISOString(),
         };
         actions.addSmartTodo(todo);
+        if (todo.hasFixedSchedule && todo.deadlineAt && hasClearTodoDateTime(todo.deadlineAt)) {
+          queuedAutoSchedules.push(todo);
+        }
         existingByTitle.set(titleKey, todo);
         addedCount += 1;
       });
+
+      for (const fixedTodo of queuedAutoSchedules) {
+        const fixedStart = fixedTodo.deadlineAt ? new Date(fixedTodo.deadlineAt) : null;
+        if (!fixedStart || Number.isNaN(fixedStart.getTime())) continue;
+        // Schedule fixed-time todos immediately; overlaps are allowed and shown in calendar UI.
+        await scheduleTodoAt(fixedTodo, fixedStart, 'fixed', SMART_TODO_DEFAULT_DURATION_MIN);
+      }
 
       if (!addedCount && !mergedCount) {
         Alert.alert('No new tasks', 'All detected tasks already exist in your to-do list.');
@@ -1410,14 +1860,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     renderedGapHeight: number,
     todoDurationMin: number,
   ) => {
-    const futureWindow = resolveFutureGapWindow(gap, new Date());
-    if (!futureWindow) {
-      setManualPreview(null);
-      return;
-    }
-    const safeDurationMin = Math.max(15, Math.min(todoDurationMin, futureWindow.durationMin));
-    const pickedStartAt = computeManualStartInGap(futureWindow, pressLocationY, renderedGapHeight, safeDurationMin);
-    const pickedEndAt = new Date(pickedStartAt.getTime() + safeDurationMin * 60000);
+    const pickedStartAt = computeManualStartInGap(gap, pressLocationY, renderedGapHeight, todoDurationMin);
+    const pickedEndAt = new Date(pickedStartAt.getTime() + todoDurationMin * 60000);
     const label = `${formatCalendarTime(pickedStartAt)} - ${formatCalendarTime(pickedEndAt)}`;
     const safeHeight = Math.max(1, renderedGapHeight);
     const topOffset = Math.max(4, Math.min(safeHeight - 28, pressLocationY - 14));
@@ -1426,7 +1870,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       label,
       topOffset,
       startAt: pickedStartAt,
-      durationMin: safeDurationMin,
+      durationMin: todoDurationMin,
     });
   };
 
@@ -1453,6 +1897,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     actions.updateSmartTodo({
       ...todo,
       done: false,
+      ...(() => {
+        const progress = getTodoAtomizedProgress(todo);
+        if (!progress.isAtomized || progress.totalMin == null) return {};
+        return {
+          atomizedTotalMin: progress.totalMin,
+          atomizedProgressMin: progress.progressMin,
+        };
+      })(),
       scheduledAt: startAt.toISOString(),
       scheduledEndAt: endAt.toISOString(),
       scheduledMode,
@@ -1469,6 +1921,20 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   ) => {
     const durationMin = computeTodoDurationMin(todo, availableDurationMin ?? SMART_TODO_DEFAULT_DURATION_MIN);
     const endAt = new Date(startAt.getTime() + durationMin * 60000);
+    if (!isTodoEligibleForWindow(todo, startAt, endAt, timeZone)) {
+      const deadlineAt = getTodoDeadlineAt(todo);
+      const dueDate = getTodoDueDate(todo, timeZone);
+      Alert.alert(
+        'Invalid scheduling time',
+        deadlineAt
+          ? `This to-do must finish before ${new Date(deadlineAt).toLocaleString()}.`
+          : dueDate
+            ? `This due-date to-do can only be scheduled on or after ${dueDate}.`
+            : 'This to-do cannot be scheduled in that slot.',
+      );
+      return;
+    }
+
     const deckSuggestion = buildTodoDeckSuggestion(todo, startAt, endAt, `todo_${sourceMode}`);
     const commitment: Commitment = {
       suggestionId: deckSuggestion.id,
@@ -1521,34 +1987,38 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
   const buildSmartRankedTodoSlots = async (todo: SmartTodoItem): Promise<RankedTodoSlot[]> => {
     const now = new Date();
-    const candidates = buildTodoCandidateSlots(columns, now, 20);
+    const candidates = buildTodoCandidateSlots(columns, todo, now, timeZone, 20);
     if (!candidates.length) return [];
     const schedulingContext = resolveTodoSchedulingContext(todo);
     const prioritizedCandidates = prioritizeTodoCandidateSlots(candidates, schedulingContext, now)
       .slice(0, SMART_TODO_MAX_CANDIDATE_SLOTS);
     if (!prioritizedCandidates.length) return [];
 
-    const explicitDurationMin = extractExplicitTodoDurationMin(todo);
-    const fallbackEstimatedDurationMin = explicitDurationMin ?? estimateTodoDurationMinFallback(todo);
+    const explicitDurationMin = parseTodoExplicitDurationMin(todo);
+    const estimatedDurationMin = explicitDurationMin ?? estimateTodoDurationMin(todo);
+    const requiredDurationMin = Math.max(15, estimatedDurationMin);
+    const candidateFits = prioritizedCandidates
+      .map((slot) => ({ slot, durationMin: requiredDurationMin }))
+      .filter((entry) => entry.slot.durationMin >= entry.durationMin)
+      .slice(0, SMART_TODO_MAX_CANDIDATE_SLOTS);
+    if (!candidateFits.length) return [];
 
     const plannedActivities = formatScheduleActivityLines(columns);
-    const slotLines = prioritizedCandidates.map((slot, idx) => {
-      const slotDuration = clampTodoDurationToSlot(fallbackEstimatedDurationMin, slot.durationMin);
-      const maxOffset = Math.max(0, slot.durationMin - slotDuration);
+    const slotLines = candidateFits.map(({ slot, durationMin }, idx) => {
+      const maxOffset = Math.max(0, slot.durationMin - durationMin);
       const before = slot.beforeTitle ? ` | before: ${slot.beforeTitle}` : '';
       const after = slot.afterTitle ? ` | after: ${slot.afterTitle}` : '';
-      return `${idx}. ${slot.dayLabel} ${formatCalendarTime(slot.startAt)}-${formatCalendarTime(slot.endAt)} (${slot.durationMin} min) | todoDuration=${slotDuration} | maxStartOffset=${maxOffset}${before}${after}`;
+      return `${idx}. ${slot.dayLabel} ${formatCalendarTime(slot.startAt)}-${formatCalendarTime(slot.endAt)} (${slot.durationMin} min) | todoDuration=${durationMin} | fitMode=full_task | maxStartOffset=${maxOffset}${before}${after}`;
     }).join('\n');
 
-    const fallback = prioritizedCandidates.slice(0, 3).map((slot, idx) => {
-      const duration = clampTodoDurationToSlot(fallbackEstimatedDurationMin, slot.durationMin);
-      const adjustedOffset = clampOffsetForTodoContext(slot, duration, 0, schedulingContext);
+    const fallback = candidateFits.slice(0, 3).map(({ slot, durationMin }, idx) => {
+      const adjustedOffset = clampOffsetForTodoContext(slot, durationMin, 0, schedulingContext);
       const suggestedStartAt = new Date(slot.startAt.getTime() + adjustedOffset * 60000);
-      const suggestedEndAt = new Date(suggestedStartAt.getTime() + duration * 60000);
+      const suggestedEndAt = new Date(suggestedStartAt.getTime() + durationMin * 60000);
       return {
       id: slot.id,
       rank: (idx + 1) as 1 | 2 | 3,
-      reason: idx === 0 ? 'Earliest practical slot.' : 'Fallback slot.',
+      reason: idx === 0 ? 'Earliest practical full-fit slot.' : 'Fallback full-fit slot.',
       slot,
       suggestedStartAt,
       suggestedEndAt,
@@ -1561,19 +2031,21 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       'You are an assistant that picks the best calendar slots for one todo.',
       'Return ONLY JSON with schema: {"estimatedDurationMin":number,"picks":[{"slotIndex":number,"startOffsetMin":number,"durationMin":number,"reason":string}]}',
       'Constraints:',
-      '- Pick exactly 3 different slotIndex values from the provided slot list.',
+      '- Pick up to 3 different slotIndex values from the provided slot list.',
       '- For each pick, choose startOffsetMin within [0, maxStartOffset] for that slot.',
-      '- If todo has explicit duration, use that duration for all picks.',
-      '- If no explicit duration is given, estimate realistic durationMin for this todo.',
-      '- durationMin must be in [15, 240], and cannot exceed slot duration.',
+      '- Respect todoDuration shown for each slot (full-fit durations only).',
+      '- durationMin in output must equal that todoDuration for chosen slot.',
       '- Prefer realistic, low-friction times around existing plans.',
       '- Respect urgency when deadline exists.',
+      '- Date-only due dates may only be placed on or after their due date day.',
       '- Keep reasons concise (max 12 words).',
       '',
       `Todo: ${todo.title}`,
       `Todo notes: ${todo.notes ?? 'none'}`,
-      `Todo deadline: ${todo.deadlineAt ? new Date(todo.deadlineAt).toISOString() : 'none'}`,
+      `Todo deadline: ${getTodoDeadlineAt(todo) ? new Date(getTodoDeadlineAt(todo) as string).toISOString() : 'none'}`,
+      `Todo due date: ${getTodoDueDate(todo, timeZone) ?? 'none'}`,
       `Todo explicit duration (minutes): ${explicitDurationMin ?? 'none'}`,
+      `Todo estimated total duration (minutes): ${estimatedDurationMin}`,
       '',
       'Planned activities by day:',
       plannedActivities,
@@ -1607,24 +2079,16 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         .map((pick) => ({
           slotIndex: Number(pick.slotIndex),
           startOffsetMin: Number(pick.startOffsetMin ?? 0),
-          durationMin: Number(pick.durationMin ?? Number.NaN),
           reason: String(pick.reason ?? '').trim() || 'Good fit with your existing schedule.',
         }))
-        .filter((pick) => Number.isInteger(pick.slotIndex) && pick.slotIndex >= 0 && pick.slotIndex < prioritizedCandidates.length);
+        .filter((pick) => Number.isInteger(pick.slotIndex) && pick.slotIndex >= 0 && pick.slotIndex < candidateFits.length);
 
       const unique = Array.from(new Map(picks.map((pick) => [pick.slotIndex, pick])).values()).slice(0, 3);
       if (!unique.length) return fallback;
 
-      const parsedEstimatedDurationMin = Number(parsed?.estimatedDurationMin ?? Number.NaN);
-      const baseEstimatedDurationMin = explicitDurationMin
-        ?? (Number.isFinite(parsedEstimatedDurationMin)
-          ? normalizeTodoDurationMin(parsedEstimatedDurationMin, fallbackEstimatedDurationMin)
-          : fallbackEstimatedDurationMin);
-
       return unique.map((pick, idx) => {
-        const slot = prioritizedCandidates[pick.slotIndex];
-        const candidateDuration = Number.isFinite(pick.durationMin) ? pick.durationMin : baseEstimatedDurationMin;
-        const duration = clampTodoDurationToSlot(candidateDuration, slot.durationMin);
+        const { slot, durationMin } = candidateFits[pick.slotIndex];
+        const duration = durationMin;
         const maxOffset = Math.max(0, slot.durationMin - duration);
         const normalizedOffset = Math.max(0, Math.min(maxOffset, snapMinutesToGrid(pick.startOffsetMin, 5)));
         const contextAdjustedOffset = clampOffsetForTodoContext(
@@ -1701,6 +2165,22 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     );
   };
 
+  const openTodoScheduledActivity = (activity: ScheduledActivity) => {
+    const startAt = new Date(activity.startAt);
+    const dayId = startAt.toISOString().slice(0, 10);
+    const startMinute = minuteOfDay(startAt);
+    pendingViewportFocusRef.current = {
+      dayId,
+      minute: startMinute,
+    };
+    setTodoModalOpen(false);
+    clearTodoSchedulingMode();
+    setTimeout(() => {
+      focusCalendarViewport(dayId, startMinute, true);
+      setSelectedScheduledActivity(activity);
+    }, 90);
+  };
+
   const scheduleSuggestion = async (gap: CalendarGap, entry: SmartSuggestionDeckEntry) => {
     if (!premiumEnabled) {
       showPremiumInfo();
@@ -1714,14 +2194,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
 
-    const futureWindow = resolveFutureGapWindow(gap, new Date());
-    if (!futureWindow) {
-      Alert.alert('Gap expired', 'This free slot is already in the past. Please choose an upcoming gap.');
-      setSelectedGap(null);
-      return;
-    }
-
-    const startAt = futureWindow.startAt;
+    const startAt = gap.startAt;
     const endAt = new Date(startAt.getTime() + suggestion.durationMin * 60000);
     let title = deckSuggestion.title;
 
@@ -1779,7 +2252,32 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       commitment,
       calendarEventId,
       calendarWriteFailed,
+      planReason: suggestion.reason,
+      planSource: suggestion.source,
     });
+
+    // A free slot can hold MORE than one activity. If usable time remains after
+    // this booking, keep the modal open on the leftover sub-slot so the user can
+    // stack another activity; otherwise close.
+    const remainingMin = Math.round((gap.endAt.getTime() - endAt.getTime()) / 60000);
+    if (remainingMin >= 20) {
+      const continuationGap: CalendarGap = {
+        ...gap,
+        id: `${gap.id}_cont_${endAt.getTime()}`,
+        startAt: endAt,
+        durationMin: remainingMin,
+        before: {
+          id: `just_scheduled_${endAt.getTime()}`,
+          title: deckSuggestion.title,
+          startAt,
+          endAt,
+          source: 'scheduled',
+        },
+      };
+      setSelectedGap(continuationGap);
+      Alert.alert('Added — keep filling this slot', `${remainingMin} min still free. Pick another activity or tap Close.`);
+      return;
+    }
 
     setSelectedGap(null);
     if (calendarWriteFailed && state.permissions.calendarGranted) {
@@ -1821,6 +2319,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       showPremiumInfo();
       return;
     }
+    if (!hasSwipesRemaining) {
+      Alert.alert('No swipes left', 'You have no swipes remaining. Complete activities or wait for recharge.');
+      return;
+    }
     if (!selectedGap) return;
     const key = gapCacheKey(selectedGap);
     const nextBatch = (gapBatchIndexByKey[key] ?? 0) + 1;
@@ -1837,6 +2339,127 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       commitment: selectedScheduledActivity.commitment,
       suggestion: selectedScheduledActivity.suggestion,
     });
+    setSelectedScheduledActivity(null);
+  };
+
+  const openScheduledActivityModal = (activity: ScheduledActivity) => {
+    setSelectedScheduledActivity(activity);
+    setEventEditTitle(activity.title);
+    setEventEditDescription(activity.description ?? '');
+    setEventEditStartAt(new Date(activity.startAt));
+    setEventEditDatePickerVisible(false);
+    setEventEditTimePickerVisible(false);
+  };
+
+  const handleEventEditDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
+    setEventEditDatePickerVisible(false);
+    if (event.type === 'dismissed' || !selectedDate || !eventEditStartAt) return;
+
+    const next = new Date(eventEditStartAt);
+    next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+    setEventEditStartAt(next);
+  };
+
+  const handleEventEditTimeChange = (event: DateTimePickerEvent, selectedTime?: Date) => {
+    setEventEditTimePickerVisible(false);
+    if (event.type === 'dismissed' || !selectedTime || !eventEditStartAt) return;
+
+    const next = new Date(eventEditStartAt);
+    next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
+    setEventEditStartAt(next);
+  };
+
+  const openEventEditDatePicker = () => {
+    if (!eventEditStartAt) return;
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: eventEditStartAt,
+        mode: 'date',
+        onChange: (event, selectedDate) => {
+          if (event.type === 'dismissed' || !selectedDate || !eventEditStartAt) return;
+          const next = new Date(eventEditStartAt);
+          next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
+          setEventEditStartAt(next);
+        },
+      });
+      return;
+    }
+    setEventEditDatePickerVisible(true);
+  };
+
+  const openEventEditTimePicker = () => {
+    if (!eventEditStartAt) return;
+    if (Platform.OS === 'android') {
+      DateTimePickerAndroid.open({
+        value: eventEditStartAt,
+        mode: 'time',
+        is24Hour: true,
+        onChange: (event, selectedTime) => {
+          if (event.type === 'dismissed' || !selectedTime || !eventEditStartAt) return;
+          const next = new Date(eventEditStartAt);
+          next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
+          setEventEditStartAt(next);
+        },
+      });
+      return;
+    }
+    setEventEditTimePickerVisible(true);
+  };
+
+  const saveScheduledActivityEdits = async () => {
+    if (!selectedScheduledActivity || !eventEditStartAt) return;
+
+    const title = eventEditTitle.trim() || selectedScheduledActivity.title;
+    const description = eventEditDescription.trim();
+    const durationMin = selectedScheduledActivity.durationMin
+      || Math.max(15, Math.round((new Date(selectedScheduledActivity.endAt).getTime() - new Date(selectedScheduledActivity.startAt).getTime()) / 60000));
+    const nextStart = new Date(eventEditStartAt);
+    nextStart.setSeconds(0, 0);
+    const nextEnd = new Date(nextStart.getTime() + durationMin * 60000);
+
+    let calendarEventId = selectedScheduledActivity.calendarEventId;
+    if (state.permissions.calendarGranted && calendarEventId) {
+      try {
+        await deletePlanEvent(calendarEventId);
+        calendarEventId = await createPlanEvent({
+          title,
+          startDate: nextStart,
+          endDate: nextEnd,
+          notes: description,
+        });
+      } catch (error) {
+        console.warn('[SmartCalendar] Failed to update calendar event during edit', error);
+      }
+    }
+
+    const updated: ScheduledActivity = {
+      ...selectedScheduledActivity,
+      title,
+      description,
+      startAt: nextStart.toISOString(),
+      endAt: nextEnd.toISOString(),
+      calendarEventId,
+      suggestion: {
+        ...selectedScheduledActivity.suggestion,
+        title,
+        description,
+        durationMin,
+      },
+      commitment: {
+        ...selectedScheduledActivity.commitment,
+        title,
+        startAt: nextStart.toISOString(),
+        endAt: nextEnd.toISOString(),
+        calendarEventId,
+      },
+    };
+
+    pendingViewportFocusRef.current = {
+      dayId: nextStart.toISOString().slice(0, 10),
+      minute: minuteOfDay(nextStart),
+    };
+    actions.updateScheduledActivity(updated.id, updated);
+    if (editMode) setEditHasChanges(true);
     setSelectedScheduledActivity(null);
   };
 
@@ -1857,27 +2480,598 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     setSelectedScheduledActivity(null);
   };
 
+  const confirmDeleteActivityById = (activity: ScheduledActivity) => {
+    Alert.alert('Delete activity?', `Remove "${activity.title}" from your schedule?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          const linkedEventId = activity.calendarEventId ?? activity.commitment?.calendarEventId;
+          if (linkedEventId) {
+            try {
+              await deletePlanEvent(linkedEventId);
+            } catch (error) {
+              console.warn('Failed to delete calendar event for activity', error);
+            }
+          }
+          if (editMode) setEditHasChanges(true);
+          actions.removeScheduledActivity(activity.id);
+        },
+      },
+    ]);
+  };
+
+  const rescheduleActivityTime = async (activity: ScheduledActivity, newStartAt: Date): Promise<void> => {
+    const durationMin = activity.durationMin
+      || Math.max(15, Math.round((new Date(activity.endAt).getTime() - new Date(activity.startAt).getTime()) / 60000));
+    const newEndAt = new Date(newStartAt.getTime() + durationMin * 60000);
+
+    let calendarEventId = activity.calendarEventId;
+    if (state.permissions.calendarGranted && calendarEventId) {
+      try {
+        await deletePlanEvent(calendarEventId);
+        calendarEventId = await createPlanEvent({
+          title: activity.title,
+          startDate: newStartAt,
+          endDate: newEndAt,
+          notes: activity.description,
+        });
+      } catch (error) {
+        console.warn('[SmartCalendar] Failed to move calendar event', error);
+      }
+    }
+
+    actions.updateScheduledActivity(activity.id, {
+      ...activity,
+      startAt: newStartAt.toISOString(),
+      endAt: newEndAt.toISOString(),
+      calendarEventId,
+      commitment: {
+        ...activity.commitment,
+        startAt: newStartAt.toISOString(),
+        endAt: newEndAt.toISOString(),
+        calendarEventId,
+      },
+    });
+
+    if (editMode) setEditHasChanges(true);
+  };
+
+  const swapActivities = async (a: ScheduledActivity, b: ScheduledActivity): Promise<void> => {
+    const aStart = new Date(a.startAt);
+    const bStart = new Date(b.startAt);
+    await rescheduleActivityTime(a, bStart);
+    await rescheduleActivityTime(b, aStart);
+  };
+
+  const DRAG_DAY_SWITCH_THRESHOLD_PX = 44;
+
+  const resolveAdjacentDayIdByDrag = (activity: ScheduledActivity, translationX: number): string | null => {
+    if (Math.abs(translationX) < DRAG_DAY_SWITCH_THRESHOLD_PX) return null;
+    const startAt = new Date(activity.startAt);
+    const sourceIndex = columns.findIndex((col) => isSameDay(col.date, startAt));
+    if (sourceIndex < 0) return null;
+
+    // Horizontal timeline behavior: dragging left targets the next day, dragging
+    // right targets the previous day.
+    const targetIndex = translationX < 0 ? sourceIndex + 1 : sourceIndex - 1;
+    if (targetIndex < 0 || targetIndex >= columns.length) return null;
+    return columns[targetIndex].id;
+  };
+
+  const resolveDragTargetColumnIndex = (translationX: number) => {
+    const startIndex = dragStartColumnIndexRef.current;
+    if (startIndex == null || startIndex < 0) return;
+
+    const resistancePx = 40;
+    if (Math.abs(translationX) < resistancePx) {
+      dragTargetColumnIndexRef.current = startIndex;
+      return;
+    }
+
+    const step = translationX < 0 ? 1 : -1;
+    const maxIndex = Math.max(0, columns.length - 1);
+    dragTargetColumnIndexRef.current = Math.max(0, Math.min(maxIndex, startIndex + step));
+  };
+
+  const resolveDropTargetDayId = (absoluteX: number): string | null => {
+    const viewportX = absoluteX - columnsViewportLeftRef.current;
+    if (!Number.isFinite(viewportX)) return null;
+    const contentX = lastColumnsScrollXRef.current + viewportX;
+
+    let best: { id: string; dist: number } | null = null;
+    for (const column of columns) {
+      const colX = dayColumnXRef.current[column.id];
+      if (!Number.isFinite(colX)) continue;
+      const centerX = colX + DAY_COLUMN_WIDTH / 2;
+      const dist = Math.abs(centerX - contentX);
+      if (!best || dist < best.dist) best = { id: column.id, dist };
+    }
+    return best?.id ?? null;
+  };
+
+  const resolveDropStartAt = (
+    activity: ScheduledActivity,
+    absoluteY: number,
+    targetColumn: DayColumn,
+  ): Date => {
+    const durationMin = activity.durationMin
+      || Math.max(15, Math.round((new Date(activity.endAt).getTime() - new Date(activity.startAt).getTime()) / 60000));
+
+    const viewportY = absoluteY - verticalViewportRef.current.top;
+    const contentY = verticalScrollYRef.current + viewportY;
+    const timelineTop = sharedTimelineTopOffset + TIMELINE_VERTICAL_INSET;
+    const minuteAtPointer = globalTimelineRange.minStartMin + ((contentY - timelineTop) / Math.max(0.001, pxPerMinute));
+
+    // Place block by its center at drop point for intuitive "drop where it is" behavior.
+    const centeredStartMin = minuteAtPointer - durationMin / 2;
+    const snappedStartMin = snapMinutesToGrid(centeredStartMin, 5);
+    const clampedStartMin = Math.max(
+      targetColumn.timelineStartMin,
+      Math.min(targetColumn.timelineEndMin - durationMin, snappedStartMin),
+    );
+
+    const startAt = new Date(targetColumn.date);
+    startAt.setHours(Math.floor(clampedStartMin / 60), clampedStartMin % 60, 0, 0);
+    return startAt;
+  };
+
+  const commitEventDrag = (
+    activity: ScheduledActivity,
+    deltaMinutes: number,
+    targetDayId?: string | null,
+    forcedStartAt?: Date,
+  ) => {
+    const snappedDelta = Math.round(deltaMinutes / 5) * 5;
+
+    const origStart = new Date(activity.startAt);
+    const durationMin = activity.durationMin
+      || Math.max(15, Math.round((new Date(activity.endAt).getTime() - origStart.getTime()) / 60000));
+
+    const sourceColumn = columns.find((col) => isSameDay(col.date, origStart));
+    const column = columns.find((col) => col.id === targetDayId) ?? sourceColumn;
+    if (!column) return;
+
+    const dayStartMin = column?.timelineStartMin ?? DAY_START_HOUR * 60;
+    const dayEndMin = column?.timelineEndMin ?? DAY_END_HOUR * 60;
+    let newStart: Date;
+    if (forcedStartAt) {
+      newStart = new Date(forcedStartAt);
+      const min = minuteOfDay(newStart);
+      const clamped = Math.max(dayStartMin, Math.min(dayEndMin - durationMin, min));
+      newStart.setHours(Math.floor(clamped / 60), clamped % 60, 0, 0);
+    } else {
+      const desiredStartMin = minuteOfDay(origStart) + snappedDelta;
+      const newStartMin = Math.max(dayStartMin, Math.min(dayEndMin - durationMin, desiredStartMin));
+      newStart = new Date(column.date);
+      newStart.setHours(Math.floor(newStartMin / 60), newStartMin % 60, 0, 0);
+    }
+    const newEnd = new Date(newStart.getTime() + durationMin * 60000);
+
+    const movedAcrossDay = !isSameDay(origStart, newStart);
+    if (snappedDelta === 0 && !movedAcrossDay) return;
+
+    const others = (column?.blocks ?? []).filter((block) => block.id !== activity.id);
+    const overlap = others.find((block) =>
+      Math.max(block.startAt.getTime(), newStart.getTime()) < Math.min(block.endAt.getTime(), newEnd.getTime()),
+    );
+
+    if (overlap) {
+      if (overlap.source === 'calendar') {
+        Alert.alert('Locked slot', `"${overlap.title}" comes from your external calendar and can't be moved or overlapped.`);
+        return;
+      }
+      const other = state.scheduledActivities.find((item) => item.id === overlap.id);
+      if (other) {
+        Alert.alert(
+          'Swap activities?',
+          `That slot already holds "${other.title}". Swap the two times?`,
+          [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Swap', onPress: () => { void swapActivities(activity, other); } },
+          ],
+        );
+        return;
+      }
+    }
+
+    pendingViewportFocusRef.current = {
+      dayId: column.id,
+      minute: minuteOfDay(newStart),
+    };
+    focusCalendarViewport(column.id, minuteOfDay(newStart), false);
+    void rescheduleActivityTime(activity, newStart);
+  };
+
+  // While an activity is being dragged in edit mode the calendar itself no longer
+  // scrolls from finger gestures; instead the dragged activity drives navigation:
+  // when it nears an edge we auto-scroll the timeline (vertically) or the day
+  // columns (horizontally) in that direction.
+  const stopDragAutoScroll = () => {
+    autoScrollVectorRef.current = { vy: 0, hx: 0 };
+    if (autoScrollIntervalRef.current) {
+      clearInterval(autoScrollIntervalRef.current);
+      autoScrollIntervalRef.current = null;
+    }
+  };
+
+  // Keeps the dragged block glued to the finger: its visual offset is the finger
+  // translation PLUS however far the timeline has auto-scrolled since the grab.
+  const applyDragTranslate = () => {
+    const scrollComp = verticalScrollYRef.current - dragStartScrollYRef.current;
+    dragTranslateY.setValue(dragBaseTranslationRef.current + scrollComp);
+  };
+
+  const ensureDragAutoScroll = () => {
+    if (autoScrollIntervalRef.current) return;
+    autoScrollIntervalRef.current = setInterval(() => {
+      const { vy, hx } = autoScrollVectorRef.current;
+      if (vy === 0 && hx === 0) {
+        stopDragAutoScroll();
+        return;
+      }
+      if (vy !== 0) {
+        const nextY = Math.max(0, verticalScrollYRef.current + vy);
+        if (nextY !== verticalScrollYRef.current) {
+          verticalScrollYRef.current = nextY;
+          calendarVerticalScrollRef.current?.scrollTo({ y: nextY, animated: false });
+        }
+      }
+      if (hx !== 0) {
+        const maxX = Math.max(0, columnsContentWidthRef.current - columnsViewportWidthRef.current);
+        const nextX = Math.max(0, Math.min(maxX, lastColumnsScrollXRef.current + hx));
+        if (nextX !== lastColumnsScrollXRef.current) {
+          lastColumnsScrollXRef.current = nextX;
+          columnsScrollRef.current?.scrollTo({ x: nextX, y: 0, animated: false });
+        }
+      }
+      applyDragTranslate();
+    }, 16);
+  };
+
+  // Edge auto-scroll while dragging: vertical timeline + horizontal day strip.
+  const handleDragEdge = (pageX: number, pageY: number, translationX: number) => {
+    const viewport = verticalViewportRef.current;
+    const vEdge = 90;
+    const hEdge = 54;
+    let vy = 0;
+    let hx = 0;
+    if (viewport.height > 0) {
+      if (pageY < viewport.top + vEdge) vy = -12;
+      else if (pageY > viewport.top + viewport.height - vEdge) vy = 12;
+    }
+    if (pageX <= hEdge && translationX > 34) hx = -10;
+    else if (pageX >= viewportWidth - hEdge && translationX < -34) hx = 10;
+
+    autoScrollVectorRef.current = { vy, hx };
+    if (vy !== 0 || hx !== 0) ensureDragAutoScroll();
+    else stopDragAutoScroll();
+  };
+
+  const handleDragGesture = (translationY: number, translationX: number, absX: number, absY: number) => {
+    dragBaseTranslationRef.current = translationY;
+    applyDragTranslate();
+    resolveDragTargetColumnIndex(translationX);
+    handleDragEdge(absX, absY, translationX);
+  };
+
+  const handleDragStateChange = (
+    activity: ScheduledActivity,
+    gestureState: number,
+    oldState: number,
+    translationY: number,
+    translationX: number,
+    absoluteX: number,
+    absoluteY: number,
+  ) => {
+    if (gestureState === State.ACTIVE) {
+      dragActivityRef.current = activity;
+      dragStartScrollYRef.current = verticalScrollYRef.current;
+      dragBaseTranslationRef.current = 0;
+      dragTranslateY.setValue(0);
+      const sourceIndex = columns.findIndex((col) => isSameDay(col.date, new Date(activity.startAt)));
+      dragStartColumnIndexRef.current = sourceIndex >= 0 ? sourceIndex : null;
+      dragTargetColumnIndexRef.current = sourceIndex >= 0 ? sourceIndex : null;
+      setDraggingBlockId(activity.id);
+      if (Platform.OS !== 'web') Haptics.selectionAsync().catch(() => undefined);
+      return;
+    }
+    // Gesture ended (END) or was cancelled/failed while it had been active.
+    if (oldState === State.ACTIVE) {
+      stopDragAutoScroll();
+      const scrollComp = verticalScrollYRef.current - dragStartScrollYRef.current;
+      const totalPx = translationY + scrollComp;
+      const deltaMinutes = pxPerMinute > 0 ? totalPx / pxPerMinute : 0;
+      const act = dragActivityRef.current;
+      dragActivityRef.current = null;
+      setDraggingBlockId(null);
+      // Snap the visual block back to origin; the (possibly) new position comes
+      // from re-deriving the timeline after commitEventDrag updates state.
+      Animated.timing(dragTranslateY, { toValue: 0, duration: 140, useNativeDriver: false }).start();
+      if (act) {
+        const targetIndex = dragTargetColumnIndexRef.current;
+        const fromLiveTarget = targetIndex != null && targetIndex >= 0 && targetIndex < columns.length
+          ? columns[targetIndex].id
+          : null;
+        const fromDrop = resolveDropTargetDayId(absoluteX);
+        const targetDayId = fromDrop ?? fromLiveTarget ?? resolveAdjacentDayIdByDrag(act, translationX);
+        const targetColumn = columns.find((col) => col.id === targetDayId)
+          ?? columns.find((col) => isSameDay(col.date, new Date(act.startAt)));
+        const dropStartAt = targetColumn ? resolveDropStartAt(act, absoluteY, targetColumn) : undefined;
+        commitEventDrag(act, deltaMinutes, targetDayId, dropStartAt);
+      }
+      dragStartColumnIndexRef.current = null;
+      dragTargetColumnIndexRef.current = null;
+    }
+  };
+
+  useEffect(() => () => stopDragAutoScroll(), []);
+
+  const enterEditMode = () => {
+    if (schedulingActive) clearTodoSchedulingMode();
+    setSelectedScheduledActivity(null);
+    setSelectedGap(null);
+    editSnapshotRef.current = cloneScheduledActivities(state.scheduledActivities);
+    setEditHasChanges(false);
+    setEditMode(true);
+    if (Platform.OS !== 'web') Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => undefined);
+  };
+
+  const closeEditSession = () => {
+    stopDragAutoScroll();
+    dragActivityRef.current = null;
+    setDraggingBlockId(null);
+    dragTranslateY.setValue(0);
+    setEditHasChanges(false);
+    editSnapshotRef.current = null;
+    setEditMode(false);
+  };
+
+  const saveEditModeChanges = () => {
+    closeEditSession();
+  };
+
+  const discardEditModeChanges = () => {
+    const snapshot = editSnapshotRef.current;
+    if (snapshot) {
+      const currentById = new Map(state.scheduledActivities.map((item) => [item.id, item]));
+      const snapshotById = new Map(snapshot.map((item) => [item.id, item]));
+
+      for (const item of state.scheduledActivities) {
+        if (!snapshotById.has(item.id)) {
+          actions.removeScheduledActivity(item.id);
+        }
+      }
+
+      for (const baseline of snapshot) {
+        if (currentById.has(baseline.id)) {
+          actions.updateScheduledActivity(baseline.id, baseline);
+        } else {
+          actions.addScheduledActivity(baseline);
+        }
+      }
+    }
+
+    closeEditSession();
+  };
+
+  const handleEditCancelPress = () => {
+    if (!editHasChanges) {
+      closeEditSession();
+      return;
+    }
+
+    Alert.alert(
+      'Discard edits?',
+      'You made changes in edit mode. Do you want to save instead?',
+      [
+        { text: 'Keep editing', style: 'cancel' },
+        { text: 'Save', onPress: saveEditModeChanges },
+        { text: 'Discard', style: 'destructive', onPress: discardEditModeChanges },
+      ],
+    );
+  };
+
+  const applyWeekPlanItem = async (item: WeekPlanItem): Promise<void> => {
+    const deckSuggestion = buildWeekPlanDeckSuggestion(item);
+    const eventTitle = item.source === 'todo' ? `To-do: ${item.title}` : item.title;
+
+    let calendarEventId: string | undefined;
+    let calendarWriteFailed = !state.permissions.calendarGranted;
+    if (state.permissions.calendarGranted) {
+      try {
+        calendarEventId = await createPlanEvent({
+          title: eventTitle,
+          startDate: item.startAt,
+          endDate: item.endAt,
+          notes: item.reason,
+        });
+        calendarWriteFailed = false;
+      } catch (error) {
+        console.warn('[SmartCalendar] Failed to create week-plan calendar event', error);
+      }
+    }
+
+    actions.addScheduledActivity({
+      id: `sched_weekplan_${item.id}_${Date.now()}`,
+      suggestionId: deckSuggestion.id,
+      title: item.title,
+      description: deckSuggestion.description,
+      durationMin: item.durationMin,
+      startAt: item.startAt.toISOString(),
+      endAt: item.endAt.toISOString(),
+      type: deckSuggestion.type,
+      tags: ['smart_calendar', 'week_plan', item.source],
+      suggestion: deckSuggestion,
+      commitment: {
+        suggestionId: deckSuggestion.id,
+        type: deckSuggestion.type,
+        title: item.title,
+        startAt: item.startAt.toISOString(),
+        endAt: item.endAt.toISOString(),
+        calendarEventId,
+        calendarWriteFailed,
+      },
+      calendarEventId,
+      calendarWriteFailed,
+      planReason: item.reason,
+      planSource: item.source,
+    });
+  };
+
+  // Runs the model, shows a video ad to non-premium users while it works, then
+  // applies the plan. Only consumes the weekly cooldown when items are placed.
+  const executeWeekPlan = async (days: WeekPlanDayInput[], context: WeekPlanContext): Promise<void> => {
+    setPlanningWeek(true);
+    // Kick the model off immediately so it works in the background while the ad plays.
+    const planPromise = planWeekWithGemini(days, context);
+
+    if (adsFreeUser) {
+      const ad = consumeVideoAd(adKeywords);
+      if (ad) {
+        await new Promise<void>((resolve) => {
+          videoAdResolveRef.current = resolve;
+          setVideoAd(ad);
+        });
+      } else {
+        // Nothing ready — warm one up for next time and continue without blocking.
+        preloadVideoAd(adKeywords);
+      }
+    }
+
+    try {
+      const { items, usedAi } = await planPromise;
+      if (!items.length) {
+        Alert.alert('Nothing to place', 'The planner could not find useful items for your open slots.');
+        return;
+      }
+      for (const item of items) {
+        // eslint-disable-next-line no-await-in-loop
+        await applyWeekPlanItem(item);
+      }
+      // Success — start the 7-day cooldown for non-admin users only.
+      if (!isAdminUser) {
+        const usedAt = Date.now();
+        setWeekPlanLastUsedAt(usedAt);
+        AsyncStorage.setItem(WEEK_PLAN_LAST_USED_KEY, String(usedAt)).catch(() => undefined);
+      }
+      Alert.alert(
+        'Week planned',
+        `${items.length} item${items.length === 1 ? '' : 's'} placed${usedAi ? ' by AI' : ''}. Tap any item to see why it's there, or long-press it to edit and shift things around.`,
+      );
+    } catch (error) {
+      console.warn('[SmartCalendar] Week planning failed', error);
+      Alert.alert('Planning failed', 'Something went wrong while planning your week. Please try again.');
+    } finally {
+      setPlanningWeek(false);
+    }
+  };
+
+  const runUltimatePlan = () => {
+    if (planningWeek) return;
+
+    if (!weekPlanAvailable) {
+      const daysLeft = weekPlanLastUsedAt
+        ? Math.max(1, Math.ceil((WEEK_PLAN_COOLDOWN_MS - (Date.now() - weekPlanLastUsedAt)) / (24 * 60 * 60 * 1000)))
+        : 1;
+      Alert.alert('Already planned', `You can plan your whole week again in ${daysLeft} day${daysLeft === 1 ? '' : 's'}.`);
+      return;
+    }
+
+    if (!columns.length) {
+      Alert.alert('Nothing to plan', 'Your week has no free time to fill yet.');
+      return;
+    }
+
+    const days: WeekPlanDayInput[] = columns.map((col, idx) => ({
+      dayIndex: idx,
+      date: col.date,
+      label: col.label,
+      gaps: col.gaps,
+      busy: col.blocks.map((block) => ({ title: block.title, startAt: block.startAt, endAt: block.endAt })),
+    }));
+    const context: WeekPlanContext = {
+      habits: state.habits,
+      todos: state.smartTodos,
+      challenges: [],
+      defaultLocation: { lat: state.location.lat ?? undefined, lng: state.location.lng ?? undefined },
+    };
+
+    const totalGaps = days.reduce((sum, day) => sum + day.gaps.length, 0);
+    if (!totalGaps) {
+      Alert.alert('No free gaps', 'There are no open slots in the next 7 days to plan into.');
+      return;
+    }
+
+    Alert.alert(
+      'Plan my whole week?',
+      adsFreeUser
+        ? `The planner fills your free gaps with to-dos, habits and smart picks — each with a reason you can tap to read. A short ad plays while it works.${isAdminUser ? ' Admin accounts can run this anytime.' : ' You can plan again in 7 days.'}`
+        : `The planner fills your free gaps with to-dos, habits and smart picks — each with a reason you can tap to read. It never moves anything locked.${isAdminUser ? ' Admin accounts can run this anytime.' : ' You can plan again in 7 days.'}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Plan week', onPress: () => { void executeWeekPlan(days, context); } },
+      ],
+    );
+  };
+
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + theme.spacing.sm }]}>
-        <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.backText}>Back</Text>
-        </Pressable>
+        <View style={styles.headerSideLeft}>
+          {editMode ? (
+            editHasChanges ? (
+              <Pressable onPress={saveEditModeChanges} style={styles.editSaveBtn} hitSlop={8}>
+                <Text style={styles.editSaveText}>Save</Text>
+              </Pressable>
+            ) : (
+              <View style={styles.editSavePlaceholder} />
+            )
+          ) : (
+            <Pressable onPress={() => navigation.goBack()} hitSlop={8}>
+              <Text style={styles.backText}>Back</Text>
+            </Pressable>
+          )}
+        </View>
+
         <View style={styles.planAheadTitleContainer}>
           <Text style={styles.planAheadTitle}>PLAN AHEAD</Text>
         </View>
-        <Pressable
-          onPress={() => {
-            if (schedulingActive) {
-              clearTodoSchedulingMode();
-              return;
-            }
-            setTodoModalOpen(true);
-          }}
-        >
-          <Text style={styles.todoButton}>{schedulingActive ? 'Cancel' : 'To-do'}</Text>
-        </Pressable>
+
+        <View style={styles.headerSideRight}>
+          {editMode ? (
+            <Pressable onPress={handleEditCancelPress} style={styles.editCancelBtn} hitSlop={8}>
+              <Text style={styles.editCancelText}>Cancel</Text>
+            </Pressable>
+          ) : (
+            <>
+              <Pressable onPress={enterEditMode} hitSlop={8} accessibilityLabel="Edit schedule">
+                <Text style={styles.editPencilIcon}>✏️</Text>
+              </Pressable>
+              <Pressable
+                onPress={() => {
+                  if (schedulingActive) {
+                    clearTodoSchedulingMode();
+                    return;
+                  }
+                  setTodoModalOpen(true);
+                }}
+              >
+                <Text style={styles.todoButton}>{schedulingActive ? 'Cancel' : 'To-do'}</Text>
+              </Pressable>
+            </>
+          )}
+        </View>
       </View>
+
+      {editMode && (
+        <View style={styles.editHintBar}>
+          <Text style={styles.editHintText}>
+            Edit mode — drag up/down to reschedule. Push into the left/right edge with a little resistance to move across days. 🚫 items are locked. Tap Cancel to finish.
+          </Text>
+        </View>
+      )}
 
       {schedulingActive && (
         <View style={styles.todoScheduleHintWrap}>
@@ -1900,11 +3094,29 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           ref={calendarVerticalScrollRef}
           style={styles.calendarVerticalScroll}
           showsVerticalScrollIndicator={false}
+          scrollEnabled={!editMode || draggingBlockId === null}
+          scrollEventThrottle={16}
+          onScroll={(event) => {
+            verticalScrollYRef.current = event.nativeEvent.contentOffset.y;
+          }}
+          onLayout={(event) => {
+            const { y, height } = event.nativeEvent.layout;
+            verticalViewportRef.current = { top: y, height };
+            setCalendarViewportHeight((prev) => (prev === height ? prev : height));
+          }}
         >
           <ScrollView
             ref={columnsScrollRef}
             horizontal
+            scrollEnabled={!editMode || draggingBlockId === null}
             showsHorizontalScrollIndicator={false}
+            onLayout={(event) => {
+              columnsViewportLeftRef.current = event.nativeEvent.layout.x;
+              columnsViewportWidthRef.current = event.nativeEvent.layout.width;
+            }}
+            onContentSizeChange={(width) => {
+              columnsContentWidthRef.current = width;
+            }}
             contentContainerStyle={[
               styles.columnsWrap,
               { paddingLeft: horizontalEdgePadding, paddingRight: horizontalEdgePadding },
@@ -1912,6 +3124,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             scrollEventThrottle={16}
             onScroll={(event) => {
               lastColumnsScrollXRef.current = event.nativeEvent.contentOffset.x;
+            }}
+            onScrollBeginDrag={() => {
+              // A fresh user gesture always clears any stale programmatic-snap
+              // flag so genuine swipes are never accidentally skipped.
+              snapInFlightRef.current = false;
             }}
             onScrollEndDrag={(event) => {
               const { x } = event.nativeEvent.contentOffset;
@@ -1924,6 +3141,13 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             onMomentumScrollEnd={(event) => {
               const { x } = event.nativeEvent.contentOffset;
               lastColumnsScrollXRef.current = x;
+              // Skip snapping when this momentum-end was produced by our own
+              // programmatic snap scroll, otherwise the animated scrollTo keeps
+              // re-triggering itself and the ScrollView never settles.
+              if (snapInFlightRef.current) {
+                snapInFlightRef.current = false;
+                return;
+              }
               snapDaysToNearestCenter(x, true);
             }}
           >
@@ -1998,39 +3222,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                   }}
                 >
                   {isSameDay(column.date, new Date()) && (
-                    <>
-                      {!calendarMinimized && (
-                        <View
-                          pointerEvents="none"
-                          style={[
-                            styles.currentTimeLabel,
-                            {
-                              top: TIMELINE_VERTICAL_INSET
-                                + (Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinute)) - globalTimelineRange.minStartMin) * pxPerMinute,
-                            },
-                          ]}
-                          onLayout={(event) => {
-                            const measuredWidth = Math.ceil(event.nativeEvent.layout.width);
-                            if (measuredWidth > 0 && measuredWidth !== currentTimeLabelWidth) {
-                              setCurrentTimeLabelWidth(measuredWidth);
-                            }
-                          }}
-                        >
-                          <Text style={styles.currentTimeLabelText}>{formatMinuteLabel(nowMinute, timeZone)}</Text>
-                        </View>
-                      )}
-                      <View
-                        pointerEvents="none"
-                        style={[
-                          styles.currentTimeBar,
-                          {
-                            left: 8 + (calendarMinimized ? 0 : currentTimeLabelWidth),
-                            top: TIMELINE_VERTICAL_INSET
-                              + (Math.max(globalTimelineRange.minStartMin, Math.min(globalTimelineRange.maxEndMin, nowMinute)) - globalTimelineRange.minStartMin) * pxPerMinute,
-                          },
-                        ]}
-                      />
-                    </>
+                    <NowIndicator
+                      minStartMin={globalTimelineRange.minStartMin}
+                      maxEndMin={globalTimelineRange.maxEndMin}
+                      pxPerMinute={pxPerMinute}
+                      calendarMinimized={calendarMinimized}
+                      timeZone={timeZone}
+                      styles={styles}
+                    />
                   )}
 
                   {buildTimelineSegments(column).map((segment) => {
@@ -2048,7 +3247,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                         if (!canOpenPlan) return;
                         const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
                         if (!scheduled) return;
-                        setSelectedScheduledActivity(scheduled);
+                        openScheduledActivityModal(scheduled);
                       };
 
                       const laneCount = Math.max(1, laneMeta.laneCount);
@@ -2056,63 +3255,88 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                       const gapPct = laneCount > 1 ? (TIMELINE_LANE_GAP / segmentTrackWidth) * 100 : 0;
                       const laneWidthPct = (100 - insetPct * 2 - gapPct * (laneCount - 1)) / laneCount;
                       const leftPct = insetPct + laneMeta.laneIndex * (laneWidthPct + gapPct);
-                      const alpha = laneCount > 1 ? Math.max(0.4, 1 - laneMeta.laneIndex * 0.2) : 1;
                       const isSmartCalendarBlock = segment.block.source === 'scheduled'
                         && smartCalendarScheduledIds.has(segment.block.id);
+                      const baseAlpha = laneCount > 1 ? Math.max(0.4, 1 - laneMeta.laneIndex * 0.2) : 1;
+                      const tintAlpha = eventTintAlphaByDay[column.id]?.[segment.block.id] ?? 1;
+                      const alpha = Math.max(0.3, Math.min(1, baseAlpha * tintAlpha));
                       const overlapColor = isSmartCalendarBlock
                         ? `rgba(76,148,111,${alpha})`
                         : `rgba(37,99,235,${alpha})`;
+                      const hasOverlap = overlapBlockIdsByDay[column.id]?.has(segment.block.id) ?? false;
+                      const isMovable = segment.block.source === 'scheduled';
 
                       return (
-                        <Pressable
+                        <EditableEventBlock
                           key={segment.id}
+                          title={segment.block.title}
+                          timeLabel={`${formatCalendarTime(segment.startAt)} - ${formatCalendarTime(segment.endAt)}`}
+                          top={top}
+                          height={cellHeight}
+                          leftPct={leftPct}
+                          widthPct={laneWidthPct}
+                          backgroundColor={overlapColor}
+                          zIndex={20 + laneMeta.laneIndex}
+                          editMode={editMode}
+                          movable={isMovable}
+                          styles={styles}
+                          dragTranslateY={dragTranslateY}
+                          isBeingDragged={draggingBlockId === segment.block.id}
+                          hasOverlap={hasOverlap}
                           onPress={openPlan}
-                          style={[
-                            styles.eventBlock,
-                            canOpenPlan && styles.eventBlockPressable,
-                            {
-                              top,
-                              height: cellHeight,
-                              left: `${leftPct}%`,
-                              width: `${laneWidthPct}%`,
-                              backgroundColor: overlapColor,
-                              zIndex: 20 + laneMeta.laneIndex,
-                            },
-                          ]}
-                        >
-                          <Text style={styles.eventTitle}>{segment.block.title}</Text>
-                          <Text style={styles.eventTime}>{formatCalendarTime(segment.startAt)} - {formatCalendarTime(segment.endAt)}</Text>
-                        </Pressable>
+                          onLongPress={() => {
+                            if (!editMode) enterEditMode();
+                          }}
+                          onDragGesture={handleDragGesture}
+                          onDragStateChange={(gestureState, oldState, translationY, translationX, absoluteX, absoluteY) => {
+                            const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
+                            if (scheduled) handleDragStateChange(
+                              scheduled,
+                              gestureState,
+                              oldState,
+                              translationY,
+                              translationX,
+                              absoluteX,
+                              absoluteY,
+                            );
+                          }}
+                          onDelete={editMode && isMovable ? () => {
+                            const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
+                            if (scheduled) confirmDeleteActivityById(scheduled);
+                          } : undefined}
+                        />
                       );
                     }
 
                     if (segment.kind === 'gap' && segment.gap) {
                       const cellHeight = Math.max(durationMin * pxPerMinute, minSegmentHeight(segment));
-                      const manualTouchEnabled = todoSchedulingMode === 'manual' && !!todoSchedulingTarget;
                       return (
                         <Pressable
                           key={segment.id}
-                          onPressIn={manualTouchEnabled ? (event) => {
-                            if (!todoSchedulingTarget) return;
-                            const futureWindow = resolveFutureGapWindow(segment.gap!, new Date());
-                            if (!futureWindow) return;
-                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, futureWindow.durationMin);
+                          onPressIn={(event) => {
+                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
                             updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
-                          } : undefined}
-                          onTouchMove={manualTouchEnabled ? (event) => {
-                            if (!todoSchedulingTarget) return;
-                            const futureWindow = resolveFutureGapWindow(segment.gap!, new Date());
-                            if (!futureWindow) return;
-                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, futureWindow.durationMin);
+                          }}
+                          onTouchMove={(event) => {
+                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
                             updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
-                          } : undefined}
-                          onPress={manualTouchEnabled ? (event) => {
-                            if (!todoSchedulingTarget) return;
-                            const futureWindow = resolveFutureGapWindow(segment.gap!, new Date());
-                            if (!futureWindow) return;
-                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, futureWindow.durationMin);
-                            updateManualPreviewForGap(segment.gap!, event.nativeEvent.locationY, cellHeight, durationMinForTodo);
-                          } : undefined}
+                          }}
+                          onPressOut={() => {
+                            if (todoSchedulingMode === 'manual') setManualPreview(null);
+                          }}
+                          onPress={(event) => {
+                            if (todoSchedulingMode !== 'manual' || !todoSchedulingTarget) return;
+                            const durationMinForTodo = computeTodoDurationMin(todoSchedulingTarget, segment.gap!.durationMin);
+                            const pickedStartAt = computeManualStartInGap(
+                              segment.gap!,
+                              event.nativeEvent.locationY,
+                              cellHeight,
+                              durationMinForTodo,
+                            );
+                            confirmManualTodoSchedule(todoSchedulingTarget, pickedStartAt, durationMinForTodo);
+                          }}
                           style={[styles.gapBlock, { top, height: cellHeight, zIndex: 5 }]}
                         >
                           <View style={{ flex: 1 }}>
@@ -2154,10 +3378,6 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                               onPress={() => {
                                 if (!premiumEnabled) {
                                   showPremiumInfo();
-                                  return;
-                                }
-                                if (!resolveFutureGapWindow(segment.gap!, new Date())) {
-                                  Alert.alert('Gap expired', 'This free slot is already in the past. Please choose an upcoming gap.');
                                   return;
                                 }
                                 setSelectedGap(segment.gap!);
@@ -2249,7 +3469,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
       <Modal visible={!!selectedGap} transparent animationType="slide" onRequestClose={() => setSelectedGap(null)}>
         <View style={styles.modalBackdrop}>
-          <View style={styles.modalCard}>
+          <View style={[styles.modalCard, { marginBottom: insets.bottom + theme.spacing.lg }]}>
             <Text style={styles.modalTitle}>Gap Suggestions</Text>
             {suggestionsLoading ? (
               <View style={styles.centerWrap}>
@@ -2285,13 +3505,26 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                       ]}
                       hitSlop={8}
                     >
-                      <Text style={[styles.deckUndoText, (!canUndoSuggestion || suggestionsLoading) && styles.deckUndoTextDisabled]}>↶</Text>
+                      <Image
+                        source={require('../../assets/backarrow.png')}
+                        style={[
+                          styles.deckUndoIcon,
+                          (!canUndoSuggestion || suggestionsLoading) && styles.deckUndoIconDisabled,
+                        ]}
+                      />
                     </Pressable>
                     <Text style={styles.deckCounterText}>{Math.min(suggestionIndex + 1, gapSuggestions.length)} / {gapSuggestions.length}</Text>
                   </View>
                 </View>
 
-                {deckExhausted ? (
+                {!hasSwipesRemaining ? (
+                  <View style={styles.emptyDeckWrap}>
+                    <Text style={styles.emptyDeckTitle}>Out of swipes</Text>
+                    <Text style={styles.emptyDeckSubtitle}>
+                      You've used all your swipes. Complete activities or wait for them to recharge to browse more suggestions. Your to-dos can still be scheduled anytime.
+                    </Text>
+                  </View>
+                ) : deckExhausted ? (
                   <View style={styles.emptyDeckWrap}>
                     <Text style={styles.emptyDeckTitle}>Nothing clicked.</Text>
                     <Text style={styles.emptyDeckSubtitle}>Want a new set?</Text>
@@ -2311,7 +3544,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                           if (!selectedGap || !gapSuggestions[suggestionIndex]) return;
                           void scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex]);
                         }}
-                        disabled={false}
+                        disabled={!hasSwipesRemaining}
                         deckColors={SMART_CALENDAR_DECK_COLORS}
                       />
                     </View>
@@ -2351,17 +3584,94 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                 ? `${new Date(selectedScheduledActivity.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatCalendarTime(new Date(selectedScheduledActivity.startAt))} - ${formatCalendarTime(new Date(selectedScheduledActivity.endAt))}`
                 : ''}
             </Text>
-            {!!selectedScheduledActivity?.description && (
+            {!editMode && !!selectedScheduledActivity?.description && (
               <Text style={styles.suggestionReason}>{selectedScheduledActivity.description}</Text>
+            )}
+            {editMode && !!selectedScheduledActivity && (
+              <>
+                <TextInput
+                  value={eventEditTitle}
+                  onChangeText={setEventEditTitle}
+                  placeholder="Activity title"
+                  placeholderTextColor={theme.colors.textMuted}
+                  style={styles.input}
+                />
+                <TextInput
+                  value={eventEditDescription}
+                  onChangeText={setEventEditDescription}
+                  placeholder="Description / notes"
+                  placeholderTextColor={theme.colors.textMuted}
+                  style={[styles.input, { minHeight: 84, textAlignVertical: 'top' }]}
+                  multiline
+                />
+                <View style={styles.deadlinePickerRow}>
+                  <Pressable style={styles.deadlinePickerButton} onPress={openEventEditDatePicker}>
+                    <Text style={styles.deadlinePickerButtonText}>
+                      {eventEditStartAt ? eventEditStartAt.toLocaleDateString() : 'Pick day'}
+                    </Text>
+                  </Pressable>
+                  <Pressable style={styles.deadlinePickerButton} onPress={openEventEditTimePicker}>
+                    <Text style={styles.deadlinePickerButtonText}>
+                      {eventEditStartAt ? formatCalendarTime(eventEditStartAt) : 'Pick time'}
+                    </Text>
+                  </Pressable>
+                </View>
+                {eventEditDatePickerVisible && (
+                  <View style={styles.pickerContrastWrap}>
+                    <DateTimePicker
+                      value={eventEditStartAt ?? new Date()}
+                      mode="date"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={handleEventEditDateChange}
+                      {...(Platform.OS === 'ios'
+                        ? {
+                            textColor: theme.colors.text,
+                            accentColor: theme.colors.accent,
+                            themeVariant: theme.isDark ? 'dark' : 'light',
+                          }
+                        : {})}
+                    />
+                  </View>
+                )}
+                {eventEditTimePickerVisible && (
+                  <View style={styles.pickerContrastWrap}>
+                    <DateTimePicker
+                      value={eventEditStartAt ?? new Date()}
+                      mode="time"
+                      display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                      onChange={handleEventEditTimeChange}
+                      {...(Platform.OS === 'ios'
+                        ? {
+                            textColor: theme.colors.text,
+                            accentColor: theme.colors.accent,
+                            themeVariant: theme.isDark ? 'dark' : 'light',
+                          }
+                        : {})}
+                    />
+                  </View>
+                )}
+              </>
+            )}
+            {!!selectedScheduledActivity?.planReason && (
+              <View style={styles.planReasonCard}>
+                <Text style={styles.planReasonLabel}>Why this time?</Text>
+                <Text style={styles.planReasonText}>{selectedScheduledActivity.planReason}</Text>
+              </View>
             )}
 
             <View style={styles.modalActionRow}>
               <Pressable style={styles.modalTinyBtn} onPress={removeScheduledActivity}>
                 <Text style={styles.modalTinyBtnText}>Remove</Text>
               </Pressable>
-              <Pressable style={[styles.scheduleBtn, { flex: 1 }]} onPress={openScheduledActivity}>
-                <Text style={styles.scheduleBtnText}>Start now</Text>
-              </Pressable>
+              {editMode ? (
+                <Pressable style={[styles.scheduleBtn, { flex: 1 }]} onPress={() => { void saveScheduledActivityEdits(); }}>
+                  <Text style={styles.scheduleBtnText}>Save changes</Text>
+                </Pressable>
+              ) : (
+                <Pressable style={[styles.scheduleBtn, { flex: 1 }]} onPress={openScheduledActivity}>
+                  <Text style={styles.scheduleBtnText}>Start now</Text>
+                </Pressable>
+              )}
             </View>
 
             <Pressable style={styles.closeBtn} onPress={() => setSelectedScheduledActivity(null)}>
@@ -2375,6 +3685,184 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.modalBackdrop}>
           <View style={styles.todoModalCard}>
             <Text style={styles.modalTitle}>To-do List</Text>
+            <View style={styles.todoListActionRow}>
+              <Pressable
+                style={styles.addTodoBtn}
+                hitSlop={8}
+                onPress={() => {
+                  setTodoTitle('');
+                  setTodoDeadlineAt(null);
+                  setTodoHasExplicitTime(false);
+                  setTodoDatePickerVisible(false);
+                  setTodoTimePickerVisible(false);
+                  setTodoModalOpen(false);
+                  setTimeout(() => setTodoFormModalOpen(true), 0);
+                }}
+              >
+                <Text style={styles.addTodoBtnText}>Add to-do</Text>
+              </Pressable>
+
+              <Pressable
+                style={[
+                  styles.photoImportBtn,
+                  styles.photoImportBtnInline,
+                  (!premiumEnabled || todoPhotoImporting) && styles.photoImportBtnDisabled,
+                ]}
+                onPress={() => {
+                  void importTodosViaPhoto();
+                }}
+                disabled={todoPhotoImporting}
+              >
+                <Text style={styles.photoImportBtnText}>
+                  {todoPhotoImporting
+                    ? 'Reading photo...'
+                    : premiumEnabled
+                      ? 'Import photo (AI)'
+                      : 'Import photo (Premium)'}
+                </Text>
+              </Pressable>
+            </View>
+
+            <ScrollView style={styles.modalList}>
+              {activeTodos.map((todo) => {
+                const dueHint = extractTodoDueHint(todo.notes);
+                const overdue = isTodoOverdue(todo, Date.now(), timeZone);
+                const deadlineAt = getTodoDeadlineAt(todo);
+                const dueDate = getTodoDueDate(todo, timeZone);
+                const linkedActivity = todo.linkedScheduledActivityId
+                  ? scheduledActivityById.get(todo.linkedScheduledActivityId)
+                  : undefined;
+                const isScheduled = !!linkedActivity && !todo.done;
+                const atomized = getTodoAtomizedProgress(todo);
+                const atomizedProgressLabel = atomized.isAtomized && atomized.totalMin != null
+                  ? `${atomized.progressMin}/${atomized.totalMin} min done`
+                  : null;
+                return (
+                  <View key={todo.id} style={[styles.todoRow, overdue && styles.todoRowOverdue]}>
+                    <Pressable
+                      onPress={() => {
+                        if (todo.done) {
+                          actions.updateSmartTodo({ ...todo, done: false });
+                          return;
+                        }
+                        const completion = applyTodoChunkCompletion(todo, linkedActivity?.durationMin);
+                        actions.updateSmartTodo({
+                          ...completion.todo,
+                          completionPromptedAt: new Date().toISOString(),
+                        });
+                        if (completion.usedAtomizedProgress && completion.totalMin != null) {
+                          const progressCopy = `${completion.progressMin}/${completion.totalMin} min`;
+                          Alert.alert(
+                            completion.becameDone ? 'To-do completed' : 'Chunk completed',
+                            completion.becameDone
+                              ? `Great work. "${todo.title}" is now fully complete (${progressCopy}).`
+                              : `Progress saved for "${todo.title}": ${progressCopy}.`,
+                          );
+                        }
+                      }}
+                    >
+                      <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
+                    </Pressable>
+                    <View style={{ flex: 1 }}>
+                      <View style={styles.todoTitleRow}>
+                        <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
+                        {overdue && (
+                          <View style={styles.overdueBadge}>
+                            <Text style={styles.overdueBadgeText}>Overdue</Text>
+                          </View>
+                        )}
+                      </View>
+                      {!!deadlineAt && (
+                        <Text style={[styles.todoDeadline, overdue && styles.todoDeadlineOverdue]}>
+                          Deadline {new Date(deadlineAt).toLocaleDateString()} {formatCalendarTime(new Date(deadlineAt))}
+                        </Text>
+                      )}
+                      {!deadlineAt && !!dueDate && (
+                        <Text style={[styles.todoDeadline, overdue && styles.todoDeadlineOverdue]}>
+                          Due {new Date(`${dueDate}T00:00:00`).toLocaleDateString()}
+                        </Text>
+                      )}
+                      {!deadlineAt && !dueDate && !!dueHint && (
+                        <Text style={styles.todoDueHint}>{dueHint}</Text>
+                      )}
+                      {!!todo.scheduledAt && !todo.done && (
+                        <Text style={styles.todoScheduledMeta}>
+                          Scheduled {todo.scheduledMode ? `(${todo.scheduledMode})` : ''}: {new Date(todo.scheduledAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.scheduledAt))}
+                        </Text>
+                      )}
+                      {todo.hasFixedSchedule && !!deadlineAt && (
+                        <Text style={styles.todoFixedMeta}>Fixed time/date to-do</Text>
+                      )}
+                      {!!atomizedProgressLabel && (
+                        <Text style={styles.todoAtomizedProgress}>{atomizedProgressLabel}</Text>
+                      )}
+                    </View>
+                    {isScheduled ? (
+                      <Pressable onPress={() => openTodoScheduledActivity(linkedActivity)}>
+                        <Text style={styles.todoScheduledAction}>Scheduled</Text>
+                      </Pressable>
+                    ) : (
+                      <Pressable onPress={() => startTodoScheduling(todo)}>
+                        <Text style={styles.todoSchedule}>Schedule</Text>
+                      </Pressable>
+                    )}
+                    <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
+                      <Text style={styles.todoDelete}>Delete</Text>
+                    </Pressable>
+                  </View>
+                );
+              })}
+
+              <Pressable style={styles.doneTodosHeader} onPress={() => setShowDoneTodos((prev) => !prev)}>
+                <Text style={styles.doneTodosHeaderText}>
+                  {showDoneTodos ? '▾' : '▸'} Done to-dos ({doneTodos.length})
+                </Text>
+              </Pressable>
+
+              {showDoneTodos && doneTodos.map((todo) => (
+                <View key={todo.id} style={styles.todoRowDoneCollapsed}>
+                  <Pressable onPress={() => actions.updateSmartTodo({ ...todo, done: false })}>
+                    <Text style={styles.todoCheck}>☑</Text>
+                  </Pressable>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
+                    {(() => {
+                      const atomized = getTodoAtomizedProgress(todo);
+                      if (!atomized.isAtomized || atomized.totalMin == null) return null;
+                      return (
+                        <Text style={styles.todoAtomizedProgressDone}>
+                          {atomized.progressMin}/{atomized.totalMin} min done
+                        </Text>
+                      );
+                    })()}
+                  </View>
+                  <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
+                    <Text style={styles.todoDelete}>Delete</Text>
+                  </Pressable>
+                </View>
+              ))}
+            </ScrollView>
+
+            <Pressable style={styles.closeBtn} onPress={() => setTodoModalOpen(false)}>
+              <Text style={styles.closeBtnText}>Done</Text>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
+
+      <Modal
+        visible={todoFormModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => {
+          setTodoFormModalOpen(false);
+          setTodoDatePickerVisible(false);
+          setTodoTimePickerVisible(false);
+        }}
+      >
+        <View style={styles.modalBackdrop}>
+          <View style={styles.todoModalCard}>
+            <Text style={styles.modalTitle}>Add To-do</Text>
             <TextInput
               value={todoTitle}
               onChangeText={setTodoTitle}
@@ -2401,21 +3889,39 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.deadlineSummaryText}>{formatTodoDeadlineSummary(todoDeadlineAt)}</Text>
 
             {todoDatePickerVisible && (
-              <DateTimePicker
-                value={todoDeadlineAt ?? new Date()}
-                mode="date"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={handleTodoDateChange}
-              />
+              <View style={styles.pickerContrastWrap}>
+                <DateTimePicker
+                  value={todoDeadlineAt ?? new Date()}
+                  mode="date"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={handleTodoDateChange}
+                  {...(Platform.OS === 'ios'
+                    ? {
+                        textColor: theme.colors.text,
+                        accentColor: theme.colors.accent,
+                        themeVariant: theme.isDark ? 'dark' : 'light',
+                      }
+                    : {})}
+                />
+              </View>
             )}
 
             {todoTimePickerVisible && (
-              <DateTimePicker
-                value={todoDeadlineAt ?? new Date()}
-                mode="time"
-                display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                onChange={handleTodoTimeChange}
-              />
+              <View style={styles.pickerContrastWrap}>
+                <DateTimePicker
+                  value={todoDeadlineAt ?? new Date()}
+                  mode="time"
+                  display={Platform.OS === 'ios' ? 'spinner' : 'default'}
+                  onChange={handleTodoTimeChange}
+                  {...(Platform.OS === 'ios'
+                    ? {
+                        textColor: theme.colors.text,
+                        accentColor: theme.colors.accent,
+                        themeVariant: theme.isDark ? 'dark' : 'light',
+                      }
+                    : {})}
+                />
+              </View>
             )}
 
             <View style={styles.deadlinePresetRow}>
@@ -2439,93 +3945,26 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               </Pressable>
             </View>
 
-            <Pressable style={styles.scheduleBtn} onPress={addTodo}>
-              <Text style={styles.scheduleBtnText}>Add task</Text>
-            </Pressable>
-
-            <Pressable
-              style={[
-                styles.photoImportBtn,
-                (!premiumEnabled || todoPhotoImporting) && styles.photoImportBtnDisabled,
-              ]}
-              onPress={() => {
-                void importTodosViaPhoto();
-              }}
-              disabled={todoPhotoImporting}
-            >
-              <Text style={styles.photoImportBtnText}>
-                {todoPhotoImporting
-                  ? 'Reading photo...'
-                  : premiumEnabled
-                    ? 'Import from photo (AI)'
-                    : 'Import from photo (Premium)'}
-              </Text>
-            </Pressable>
-
-            <ScrollView style={styles.modalList}>
-              {activeTodos.map((todo) => {
-                const dueHint = extractTodoDueHint(todo.notes);
-                return (
-                  <View key={todo.id} style={styles.todoRow}>
-                    <Pressable onPress={() => actions.toggleSmartTodoDone(todo.id)}>
-                      <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
-                    </Pressable>
-                    <View style={{ flex: 1 }}>
-                      <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
-                      {!!todo.deadlineAt && (
-                        <Text style={styles.todoDeadline}>
-                          Due {new Date(todo.deadlineAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.deadlineAt))}
-                        </Text>
-                      )}
-                      {!todo.deadlineAt && !!dueHint && (
-                        <Text style={styles.todoDueHint}>{dueHint}</Text>
-                      )}
-                      {!!todo.scheduledAt && !todo.done && (
-                        <Text style={styles.todoScheduledMeta}>
-                          Scheduled {todo.scheduledMode ? `(${todo.scheduledMode})` : ''}: {new Date(todo.scheduledAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.scheduledAt))}
-                        </Text>
-                      )}
-                      {todo.hasFixedSchedule && !!todo.deadlineAt && (
-                        <Text style={styles.todoFixedMeta}>Fixed time/date to-do</Text>
-                      )}
-                    </View>
-                    <Pressable onPress={() => startTodoScheduling(todo)}>
-                      <Text style={styles.todoSchedule}>Schedule</Text>
-                    </Pressable>
-                    <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
-                      <Text style={styles.todoDelete}>Delete</Text>
-                    </Pressable>
-                  </View>
-                );
-              })}
-
-              <Pressable style={styles.doneTodosHeader} onPress={() => setShowDoneTodos((prev) => !prev)}>
-                <Text style={styles.doneTodosHeaderText}>
-                  {showDoneTodos ? '▾' : '▸'} Done to-dos ({doneTodos.length})
-                </Text>
+            <View style={styles.modalActionRow}>
+              <Pressable
+                style={styles.modalTinyBtn}
+                onPress={() => {
+                  setTodoFormModalOpen(false);
+                  setTodoDatePickerVisible(false);
+                  setTodoTimePickerVisible(false);
+                }}
+              >
+                <Text style={styles.modalTinyBtnText}>Cancel</Text>
               </Pressable>
-
-              {showDoneTodos && doneTodos.map((todo) => (
-                <View key={todo.id} style={styles.todoRowDoneCollapsed}>
-                  <Pressable onPress={() => actions.toggleSmartTodoDone(todo.id)}>
-                    <Text style={styles.todoCheck}>☑</Text>
-                  </Pressable>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
-                  </View>
-                  <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
-                    <Text style={styles.todoDelete}>Delete</Text>
-                  </Pressable>
-                </View>
-              ))}
-            </ScrollView>
-
-            <Pressable style={styles.closeBtn} onPress={() => setTodoModalOpen(false)}>
-              <Text style={styles.closeBtnText}>Done</Text>
-            </Pressable>
+              <Pressable style={[styles.scheduleBtn, { flex: 1 }]} onPress={addTodo}>
+                <Text style={styles.scheduleBtnText}>Add task</Text>
+              </Pressable>
+            </View>
           </View>
         </View>
       </Modal>
+
+      <VideoAdModal ad={videoAd} onClose={closeVideoAd} deckColors={SMART_CALENDAR_DECK_COLORS} />
     </LinearGradient>
   );
 };
@@ -2564,6 +4003,105 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   todoButton: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.accent,
+  },
+  headerRightCluster: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.md,
+  },
+  headerSideLeft: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    gap: theme.spacing.md,
+  },
+  headerSideRight: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-end',
+    gap: theme.spacing.md,
+  },
+  headerActionMuted: {
+    opacity: 0.35,
+  },
+  starsIcon: {
+    fontSize: 20,
+    lineHeight: 24,
+  },
+  starsIconBusy: {
+    opacity: 0.4,
+  },
+  editPencilIcon: {
+    fontSize: 20,
+    lineHeight: 24,
+  },
+  editCancelBtn: {
+    minWidth: 88,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.lg,
+    backgroundColor: '#111111',
+    alignItems: 'center',
+  },
+  editCancelText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#FFFFFF',
+    fontSize: 13,
+  },
+  editSaveBtn: {
+    minWidth: 88,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.xs,
+    borderRadius: theme.radius.lg,
+    backgroundColor: '#F2FAF2',
+    borderWidth: 1,
+    borderColor: '#111111',
+    alignItems: 'center',
+  },
+  editSaveText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#111111',
+    fontSize: 13,
+  },
+  editSavePlaceholder: {
+    minWidth: 88,
+    minHeight: 32,
+  },
+  editHintBar: {
+    marginHorizontal: theme.spacing.xl,
+    marginBottom: theme.spacing.md,
+    paddingHorizontal: theme.spacing.md,
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.isDark ? '#3A2E1E' : '#FCEFD6',
+    borderWidth: 1,
+    borderColor: theme.isDark ? '#5C4A2E' : '#F0D9A8',
+  },
+  editHintText: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.isDark ? '#F3E6CC' : '#7A5A1E',
+  },
+  ultimateBar: {
+    marginHorizontal: theme.spacing.xl,
+    marginBottom: theme.spacing.md,
+  },
+  ultimateBtn: {
+    paddingVertical: theme.spacing.sm,
+    borderRadius: theme.radius.lg,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.accent,
+  },
+  ultimateBtnBusy: {
+    opacity: 0.7,
+  },
+  ultimateBtnText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.colors.accentText,
   },
   centerWrap: {
     flex: 1,
@@ -2672,6 +4210,84 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   eventBlockPressable: {
     opacity: 0.98,
+  },
+  eventBlockEditing: {
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    borderStyle: 'dashed',
+  },
+  eventBlockOverlap: {
+    borderWidth: 2,
+    borderColor: '#DC2626',
+  },
+  eventBlockDragging: {
+    opacity: 0.92,
+    shadowColor: '#000',
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 4 },
+    elevation: 8,
+  },
+  eventBlockImmovable: {
+    opacity: 0.85,
+  },
+  deleteEventBtn: {
+    position: 'absolute',
+    left: 4,
+    top: 0,
+    bottom: 0,
+    width: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 10,
+  },
+  deleteEventBtnText: {
+    fontSize: 11,
+    color: 'rgba(255,255,255,0.92)',
+    fontWeight: '700' as const,
+  },
+  eventBlockContentWithDelete: {
+    marginLeft: 22,
+  },
+  dragHandleBadge: {
+    position: 'absolute',
+    top: 2,
+    right: 4,
+    zIndex: 2,
+  },
+  dragHandleText: {
+    fontSize: 13,
+    color: theme.colors.accentText,
+  },
+  immovableBadge: {
+    position: 'absolute',
+    top: 2,
+    left: 4,
+    zIndex: 2,
+  },
+  immovableBadgeText: {
+    fontSize: 12,
+  },
+  immovableHint: {
+    fontFamily: theme.fonts.body,
+    fontSize: 9,
+    color: theme.colors.accentText,
+    opacity: 0.9,
+  },
+  overlapBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    zIndex: 4,
+    borderRadius: 8,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(220,38,38,0.92)',
+  },
+  overlapBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 9,
+    color: '#FFFFFF',
   },
   eventTitle: {
     fontFamily: theme.fonts.semibold,
@@ -2996,14 +4612,15 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   deckUndoButtonPressed: {
     transform: [{ scale: 0.94 }],
   },
-  deckUndoText: {
-    fontFamily: theme.fonts.semibold,
-    fontSize: 18,
-    color: theme.colors.textMuted,
-    lineHeight: 20,
+  deckUndoIcon: {
+    width: 14,
+    height: 14,
+    resizeMode: 'contain',
+    tintColor: theme.isDark ? theme.colors.text : undefined,
+    opacity: 0.75,
   },
-  deckUndoTextDisabled: {
-    color: theme.colors.border,
+  deckUndoIconDisabled: {
+    opacity: 0.3,
   },
   deckCounterText: {
     fontFamily: theme.fonts.semibold,
@@ -3095,6 +4712,26 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: theme.colors.text,
     fontSize: 12,
   },
+  planReasonCard: {
+    marginTop: theme.spacing.sm,
+    padding: theme.spacing.sm,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.isDark ? '#22332C' : '#EAF7F0',
+    borderWidth: 1,
+    borderColor: theme.isDark ? '#33463D' : '#CDE9DC',
+  },
+  planReasonLabel: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 11,
+    color: theme.isDark ? '#9FD8BF' : '#1A6B4A',
+    marginBottom: 2,
+  },
+  planReasonText: {
+    fontFamily: theme.fonts.body,
+    fontSize: 12,
+    color: theme.colors.text,
+    lineHeight: 17,
+  },
   scheduleBtn: {
     marginTop: theme.spacing.xs,
     borderRadius: theme.radius.sm,
@@ -3118,6 +4755,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   photoImportBtnDisabled: {
     opacity: 0.6,
+  },
+  photoImportBtnInline: {
+    marginTop: 0,
+    flex: 1.2,
   },
   photoImportBtnText: {
     fontFamily: theme.fonts.semibold,
@@ -3147,6 +4788,30 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexWrap: 'wrap',
     gap: theme.spacing.xs,
   },
+  todoListActionRow: {
+    flexDirection: 'row',
+    gap: theme.spacing.xs,
+    marginBottom: theme.spacing.sm,
+    position: 'relative',
+    zIndex: 1,
+  },
+  addTodoBtn: {
+    flex: 1,
+    flexShrink: 0,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: theme.spacing.sm,
+    position: 'relative',
+    zIndex: 2,
+    elevation: 2,
+  },
+  addTodoBtnText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentText,
+    fontSize: 13,
+  },
   deadlinePickerRow: {
     flexDirection: 'row',
     gap: theme.spacing.xs,
@@ -3169,6 +4834,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
     fontSize: 12,
+  },
+  pickerContrastWrap: {
+    marginTop: theme.spacing.xs,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.sm,
+    backgroundColor: theme.isDark ? '#151D29' : '#F3F6FC',
+    overflow: 'hidden',
   },
   deadlineChip: {
     borderWidth: 1,
@@ -3195,13 +4868,39 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: theme.colors.border,
   },
+  todoRowOverdue: {
+    borderLeftWidth: 3,
+    borderLeftColor: theme.colors.danger,
+    paddingLeft: theme.spacing.sm,
+  },
   todoCheck: {
     fontSize: 20,
     color: theme.colors.text,
   },
+  todoTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.xs,
+    flexWrap: 'wrap',
+  },
   todoTitle: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
+  },
+  overdueBadge: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    backgroundColor: theme.colors.danger,
+  },
+  overdueBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    color: '#fff',
+  },
+  todoDeadlineOverdue: {
+    color: theme.colors.danger,
+    fontFamily: theme.fonts.semibold,
   },
   todoDone: {
     textDecorationLine: 'line-through',
@@ -3227,9 +4926,24 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     color: '#0F766E',
     fontSize: 11,
   },
+  todoAtomizedProgress: {
+    fontFamily: theme.fonts.semibold,
+    color: '#1D4ED8',
+    fontSize: 11,
+  },
+  todoAtomizedProgressDone: {
+    fontFamily: theme.fonts.body,
+    color: '#475569',
+    fontSize: 11,
+    marginTop: 2,
+  },
   todoSchedule: {
     fontFamily: theme.fonts.semibold,
     color: '#15803D',
+  },
+  todoScheduledAction: {
+    fontFamily: theme.fonts.semibold,
+    color: '#166534',
   },
   todoDelete: {
     fontFamily: theme.fonts.semibold,

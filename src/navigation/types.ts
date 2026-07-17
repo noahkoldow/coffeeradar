@@ -27,7 +27,7 @@ export type RootStackParamList = {
     commitment: Commitment;
     suggestion: DeckSuggestion;
     fromDoSomethingNow?: boolean;
-    activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home';
+    activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me';
   };
   ActivityChat: {
     threadId: string;
@@ -38,6 +38,7 @@ export type RootStackParamList = {
   };
   Settings: undefined;
   Profile: undefined;
+  MyActivities: undefined;
   BusinessHub: undefined;
   ApprovalQueue: undefined;
   BusinessCampaignForm: { campaignId?: string } | undefined;

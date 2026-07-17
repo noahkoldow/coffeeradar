@@ -31,21 +31,16 @@ export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
     loadCalendars();
   }, [state.permissions.calendarGranted]);
 
-  const isEnabled = (id: string) => (
-    state.enabledCalendars.length
-      ? state.enabledCalendars.includes(id)
-      : true
-  );
+  const isEnabled = (id: string) => !state.disabledCalendars.includes(id);
 
   const toggleCalendar = (id: string) => {
-    const current = state.enabledCalendars.length
-      ? state.enabledCalendars
-      : calendars.map((cal) => cal.id);
-    const updated = current.includes(id)
-      ? current.filter((item) => item !== id)
-      : [...current, id];
-    if (updated.length === 0) return;
-    actions.setEnabledCalendars(updated);
+    const currentlyEnabled = isEnabled(id);
+    const updated = currentlyEnabled
+      ? [...state.disabledCalendars, id]
+      : state.disabledCalendars.filter((item) => item !== id);
+    // Keep at least one calendar enabled.
+    if (calendars.length && updated.length >= calendars.length) return;
+    actions.setDisabledCalendars(updated);
   };
 
   return (
@@ -56,7 +51,7 @@ export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
       <View style={styles.content}>
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
         <Text style={styles.title}>Pick calendars to use</Text>
-        <Text style={styles.subtitle}>We only read availability blocks, not event details.</Text>
+        <Text style={styles.subtitle}>We read event names and times only to personalize your suggestions — sent securely to our AI to tailor ideas to your day. Never sold, never shared with other people.</Text>
 
         {!state.permissions.calendarGranted ? (
           <View style={styles.noticeBox}>
