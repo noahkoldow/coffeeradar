@@ -52,9 +52,17 @@ export function isEligibleForRepetition(
 export function shouldFilterOutForRepetition(
   activityId: string,
   isRepetitionFriendly: boolean | undefined,
+  source: Suggestion['source'] | undefined,
   history: HistoryState,
   now = new Date()
 ): boolean {
+  // Gemini output is often cached for short windows to avoid duplicate API calls.
+  // If we hard-block by lastShownIds here, rapid "new set" actions can wipe
+  // valid Gemini cards and force fallback-heavy decks.
+  if (source === 'gemini') {
+    return false;
+  }
+
   // If never marked as repetition-friendly, use old logic:
   // filter if it's been shown before (within current session)
   if (!isRepetitionFriendly) {
@@ -132,7 +140,7 @@ export function filterForHabitRepetition(
     }
 
     // Previously shown items: only show if repetition-eligible
-    return shouldFilterOutForRepetition(item.id, item.isRepetitionFriendly, history, now) === false;
+    return shouldFilterOutForRepetition(item.id, item.isRepetitionFriendly, item.source, history, now) === false;
   });
 }
 
@@ -182,6 +190,7 @@ export function debugRepetitionStatus(
   const shouldFilter = shouldFilterOutForRepetition(
     suggestion.id,
     suggestion.isRepetitionFriendly,
+    suggestion.source,
     history,
     now
   );

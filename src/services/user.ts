@@ -1,4 +1,4 @@
-import { collection, deleteDoc, doc, getDoc, getDocs, increment, limit, query, serverTimestamp, setDoc, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, getDocs, increment, limit, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
 import { Availability, Business, BusinessSubmission, BusinessSubmissionStatus, Habit, LocationProfile, SavedSuggestion, TagAffinities, UserPrefs } from '../types';
 import { auth, db, ensureAuth, firebaseEnabled } from './firebase';
 import { validateBusinessSubmission } from './businessService';
@@ -22,8 +22,9 @@ export const upsertUserData = async (payload: {
   try {
     const uid = await ensureAuth();
     if (!uid || !db) return;
+    const firestore = db!;
     await setDoc(
-      doc(db, 'users', uid),
+      doc(firestore, 'users', uid),
       {
         availability: payload.availability
           ? {
@@ -47,10 +48,11 @@ export const persistOnboardingComplete = async (value: boolean): Promise<void> =
   try {
     const uid = await ensureAuth();
     if (!uid) return;
+    const firestore = db!;
     await Promise.all([
       saveOnboardingComplete(value, uid),
       setDoc(
-        doc(db, 'users', uid),
+        doc(firestore, 'users', uid),
         {
           onboardingComplete: value,
           updatedAt: serverTimestamp(),
@@ -68,7 +70,8 @@ export const loadFirebaseOnboardingComplete = async (): Promise<boolean | null> 
   try {
     const uid = await ensureAuth();
     if (!uid) return null;
-    const snap = await getDoc(doc(db, 'users', uid));
+    const firestore = db!;
+    const snap = await getDoc(doc(firestore, 'users', uid));
     if (!snap.exists()) return null;
     const value = snap.data()?.onboardingComplete;
     return typeof value === 'boolean' ? value : null;
@@ -83,7 +86,8 @@ export const deleteUserData = async (): Promise<void> => {
   try {
     const uid = await ensureAuth();
     if (!uid || !db) return;
-    await deleteDoc(doc(db, 'users', uid));
+    const firestore = db!;
+    await deleteDoc(doc(firestore, 'users', uid));
   } catch (error) {
     console.warn('User delete error', error);
   }
@@ -97,8 +101,9 @@ export const syncTagAffinities = async (affinities: TagAffinities): Promise<void
   try {
     const uid = await ensureAuth();
     if (!uid) return;
+    const firestore = db!;
     await setDoc(
-      doc(db!, 'users', uid, 'learning', 'affinities'),
+      doc(firestore, 'users', uid, 'learning', 'affinities'),
       { tags: affinities, updatedAt: serverTimestamp() },
       { merge: true },
     );
@@ -113,7 +118,8 @@ export const loadFirebaseAffinities = async (): Promise<TagAffinities | null> =>
   try {
     const uid = await ensureAuth();
     if (!uid) return null;
-    const snap = await getDoc(doc(db!, 'users', uid, 'learning', 'affinities'));
+    const firestore = db!;
+    const snap = await getDoc(doc(firestore, 'users', uid, 'learning', 'affinities'));
     if (!snap.exists()) return null;
     const data = snap.data();
     return (data?.tags as TagAffinities) ?? null;
@@ -372,16 +378,28 @@ export const syncBusinessMetric = async (
   amount = 1,
 ): Promise<void> => {
   if (!businessId || !canSync()) return;
+  // Ignore synthetic/local IDs that are not Firestore business documents.
+  if (businessId.startsWith('seed_') || businessId.startsWith('campaign_')) return;
   try {
-    await setDoc(
-      doc(db!, 'businesses', businessId),
-      {
-        [`metrics.${metric}`]: increment(Math.max(1, amount)),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
+    const businessRef = doc(db!, 'businesses', businessId);
+    const snapshot = await getDoc(businessRef);
+
+    if (!snapshot.exists()) {
+      console.log('[BusinessMetric] missing business doc; skipping metric sync');
+      return;
+    }
+
+    await updateDoc(businessRef, {
+      [`metrics.${metric}`]: increment(Math.max(1, amount)),
+      updatedAt: serverTimestamp(),
+    });
   } catch (error) {
+    const code = (error as { code?: string } | null)?.code;
+    if (code === 'permission-denied') {
+      // Expected in some environments where client users may not write business metrics.
+      console.log('[BusinessMetric] permission denied; skipping metric sync');
+      return;
+    }
     console.warn('Business metric sync error', error);
   }
 };

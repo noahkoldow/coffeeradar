@@ -14,6 +14,7 @@ const KEYS = {
   inProgressPlanSession: 'in_progress_plan_session',
   savedSuggestions: 'saved_suggestions',
   smartTodos: 'smart_todos',
+  ignoredExternalEventKeys: 'ignored_external_event_keys',
   isBusinessOnly: 'is_business_only',
   swipeBank: 'swipe_bank',
   premium: 'premium_active',
@@ -149,6 +150,15 @@ export const loadSmartTodos = async (userId?: string | null): Promise<SmartTodoI
 
 export const saveSmartTodos = async (items: SmartTodoItem[], userId?: string | null): Promise<void> => {
   await AsyncStorage.setItem(keyFor(KEYS.smartTodos, userId), JSON.stringify(items));
+};
+
+export const loadIgnoredExternalEventKeys = async (userId?: string | null): Promise<string[] | null> => {
+  const raw = await AsyncStorage.getItem(keyFor(KEYS.ignoredExternalEventKeys, userId));
+  return raw ? (JSON.parse(raw) as string[]) : null;
+};
+
+export const saveIgnoredExternalEventKeys = async (keys: string[], userId?: string | null): Promise<void> => {
+  await AsyncStorage.setItem(keyFor(KEYS.ignoredExternalEventKeys, userId), JSON.stringify(keys));
 };
 
 export const loadIsBusinessOnly = async (userId?: string | null): Promise<boolean> => {

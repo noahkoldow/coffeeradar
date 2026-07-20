@@ -36,7 +36,7 @@ export type RootStackParamList = {
     suggestionId: string;
     regionLabel?: string | null;
   };
-  Settings: undefined;
+  Settings: { fromRefine?: boolean } | undefined;
   Profile: undefined;
   MyActivities: undefined;
   BusinessHub: undefined;

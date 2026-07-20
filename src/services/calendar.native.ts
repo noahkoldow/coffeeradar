@@ -171,12 +171,23 @@ export const getAvailability = async (disabledCalendarIds?: string[]): Promise<A
   );
 
   if (ongoing) {
+    const ongoingEnd = ongoing.endDate ? toDate(ongoing.endDate) : null;
+    const nextBlockingEvent = sorted.find((event) => {
+      if (event.id === ongoing.id) return false;
+      const start = toDate(event.startDate).getTime();
+      return start > now.getTime();
+    });
+    const freeWindowEnd = nextBlockingEvent
+      ? toDate(nextBlockingEvent.startDate)
+      : windowEnd;
     return {
       start: toISO(now),
-      end: toISO(now),
+      end: toISO(freeWindowEnd),
       durationMin: 0,
       nextEventTitle: ongoing.title ?? null,
+      nextEventStartAt: nextBlockingEvent?.startDate ? toISO(toDate(nextBlockingEvent.startDate)) : null,
       currentEventId: ongoing.id ?? null,
+      currentEventEndAt: ongoingEnd ? toISO(ongoingEnd) : null,
     };
   }
 

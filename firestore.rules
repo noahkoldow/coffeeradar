@@ -194,6 +194,11 @@ service cloud.firestore {
 
       allow delete: if isAdmin();
 
+      // Allow any signed-in user to increment metrics/updatedAt only
+      allow update: if isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+             .hasOnly(['metrics', 'updatedAt']);
+
       match /campaigns/{campaignId} {
         allow read: if isBusinessMember(businessId)
           || resource.data.status in ['approved', 'active'];

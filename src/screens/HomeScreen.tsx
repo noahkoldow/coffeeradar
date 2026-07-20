@@ -31,6 +31,7 @@ import { buildBadgeProgress } from '../utils/badges';
 import { buildPlanSessionKey } from '../utils/planSession';
 import { getVisibleTags } from '../utils/visibleTags';
 import { applyTodoChunkCompletion } from '../utils/todoAtomization';
+import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
 
 type Props = StackScreenProps<RootStackParamList, 'Home'>;
 
@@ -546,10 +547,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         durationMin: manualDuration,
         nextEventTitle: null,
       };
-      prefetchGeminiSuggestions(state.location, deckQueueRef.current.prefs, fakeAvail, null, undefined, state.userId).catch(() => undefined);
+      const prefetchAvail = applyIgnoredEventsToAvailability(fakeAvail, state.ignoredExternalEventKeys);
+      prefetchGeminiSuggestions(state.location, deckQueueRef.current.prefs, prefetchAvail, null, { sessionActivityIntent: state.sessionActivityIntent }, state.userId).catch(() => undefined);
       actionsRef.current.preloadDeck(fakeAvail);
     }
-  }, [manualDuration, state.permissions.calendarGranted, state.preloadedDeck, state.deckLoading, state.location]);
+  }, [manualDuration, state.permissions.calendarGranted, state.preloadedDeck, state.deckLoading, state.location, state.sessionActivityIntent, state.userId, state.ignoredExternalEventKeys]);
 
   const refreshContext = useCallback(async () => {
     if (!state.permissions.calendarGranted && !state.permissions.locationGranted) return;
@@ -595,7 +597,8 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         const preloadAvail = latestAvailability.durationMin < 15
           ? { ...latestAvailability, durationMin: 15 }
           : latestAvailability;
-        prefetchGeminiSuggestions(latestLocation, queueState.prefs, preloadAvail, latestWeather, undefined, state.userId).catch(() => undefined);
+        const prefetchAvail = applyIgnoredEventsToAvailability(preloadAvail, state.ignoredExternalEventKeys);
+        prefetchGeminiSuggestions(latestLocation, queueState.prefs, prefetchAvail, latestWeather, { sessionActivityIntent: state.sessionActivityIntent }, state.userId).catch(() => undefined);
         actionsRef.current.preloadDeck(preloadAvail);
       }
     } catch (error) {
@@ -603,7 +606,14 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     } finally {
       setLoading(false);
     }
-  }, [state.permissions, state.disabledCalendars]);
+  }, [
+    state.permissions.calendarGranted,
+    state.permissions.locationGranted,
+    state.disabledCalendars,
+    state.sessionActivityIntent,
+    state.userId,
+    state.ignoredExternalEventKeys,
+  ]);
 
   useFocusEffect(
     useCallback(() => {
@@ -631,9 +641,48 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const isBusyNow = !!(state.permissions.calendarGranted && state.availability && state.availability.durationMin === 0);
   const currentEventTitle = state.availability?.nextEventTitle || 'Current event';
+  const currentEventIgnoreKey = useMemo(() => {
+    const currentEventId = state.availability?.currentEventId?.trim();
+    if (currentEventId) return `id:${currentEventId}`;
+    const normalizedTitle = state.availability?.nextEventTitle?.trim().toLowerCase();
+    if (normalizedTitle) return `title:${normalizedTitle}`;
+    return null;
+  }, [state.availability?.currentEventId, state.availability?.nextEventTitle]);
+
+  const isCurrentExternalEventIgnored = !!(
+    isBusyNow
+    && currentEventIgnoreKey
+    && state.ignoredExternalEventKeys.includes(currentEventIgnoreKey)
+  );
+  const isBusyNowEffective = isBusyNow && !isCurrentExternalEventIgnored;
+
   const handleDeleteCurrentEvent = useCallback(() => {
     const eventId = state.availability?.currentEventId;
     if (!eventId) return;
+
+    const linkedScheduled = state.scheduledActivities.filter(
+      (item) => item.calendarEventId === eventId || item.commitment.calendarEventId === eventId,
+    );
+
+    if (!linkedScheduled.length) {
+      Alert.alert(
+        'Ignore external event?',
+        'This is an externally sourced event. Do you want to ignore it?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Ignore',
+            onPress: () => {
+              const fallbackTitleKey = state.availability?.nextEventTitle?.trim().toLowerCase();
+              const eventKey = `id:${eventId}` || (fallbackTitleKey ? `title:${fallbackTitleKey}` : null);
+              if (!eventKey) return;
+              actions.addIgnoredExternalEventKey(eventKey);
+            },
+          },
+        ],
+      );
+      return;
+    }
 
     Alert.alert('Delete this activity?', 'This removes it from your calendar.', [
       { text: 'Keep', style: 'cancel' },
@@ -643,9 +692,6 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         onPress: async () => {
           try {
             await deletePlanEvent(eventId);
-            const linkedScheduled = state.scheduledActivities.filter(
-              (item) => item.calendarEventId === eventId || item.commitment.calendarEventId === eventId,
-            );
             linkedScheduled.forEach((item) => {
               actions.removeScheduledActivity(item.id);
             });
@@ -657,17 +703,19 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         },
       },
     ]);
-  }, [actions, refreshContext, state.availability?.currentEventId, state.scheduledActivities]);
+  }, [actions, refreshContext, state.availability?.currentEventId, state.availability?.nextEventTitle, state.scheduledActivities]);
   const availabilityLabel = state.availability
-    ? isBusyNow
+    ? isBusyNowEffective
       ? 'You are busy right now'
       : state.availability.durationMin >= 240
         ? 'You are free for the next few hours'
-        : `You are free for ${formatDuration(state.availability.durationMin)}`
+        : state.availability.durationMin === 0
+          ? 'You are free right now'
+          : `You are free for ${formatDuration(state.availability.durationMin)}`
     : 'Pick something you can do right now';
 
   const availabilityEmoji = state.availability
-    ? isBusyNow
+    ? isBusyNowEffective
       ? '⏳'
       : state.availability.durationMin >= 240
         ? '🏖️'
@@ -734,21 +782,21 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const beforeLabel = nextEventTitle ? `before ${nextEventTitle}` : '';
   const untilLabel = nextEventStartDate ? formatTime(nextEventStartDate) : '';
-  const showTappableUntil = !isBusyNow && !!untilLabel && !!linkedUpcomingScheduledActivity;
+  const showTappableUntil = !isBusyNowEffective && !!untilLabel && !!linkedUpcomingScheduledActivity;
 
-  const availabilitySubtextPrefix = isBusyNow
+  const availabilitySubtextPrefix = isBusyNowEffective
     ? ''
     : (state.permissions.calendarGranted
       ? `${availabilityEmoji} ${availabilityLabel}`
       : `${availabilityEmoji} ${availabilityLabel}`);
 
-  const availabilitySubtextSuffix = isBusyNow
+  const availabilitySubtextSuffix = isBusyNowEffective
     ? ''
     : (state.permissions.calendarGranted
       ? (untilLabel ? ' until ' : (beforeLabel ? ` ${beforeLabel}` : ''))
       : '');
 
-  const availabilitySubtext = isBusyNow
+  const availabilitySubtext = isBusyNowEffective
     ? ''
     : `${availabilitySubtextPrefix}${state.permissions.calendarGranted && !untilLabel && beforeLabel ? ` ${beforeLabel}` : ''}`;
 
@@ -935,7 +983,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     if (!isModeAvailable(currentMode)) {
       return;
     }
-    if (isBusyNow) {
+    if (isBusyNowEffective) {
       Alert.alert(
         'You are busy right now',
         `Current plan: ${currentEventTitle}. Start something else anyway?`,
@@ -1141,11 +1189,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               <View key={item.key} style={{ width: screenWidth, paddingHorizontal: 16 }}>
                 {(() => {
                   const modeAvailable = isModeAvailable(item);
-                  const modeMuted = !modeAvailable || (isBusyNow && item.key !== 'tomorrow');
+                  const modeMuted = !modeAvailable || (isBusyNowEffective && item.key !== 'tomorrow');
                   return (
                 <PrimaryButton
                   label={loading ? 'Working...' : item.label}
-                  glow={!isBusyNow && modeAvailable}
+                  glow={!isBusyNowEffective && modeAvailable}
                   variant={modeMuted ? 'muted' : 'default'}
                   bgColor={modeMuted ? undefined : item.bg}
                   textColor={modeMuted ? undefined : item.text}
@@ -1168,7 +1216,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               />
             ))}
           </View>
-          {isBusyNow && (
+          {isBusyNowEffective && (
             <Pressable
               style={({ pressed }) => [styles.busyCard, pressed && { opacity: 0.85 }]}
               onPress={() => {

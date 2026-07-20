@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { ActivityIndicator, Alert, Animated, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
@@ -499,7 +499,13 @@ const computeTodoDurationMin = (todo: SmartTodoItem, availableDurationMin: numbe
   return Math.max(15, Math.min(SMART_TODO_DEFAULT_DURATION_MIN, hardMax));
 };
 
-const buildTodoDeckSuggestion = (todo: SmartTodoItem, startAt: Date, endAt: Date, tag: string): DeckSuggestion => ({
+const buildTodoDeckSuggestion = (
+  todo: SmartTodoItem,
+  startAt: Date,
+  endAt: Date,
+  tag: string,
+  timeZone?: string | null,
+): DeckSuggestion => ({
   id: `todo_sched_${todo.id}_${startAt.getTime()}`,
   type: 'AT_HOME',
   source: 'todo',
@@ -513,6 +519,8 @@ const buildTodoDeckSuggestion = (todo: SmartTodoItem, startAt: Date, endAt: Date
   meta: {
     planStartAt: startAt.toISOString(),
     planEndAt: endAt.toISOString(),
+    todoDeadlineAt: getTodoDeadlineAt(todo),
+    todoDueDate: getTodoDueDate(todo, timeZone),
     ...(getTodoAtomizedProgress(todo).isAtomized
       ? {
           todoAtomizedProgressMin: getTodoAtomizedProgress(todo).progressMin,
@@ -816,6 +824,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const [todoDatePickerVisible, setTodoDatePickerVisible] = useState(false);
   const [todoTimePickerVisible, setTodoTimePickerVisible] = useState(false);
   const [todoPhotoImporting, setTodoPhotoImporting] = useState(false);
+  const [showScheduledTodos, setShowScheduledTodos] = useState(false);
+  const [showUnscheduledTodos, setShowUnscheduledTodos] = useState(true);
   const [showDoneTodos, setShowDoneTodos] = useState(false);
   const [todoSchedulingMode, setTodoSchedulingMode] = useState<TodoScheduleMode | null>(null);
   const [todoSchedulingTarget, setTodoSchedulingTarget] = useState<SmartTodoItem | null>(null);
@@ -944,12 +954,21 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     );
     return [...overdue, ...rest];
   }, [state.smartTodos, timeZone]);
+  const scheduledTodos = useMemo(() => activeTodos.filter((todo) => !!todo.scheduledAt || !!todo.linkedScheduledActivityId), [activeTodos]);
+  const unscheduledTodos = useMemo(() => activeTodos.filter((todo) => !todo.scheduledAt && !todo.linkedScheduledActivityId), [activeTodos]);
   const doneTodos = useMemo(() => state.smartTodos.filter((todo) => todo.done), [state.smartTodos]);
   const schedulingActive = !!todoSchedulingMode && !!todoSchedulingTarget;
   const scheduledActivityById = useMemo(
     () => new Map(state.scheduledActivities.map((item) => [item.id, item] as const)),
     [state.scheduledActivities],
   );
+
+  useEffect(() => {
+    if (!todoModalOpen) return;
+    setShowScheduledTodos(false);
+    setShowUnscheduledTodos(true);
+    setShowDoneTodos(false);
+  }, [todoModalOpen]);
 
   const laneLayoutByDay = useMemo(() => {
     const map: Record<string, Record<string, EventLaneMeta>> = {};
@@ -1483,7 +1502,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     setSuggestionsLoading(true);
     const aiSuggestionCount = aiCountForBatch(batchIndex);
-    buildGapSuggestions(gap, state.habits, state.smartTodos.filter((t) => !t.done && !t.linkedScheduledActivityId), {
+    buildGapSuggestions(gap, state.habits, state.smartTodos.filter((t) => !t.done && !t.linkedScheduledActivityId && !t.scheduledAt), {
       defaultLocation: {
         lat: state.location.lat ?? undefined,
         lng: state.location.lng ?? undefined,
@@ -1660,6 +1679,30 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const datePart = value.toLocaleDateString();
     if (!todoHasExplicitTime) return `Due date ${datePart}`;
     return `Deadline ${datePart} ${formatCalendarTime(value)}`;
+  };
+
+  const resolveTodoFromSuggestion = (suggestion: SmartCalendarSuggestion): SmartTodoItem | null => {
+    if (suggestion.source !== 'todo') return null;
+
+    const idMatch = /^todo_(.+)$/.exec(String(suggestion.id ?? ''));
+    const explicitTodoId = idMatch?.[1] ?? null;
+    if (explicitTodoId) {
+      const exact = state.smartTodos.find((todo) => todo.id === explicitTodoId);
+      if (exact && !exact.done && !exact.linkedScheduledActivityId && !exact.scheduledAt) {
+        return exact;
+      }
+    }
+
+    const titleKey = normalizeTodoTitleKey(suggestion.title);
+    if (!titleKey) return null;
+
+    const titleMatched = state.smartTodos.find((todo) => (
+      !todo.done
+      && !todo.linkedScheduledActivityId
+      && !todo.scheduledAt
+      && normalizeTodoTitleKey(todo.title) === titleKey
+    ));
+    return titleMatched ?? null;
   };
 
   const addTodo = () => {
@@ -1935,7 +1978,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
 
-    const deckSuggestion = buildTodoDeckSuggestion(todo, startAt, endAt, `todo_${sourceMode}`);
+    const deckSuggestion = buildTodoDeckSuggestion(todo, startAt, endAt, `todo_${sourceMode}`, timeZone);
     const commitment: Commitment = {
       suggestionId: deckSuggestion.id,
       type: deckSuggestion.type,
@@ -2165,6 +2208,119 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     );
   };
 
+  const renderActiveTodoRow = (todo: SmartTodoItem) => {
+    const dueHint = extractTodoDueHint(todo.notes);
+    const overdue = isTodoOverdue(todo, Date.now(), timeZone);
+    const deadlineAt = getTodoDeadlineAt(todo);
+    const dueDate = getTodoDueDate(todo, timeZone);
+    const linkedActivity = todo.linkedScheduledActivityId
+      ? scheduledActivityById.get(todo.linkedScheduledActivityId)
+      : undefined;
+    const isScheduled = !!linkedActivity && !todo.done;
+    const atomized = getTodoAtomizedProgress(todo);
+    const atomizedProgressLabel = atomized.isAtomized && atomized.totalMin != null
+      ? `${atomized.progressMin}/${atomized.totalMin} min done`
+      : null;
+
+    return (
+      <View key={todo.id} style={[styles.todoRow, overdue && styles.todoRowOverdue]}>
+        <Pressable
+          onPress={() => {
+            if (todo.done) {
+              actions.updateSmartTodo({ ...todo, done: false });
+              return;
+            }
+            const completion = applyTodoChunkCompletion(todo, linkedActivity?.durationMin);
+            actions.updateSmartTodo({
+              ...completion.todo,
+              completionPromptedAt: new Date().toISOString(),
+            });
+            if (completion.usedAtomizedProgress && completion.totalMin != null) {
+              const progressCopy = `${completion.progressMin}/${completion.totalMin} min`;
+              Alert.alert(
+                completion.becameDone ? 'To-do completed' : 'Chunk completed',
+                completion.becameDone
+                  ? `Great work. "${todo.title}" is now fully complete (${progressCopy}).`
+                  : `Progress saved for "${todo.title}": ${progressCopy}.`,
+              );
+            }
+          }}
+        >
+          <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
+        </Pressable>
+        <View style={{ flex: 1 }}>
+          <View style={styles.todoTitleRow}>
+            <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
+            {overdue && (
+              <View style={styles.overdueBadge}>
+                <Text style={styles.overdueBadgeText}>Overdue</Text>
+              </View>
+            )}
+          </View>
+          {!!deadlineAt && (
+            <Text style={[styles.todoDeadline, overdue && styles.todoDeadlineOverdue]}>
+              Deadline {new Date(deadlineAt).toLocaleDateString()} {formatCalendarTime(new Date(deadlineAt))}
+            </Text>
+          )}
+          {!deadlineAt && !!dueDate && (
+            <Text style={[styles.todoDeadline, overdue && styles.todoDeadlineOverdue]}>
+              Due {new Date(`${dueDate}T00:00:00`).toLocaleDateString()}
+            </Text>
+          )}
+          {!deadlineAt && !dueDate && !!dueHint && (
+            <Text style={styles.todoDueHint}>{dueHint}</Text>
+          )}
+          {!!todo.scheduledAt && !todo.done && (
+            <Text style={styles.todoScheduledMeta}>
+              Scheduled {todo.scheduledMode ? `(${todo.scheduledMode})` : ''}: {new Date(todo.scheduledAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.scheduledAt))}
+            </Text>
+          )}
+          {todo.hasFixedSchedule && !!deadlineAt && (
+            <Text style={styles.todoFixedMeta}>Fixed time/date to-do</Text>
+          )}
+          {!!atomizedProgressLabel && (
+            <Text style={styles.todoAtomizedProgress}>{atomizedProgressLabel}</Text>
+          )}
+        </View>
+        {isScheduled ? (
+          <Pressable onPress={() => openTodoScheduledActivity(linkedActivity)}>
+            <Text style={styles.todoScheduledAction}>Scheduled</Text>
+          </Pressable>
+        ) : (
+          <Pressable onPress={() => startTodoScheduling(todo)}>
+            <Text style={styles.todoSchedule}>Schedule</Text>
+          </Pressable>
+        )}
+        <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
+          <Text style={styles.todoDelete}>Delete</Text>
+        </Pressable>
+      </View>
+    );
+  };
+
+  const renderDoneTodoRow = (todo: SmartTodoItem) => (
+    <View key={todo.id} style={styles.todoRowDoneCollapsed}>
+      <Pressable onPress={() => actions.updateSmartTodo({ ...todo, done: false })}>
+        <Text style={styles.todoCheck}>☑</Text>
+      </Pressable>
+      <View style={{ flex: 1 }}>
+        <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
+        {(() => {
+          const atomized = getTodoAtomizedProgress(todo);
+          if (!atomized.isAtomized || atomized.totalMin == null) return null;
+          return (
+            <Text style={styles.todoAtomizedProgressDone}>
+              {atomized.progressMin}/{atomized.totalMin} min done
+            </Text>
+          );
+        })()}
+      </View>
+      <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
+        <Text style={styles.todoDelete}>Delete</Text>
+      </Pressable>
+    </View>
+  );
+
   const openTodoScheduledActivity = (activity: ScheduledActivity) => {
     const startAt = new Date(activity.startAt);
     const dayId = startAt.toISOString().slice(0, 10);
@@ -2238,8 +2394,9 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       calendarWriteFailed,
     };
 
+    const scheduledId = `sched_smart_${Date.now()}`;
     actions.addScheduledActivity({
-      id: `sched_smart_${Date.now()}`,
+      id: scheduledId,
       suggestionId: deckSuggestion.id,
       title: deckSuggestion.title,
       description: deckSuggestion.description,
@@ -2255,6 +2412,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       planReason: suggestion.reason,
       planSource: suggestion.source,
     });
+
+    const linkedTodo = resolveTodoFromSuggestion(suggestion);
+    if (linkedTodo) {
+      updateTodoAfterSchedule(linkedTodo, scheduledId, startAt, endAt, 'smart');
+    }
 
     // A free slot can hold MORE than one activity. If usable time remains after
     // this booking, keep the modal open on the leftover sub-slot so the user can
@@ -3473,7 +3635,9 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.modalTitle}>Gap Suggestions</Text>
             {suggestionsLoading ? (
               <View style={styles.centerWrap}>
-                <Text style={styles.subtle}>Building 3 fitting cards...</Text>
+                <ActivityIndicator size="large" color={theme.colors.accent} style={{ marginBottom: theme.spacing.md }} />
+                <Text style={styles.subtle}>Gathering suggestions…</Text>
+                <Text style={[styles.subtle, { fontSize: 12, marginTop: theme.spacing.xs, opacity: 0.6 }]}>Finding activities that fit your gap</Text>
               </View>
             ) : gapSuggestions.length === 0 ? (
               <Text style={styles.subtle}>No fitting option found for this gap.</Text>
@@ -3578,7 +3742,17 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       <Modal visible={!!selectedScheduledActivity} transparent animationType="fade" onRequestClose={() => setSelectedScheduledActivity(null)}>
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
-            <Text style={styles.modalTitle}>{selectedScheduledActivity?.title ?? 'Scheduled activity'}</Text>
+            <View style={styles.modalHeaderRow}>
+              <Text style={styles.modalTitle}>{selectedScheduledActivity?.title ?? 'Scheduled activity'}</Text>
+              <Pressable
+                accessibilityLabel="Close activity editor"
+                hitSlop={8}
+                onPress={() => setSelectedScheduledActivity(null)}
+                style={styles.modalCloseBtn}
+              >
+                <Text style={styles.modalCloseBtnText}>✕</Text>
+              </Pressable>
+            </View>
             <Text style={styles.modalMeta}>
               {selectedScheduledActivity
                 ? `${new Date(selectedScheduledActivity.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} · ${formatCalendarTime(new Date(selectedScheduledActivity.startAt))} - ${formatCalendarTime(new Date(selectedScheduledActivity.endAt))}`
@@ -3724,123 +3898,29 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             </View>
 
             <ScrollView style={styles.modalList}>
-              {activeTodos.map((todo) => {
-                const dueHint = extractTodoDueHint(todo.notes);
-                const overdue = isTodoOverdue(todo, Date.now(), timeZone);
-                const deadlineAt = getTodoDeadlineAt(todo);
-                const dueDate = getTodoDueDate(todo, timeZone);
-                const linkedActivity = todo.linkedScheduledActivityId
-                  ? scheduledActivityById.get(todo.linkedScheduledActivityId)
-                  : undefined;
-                const isScheduled = !!linkedActivity && !todo.done;
-                const atomized = getTodoAtomizedProgress(todo);
-                const atomizedProgressLabel = atomized.isAtomized && atomized.totalMin != null
-                  ? `${atomized.progressMin}/${atomized.totalMin} min done`
-                  : null;
-                return (
-                  <View key={todo.id} style={[styles.todoRow, overdue && styles.todoRowOverdue]}>
-                    <Pressable
-                      onPress={() => {
-                        if (todo.done) {
-                          actions.updateSmartTodo({ ...todo, done: false });
-                          return;
-                        }
-                        const completion = applyTodoChunkCompletion(todo, linkedActivity?.durationMin);
-                        actions.updateSmartTodo({
-                          ...completion.todo,
-                          completionPromptedAt: new Date().toISOString(),
-                        });
-                        if (completion.usedAtomizedProgress && completion.totalMin != null) {
-                          const progressCopy = `${completion.progressMin}/${completion.totalMin} min`;
-                          Alert.alert(
-                            completion.becameDone ? 'To-do completed' : 'Chunk completed',
-                            completion.becameDone
-                              ? `Great work. "${todo.title}" is now fully complete (${progressCopy}).`
-                              : `Progress saved for "${todo.title}": ${progressCopy}.`,
-                          );
-                        }
-                      }}
-                    >
-                      <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
-                    </Pressable>
-                    <View style={{ flex: 1 }}>
-                      <View style={styles.todoTitleRow}>
-                        <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
-                        {overdue && (
-                          <View style={styles.overdueBadge}>
-                            <Text style={styles.overdueBadgeText}>Overdue</Text>
-                          </View>
-                        )}
-                      </View>
-                      {!!deadlineAt && (
-                        <Text style={[styles.todoDeadline, overdue && styles.todoDeadlineOverdue]}>
-                          Deadline {new Date(deadlineAt).toLocaleDateString()} {formatCalendarTime(new Date(deadlineAt))}
-                        </Text>
-                      )}
-                      {!deadlineAt && !!dueDate && (
-                        <Text style={[styles.todoDeadline, overdue && styles.todoDeadlineOverdue]}>
-                          Due {new Date(`${dueDate}T00:00:00`).toLocaleDateString()}
-                        </Text>
-                      )}
-                      {!deadlineAt && !dueDate && !!dueHint && (
-                        <Text style={styles.todoDueHint}>{dueHint}</Text>
-                      )}
-                      {!!todo.scheduledAt && !todo.done && (
-                        <Text style={styles.todoScheduledMeta}>
-                          Scheduled {todo.scheduledMode ? `(${todo.scheduledMode})` : ''}: {new Date(todo.scheduledAt).toLocaleDateString()} {formatCalendarTime(new Date(todo.scheduledAt))}
-                        </Text>
-                      )}
-                      {todo.hasFixedSchedule && !!deadlineAt && (
-                        <Text style={styles.todoFixedMeta}>Fixed time/date to-do</Text>
-                      )}
-                      {!!atomizedProgressLabel && (
-                        <Text style={styles.todoAtomizedProgress}>{atomizedProgressLabel}</Text>
-                      )}
-                    </View>
-                    {isScheduled ? (
-                      <Pressable onPress={() => openTodoScheduledActivity(linkedActivity)}>
-                        <Text style={styles.todoScheduledAction}>Scheduled</Text>
-                      </Pressable>
-                    ) : (
-                      <Pressable onPress={() => startTodoScheduling(todo)}>
-                        <Text style={styles.todoSchedule}>Schedule</Text>
-                      </Pressable>
-                    )}
-                    <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
-                      <Text style={styles.todoDelete}>Delete</Text>
-                    </Pressable>
-                  </View>
-                );
-              })}
+              <Pressable style={styles.todoSectionHeader} onPress={() => setShowUnscheduledTodos((prev) => !prev)}>
+                <Text style={styles.todoSectionHeaderText}>
+                  {showUnscheduledTodos ? '▾' : '▸'} Unscheduled to-dos ({unscheduledTodos.length})
+                </Text>
+              </Pressable>
 
-              <Pressable style={styles.doneTodosHeader} onPress={() => setShowDoneTodos((prev) => !prev)}>
-                <Text style={styles.doneTodosHeaderText}>
+              {showUnscheduledTodos && unscheduledTodos.map(renderActiveTodoRow)}
+
+              <Pressable style={styles.todoSectionHeader} onPress={() => setShowScheduledTodos((prev) => !prev)}>
+                <Text style={styles.todoSectionHeaderText}>
+                  {showScheduledTodos ? '▾' : '▸'} Scheduled to-dos ({scheduledTodos.length})
+                </Text>
+              </Pressable>
+
+              {showScheduledTodos && scheduledTodos.map(renderActiveTodoRow)}
+
+              <Pressable style={styles.todoSectionHeader} onPress={() => setShowDoneTodos((prev) => !prev)}>
+                <Text style={styles.todoSectionHeaderText}>
                   {showDoneTodos ? '▾' : '▸'} Done to-dos ({doneTodos.length})
                 </Text>
               </Pressable>
 
-              {showDoneTodos && doneTodos.map((todo) => (
-                <View key={todo.id} style={styles.todoRowDoneCollapsed}>
-                  <Pressable onPress={() => actions.updateSmartTodo({ ...todo, done: false })}>
-                    <Text style={styles.todoCheck}>☑</Text>
-                  </Pressable>
-                  <View style={{ flex: 1 }}>
-                    <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
-                    {(() => {
-                      const atomized = getTodoAtomizedProgress(todo);
-                      if (!atomized.isAtomized || atomized.totalMin == null) return null;
-                      return (
-                        <Text style={styles.todoAtomizedProgressDone}>
-                          {atomized.progressMin}/{atomized.totalMin} min done
-                        </Text>
-                      );
-                    })()}
-                  </View>
-                  <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
-                    <Text style={styles.todoDelete}>Delete</Text>
-                  </Pressable>
-                </View>
-              ))}
+              {showDoneTodos && doneTodos.map(renderDoneTodoRow)}
             </ScrollView>
 
             <Pressable style={styles.closeBtn} onPress={() => setTodoModalOpen(false)}>
@@ -4568,6 +4648,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     padding: theme.spacing.lg,
     gap: theme.spacing.sm,
   },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    gap: theme.spacing.sm,
+  },
   todoModalCard: {
     maxHeight: '88%',
     borderRadius: theme.radius.lg,
@@ -4579,6 +4665,23 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.heading,
     color: theme.colors.text,
     fontSize: 20,
+    flex: 1,
+  },
+  modalCloseBtn: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: theme.colors.card,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+  },
+  modalCloseBtnText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.textMuted,
+    fontSize: 16,
+    lineHeight: 18,
   },
   modalMeta: {
     fontFamily: theme.fonts.body,
@@ -4949,14 +5052,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.danger,
   },
-  doneTodosHeader: {
+  todoSectionHeader: {
     marginTop: theme.spacing.xs,
     marginBottom: theme.spacing.sm,
     paddingVertical: 8,
     borderTopWidth: 1,
     borderTopColor: theme.colors.border,
   },
-  doneTodosHeaderText: {
+  todoSectionHeaderText: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
     fontSize: 13,

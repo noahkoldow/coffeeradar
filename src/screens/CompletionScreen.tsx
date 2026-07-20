@@ -46,11 +46,13 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
   const { state, actions } = useAppState();
+  const sessionActivityIntent = state.sessionActivityIntent?.trim() ?? '';
 
   const [showConfetti, setShowConfetti] = useState(false);
   const [celebrationTitle] = useState(() => pickRandom(CELEBRATION_TITLES));
   const [motivationalLine] = useState(() => pickRandom(MOTIVATIONAL_LINES));
   const [addedAsHabit, setAddedAsHabit] = useState(false);
+  const [rememberedSessionIntent, setRememberedSessionIntent] = useState(false);
 
   // Find habit data for streak display
   const habit = useMemo(() => {
@@ -194,6 +196,20 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
     logEvent('habit_added_from_completion', { title });
   }, [addedAsHabit, title, suggestionType, durationMin, description, tags, actions]);
 
+  const handleRememberSessionIntent = useCallback(() => {
+    if (!sessionActivityIntent || rememberedSessionIntent) return;
+    const existingDescription = state.prefs.selfDescription?.trim() ?? '';
+    const sessionLine = `Session goal: ${sessionActivityIntent}`;
+    const nextDescription = existingDescription
+      ? `${existingDescription}\n${sessionLine}`
+      : sessionLine;
+    actions.setPrefs({ ...state.prefs, selfDescription: nextDescription });
+    actions.setSessionActivityIntent('');
+    setRememberedSessionIntent(true);
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+    logEvent('session_intent_promoted_to_profile', { title, intent: sessionActivityIntent });
+  }, [actions, rememberedSessionIntent, sessionActivityIntent, state.prefs, title]);
+
   const confettiEmojis = emojis?.length ? emojis : ['✨', '🎉', '⭐', '🔥'];
 
   const typeLabel = suggestionType === 'AT_HOME' ? 'routine' : suggestionType === 'EVENT' ? 'event' : 'outing';
@@ -271,6 +287,21 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
           {(habit.longestStreak ?? 0) > (habit.currentStreak ?? 0) && (
             <Text style={styles.streakBest}>Best: {habit.longestStreak}</Text>
           )}
+        </Animated.View>
+      )}
+
+      {sessionActivityIntent && !rememberedSessionIntent && (
+        <Animated.View style={[styles.intentCallout, { opacity: contentOpacity }]}>
+          <Text style={styles.intentTitle}>Want to remember this for later?</Text>
+          <Text style={styles.intentSubtitle}>
+            We can save “{sessionActivityIntent}” into your daily-life profile so future suggestions can lean this way too.
+          </Text>
+          <Pressable
+            style={({ pressed }) => [styles.intentButton, pressed && { opacity: 0.7, transform: [{ scale: 0.97 }] }]}
+            onPress={handleRememberSessionIntent}
+          >
+            <Text style={styles.intentButtonText}>Save to profile</Text>
+          </Pressable>
         </Animated.View>
       )}
 
@@ -458,6 +489,40 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   streakBigEmoji: { fontSize: 32 },
   streakBigNum: { fontFamily: theme.fonts.heading, fontSize: 20, color: theme.colors.accentDark },
   streakBest: { fontFamily: theme.fonts.body, fontSize: 12, color: theme.colors.textMuted },
+  intentCallout: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.md,
+    padding: theme.spacing.md,
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+    borderWidth: 1,
+    borderColor: theme.colors.accentSoft,
+    marginBottom: theme.spacing.md,
+  },
+  intentTitle: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 16,
+    color: theme.colors.text,
+    textAlign: 'center',
+  },
+  intentSubtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 13,
+    color: theme.colors.textMuted,
+    textAlign: 'center',
+    lineHeight: 19,
+  },
+  intentButton: {
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 18,
+    paddingVertical: 10,
+    borderRadius: theme.radius.sm,
+  },
+  intentButtonText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: theme.colors.accentText,
+  },
   /* ── Add-as-habit CTA ─── */
   habitCta: {
     backgroundColor: theme.colors.card,

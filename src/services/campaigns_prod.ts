@@ -19,6 +19,7 @@ import {
 import { getAuth } from 'firebase/auth';
 import {
   Campaign,
+  BusinessCategory,
   CampaignStatus,
   CampaignMetrics,
   CampaignApproval,
@@ -35,15 +36,15 @@ const auth = getAuth();
 export interface CreateCampaignInput {
   title: string;
   hook: string;
-  cta: string;
+  cta: Campaign['cta'] | string;
   description: string;
-  category: string;
+  category: BusinessCategory | string;
   mediaUrl?: string;
   targeting: CampaignTargeting;
   budget?: {
-    currency: string;
-    amount: number;
-    bidType: 'CPM' | 'CPC' | 'conversion';
+    daily?: number;
+    total?: number;
+    currency?: string;
   };
   dateRange?: {
     startDate: string;
@@ -52,6 +53,42 @@ export interface CreateCampaignInput {
 }
 
 export interface UpdateCampaignInput extends Partial<CreateCampaignInput> {}
+
+const normalizeBusinessCategory = (value: BusinessCategory | string): BusinessCategory => {
+  const normalized = value.trim().toLowerCase();
+  const allowed: BusinessCategory[] = [
+    'restaurant',
+    'cafe',
+    'gym',
+    'wellness',
+    'entertainment',
+    'retail',
+    'services',
+    'events',
+    'tourism',
+    'other',
+  ];
+
+  return allowed.includes(normalized as BusinessCategory)
+    ? (normalized as BusinessCategory)
+    : 'other';
+};
+
+const normalizeCta = (value: Campaign['cta'] | string): Campaign['cta'] => {
+  if (typeof value === 'string') {
+    return {
+      text: value.trim(),
+      action: 'url',
+      value: '',
+    };
+  }
+
+  return {
+    text: value.text.trim(),
+    action: value.action,
+    value: value.value,
+  };
+};
 
 /**
  * Create a new campaign in a business
@@ -83,10 +120,10 @@ export const createCampaign = async (
   if (!input.hook?.trim()) {
     throw new Error('Campaign hook/headline is required');
   }
-  if (!input.cta?.trim()) {
+  if (typeof input.cta === 'string' ? !input.cta.trim() : !input.cta.text?.trim()) {
     throw new Error('Campaign CTA text is required');
   }
-  if (!input.category?.trim()) {
+  if (!input.category?.toString().trim()) {
     throw new Error('Category is required');
   }
   if (!input.targeting) {
@@ -102,30 +139,35 @@ export const createCampaign = async (
     businessId,
     title: input.title.trim(),
     hook: input.hook.trim(),
-    cta: input.cta.trim(),
+    cta: normalizeCta(input.cta),
     description: input.description?.trim() || '',
-    category: input.category.trim(),
+    category: normalizeBusinessCategory(input.category),
     mediaUrl: input.mediaUrl || '',
+    media: [],
     targeting: input.targeting,
     budget: input.budget || {
+      total: 0,
       currency: 'EUR',
-      amount: 0,
-      bidType: 'CPM',
     },
     dateRange: {
       startDate: input.dateRange?.startDate || now.toDate().toISOString(),
       endDate: input.dateRange?.endDate || defaultEndDate.toISOString(),
     },
     status: 'draft' as const,
-    createdAt: now,
+    createdAt: now.toDate().toISOString(),
+    updatedAt: now.toDate().toISOString(),
     createdBy: user.uid,
     metrics: {
       impressions: 0,
       clicks: 0,
+      engagements: 0,
+      activityStarts: 0,
+      calendarAdds: 0,
       conversions: 0,
-      spend: 0,
+      uniqueUsers: 0,
       ctr: 0,
       conversionRate: 0,
+      lastUpdated: now.toDate().toISOString(),
     },
   };
 
@@ -287,13 +329,13 @@ export const updateCampaign = async (
       updatePayload.hook = updates.hook.trim();
     }
     if (updates.cta) {
-      updatePayload.cta = updates.cta.trim();
+      updatePayload.cta = normalizeCta(updates.cta);
     }
     if (updates.description !== undefined) {
       updatePayload.description = updates.description.trim();
     }
     if (updates.category) {
-      updatePayload.category = updates.category.trim();
+      updatePayload.category = normalizeBusinessCategory(updates.category);
     }
     if (updates.mediaUrl !== undefined) {
       updatePayload.mediaUrl = updates.mediaUrl;
@@ -678,10 +720,14 @@ export const getCampaignMetrics = async (
     const metrics: CampaignMetrics = {
       impressions: 0,
       clicks: 0,
+      engagements: 0,
+      activityStarts: 0,
+      calendarAdds: 0,
       conversions: 0,
-      spend: 0,
+      uniqueUsers: 0,
       ctr: 0,
       conversionRate: 0,
+      lastUpdated: new Date().toISOString(),
     };
 
     snap.docs.forEach((doc) => {
@@ -689,7 +735,7 @@ export const getCampaignMetrics = async (
       if (data.type === 'impression') metrics.impressions++;
       else if (data.type === 'click') metrics.clicks++;
       else if (data.type === 'conversion') metrics.conversions++;
-      if (data.spend) metrics.spend += data.spend;
+      if (data.type === 'click') metrics.engagements++;
     });
 
     // Calculate derived metrics

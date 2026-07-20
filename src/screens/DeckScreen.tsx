@@ -26,6 +26,7 @@ import { isAdsAvailable } from '../services/ads/mobileAds';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
 import { VideoAdModal } from '../components/ads/VideoAdModal';
 import { selectChallengeCandidates } from '../utils/challengeMode';
+import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -285,19 +286,34 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         const availabilityForTomorrow = state.permissions.calendarGranted
           ? await getAvailabilityForDate(tomorrow, state.disabledCalendars)
           : buildTomorrowFallbackAvailability();
+        const sanitizedTomorrowAvailability = applyIgnoredEventsToAvailability(
+          availabilityForTomorrow,
+          state.ignoredExternalEventKeys,
+        );
 
         const dayEvents = state.permissions.calendarGranted
           ? await getUpcomingEvents(dayStart, dayEnd, state.disabledCalendars)
           : [];
 
         const mergedTitles = [
-          ...(availabilityForTomorrow.contextEventTitles ?? []),
+          ...(sanitizedTomorrowAvailability.contextEventTitles ?? []),
           ...dayEvents.map((event) => event.title),
-        ].filter((title, idx, arr) => !!title && arr.indexOf(title) === idx).slice(0, 12);
+        ]
+          .filter((title, idx, arr) => !!title && arr.indexOf(title) === idx)
+          .filter((title) => {
+            const normalized = title.trim().toLowerCase();
+            if (!normalized) return false;
+            if (normalized.startsWith('[all-day]')) {
+              const cleanTitle = normalized.replace('[all-day]', '').trim();
+              return !state.ignoredExternalEventKeys.includes(`title:${cleanTitle}`);
+            }
+            return !state.ignoredExternalEventKeys.includes(`title:${normalized}`);
+          })
+          .slice(0, 12);
 
         if (!cancelled) {
           setTomorrowAvailability({
-            ...availabilityForTomorrow,
+            ...sanitizedTomorrowAvailability,
             contextEventTitles: mergedTitles,
           });
           setTomorrowCalendarEvents(dayEvents);
@@ -316,9 +332,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     })();
 
     return () => { cancelled = true; };
-  }, [planDate, state.permissions.calendarGranted, state.disabledCalendars, buildTomorrowFallbackAvailability]);
+  }, [planDate, state.permissions.calendarGranted, state.disabledCalendars, state.ignoredExternalEventKeys, buildTomorrowFallbackAvailability]);
 
   const availability: Availability = useMemo(() => {
+    const ignoredKeys = state.ignoredExternalEventKeys;
     if (planDate === 'tomorrow') {
       if (tomorrowAvailability) {
         const scheduledTitles = state.scheduledActivities
@@ -335,11 +352,11 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           ...scheduledTitles,
         ].filter((title, idx, arr) => !!title && arr.indexOf(title) === idx).slice(0, 12);
         return {
-          ...tomorrowAvailability,
+          ...applyIgnoredEventsToAvailability(tomorrowAvailability, ignoredKeys),
           contextEventTitles,
         };
       }
-      return buildTomorrowFallbackAvailability();
+      return applyIgnoredEventsToAvailability(buildTomorrowFallbackAvailability(), ignoredKeys);
     }
     if (state.availability && !route.params?.durationOverride) {
       // The user explicitly tapped "Do something now" — if calendar says 0 min
@@ -347,26 +364,26 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       const dur = Math.max(state.availability.durationMin, 15);
       if (dur !== state.availability.durationMin) {
         const now = new Date();
-        return {
+        return applyIgnoredEventsToAvailability({
           ...state.availability,
           start: toISO(now),
           end: toISO(addMinutes(now, dur)),
           durationMin: dur,
-        };
+        }, ignoredKeys);
       }
-      return state.availability;
+      return applyIgnoredEventsToAvailability(state.availability, ignoredKeys);
     }
     const now = new Date();
     const durationMin = route.params?.durationOverride ?? 120;
-    return {
+    return applyIgnoredEventsToAvailability({
       start: toISO(now),
       end: toISO(addMinutes(now, durationMin)),
       durationMin,
       nextEventTitle: null,
-    };
+    }, ignoredKeys);
     // Only recompute when the actual data changes, not every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [planDate, tomorrowAvailability, state.scheduledActivities, state.availability?.durationMin, state.availability?.start, route.params?.durationOverride, buildTomorrowFallbackAvailability]);
+  }, [planDate, tomorrowAvailability, state.scheduledActivities, state.availability?.durationMin, state.availability?.start, state.ignoredExternalEventKeys, route.params?.durationOverride, buildTomorrowFallbackAvailability]);
 
   type DayEvent = { title: string; start: number; end: number };
 
@@ -630,6 +647,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         state.locationProfile,
         route.params?.filter,
         state.savedSuggestions,
+        state.sessionActivityIntent,
         state.userId,
         planDate === 'tomorrow' ? new Date(availability.start) : undefined,
       );
@@ -1478,7 +1496,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           </Text>
           <View style={styles.actions}>
             <PrimaryButton label={nextNewSetPlaysAd ? 'New set  (▶)' : 'New set'} onPress={handleNewSet} />
-            <Pressable onPress={() => navigation.navigate('Settings')}>
+            <Pressable onPress={() => navigation.navigate('Settings', { fromRefine: true })}>
               <Text style={styles.refineLink}>
                 {ranOutEarly ? '⚙️  Expand your interests' : 'Refine what to do'}
               </Text>

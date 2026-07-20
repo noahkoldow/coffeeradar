@@ -3,6 +3,8 @@ import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { auth, db, ensureAuth, firebaseEnabled, storage } from './firebase';
 import { CommunityIdeaSubmission, CommunityIdeaSubmissionInput, DeckSuggestion, HabitTimeOfDay, Suggestion } from '../types';
 
+const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
+
 const canSync = (): boolean => {
   if (!firebaseEnabled || !db || !auth) return false;
   const user = auth.currentUser;

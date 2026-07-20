@@ -25,6 +25,7 @@ import {
   loadHistory,
   loadOnboardingComplete,
   loadPrefs,
+  loadIgnoredExternalEventKeys,
   loadTagAffinities,
   saveActivityLog,
   saveDisabledCalendars,
@@ -32,6 +33,7 @@ import {
   saveHistory,
   saveOnboardingComplete,
   savePrefs,
+  saveIgnoredExternalEventKeys,
   saveTagAffinities,
   loadInProgressPlanSession,
   loadScheduledActivities,
@@ -74,6 +76,7 @@ import { recordCommunityIdeaCompletion } from '../services/communityIdeas';impor
   isBusinessPremium,
 } from '../services/user';
 import { setPreferredTimeZone, initializeDeviceTimeZone } from '../utils/time';
+import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
 
 // Swipe bank config
 const SWIPE_BANK_DEFAULT = 20;
@@ -139,6 +142,7 @@ type AppState = {
   activityLog: ActivityLog[];
   location: LocationState;
   availability: Availability | null;
+  ignoredExternalEventKeys: string[];
   disabledCalendars: string[];
   preloadedDeck: { deck: DeckSuggestion[]; usedFallback: boolean } | null;
   deckLoading: boolean;
@@ -146,6 +150,7 @@ type AppState = {
   deckIndex: number;
   tagAffinities: TagAffinities;
   locationProfile: LocationProfile | null;
+  sessionActivityIntent: string;
   scheduledActivities: ScheduledActivity[];
   inProgressPlanSession: InProgressPlanSession | null;
   savedSuggestions: SavedSuggestion[];
@@ -174,6 +179,9 @@ type AppActions = {
   removeLatestActivityForHabit: (habitId: string) => void;
   setLocation: (value: LocationState) => void;
   setAvailability: (value: Availability | null) => void;
+  setIgnoredExternalEventKeys: (value: string[]) => void;
+  addIgnoredExternalEventKey: (value: string) => void;
+  removeIgnoredExternalEventKey: (value: string) => void;
   setDisabledCalendars: (value: string[]) => void;
   completeOnboarding: () => void;
   preloadDeck: (availability: Availability, durationOverride?: number | null) => void;
@@ -182,6 +190,7 @@ type AppActions = {
   initGeminiPool: (allGemini: Suggestion[], usedIds: Set<string>) => void;
   setTagAffinities: (value: TagAffinities) => void;
   setLocationProfile: (value: LocationProfile | null) => void;
+  setSessionActivityIntent: (value: string) => void;
   addScheduledActivity: (item: ScheduledActivity) => void;
   updateScheduledActivity: (id: string, item: ScheduledActivity) => void;
   removeScheduledActivity: (id: string) => void;
@@ -217,11 +226,13 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [activityLog, setActivityLogState] = useState<ActivityLog[]>([]);
   const [location, setLocationState] = useState<LocationState>(defaultLocation);
   const [availability, setAvailabilityState] = useState<Availability | null>(null);
+  const [ignoredExternalEventKeys, setIgnoredExternalEventKeysState] = useState<string[]>([]);
   const [disabledCalendars, setDisabledCalendarsState] = useState<string[]>([]);
   const [preloadedDeck, setPreloadedDeck] = useState<{ deck: DeckSuggestion[]; usedFallback: boolean } | null>(null);
   const [deckLoading, setDeckLoading] = useState(false);
   const [tagAffinities, setTagAffinitiesState] = useState<TagAffinities>({});
   const [locationProfile, setLocationProfileState] = useState<LocationProfile | null>(null);
+  const [sessionActivityIntent, setSessionActivityIntentState] = useState('');
   const [scheduledActivities, setScheduledActivitiesState] = useState<ScheduledActivity[]>([]);
   const [inProgressPlanSession, setInProgressPlanSessionState] = useState<InProgressPlanSession | null>(null);
   const [savedSuggestions, setSavedSuggestionsState] = useState<SavedSuggestion[]>([]);
@@ -240,10 +251,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
 
   // Refs for preloadDeck so it always reads the latest values without
   // being a useMemo dependency (which would cause infinite re-renders).
-  const preloadRef = useRef({ location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions });
+  const preloadRef = useRef({ location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions, sessionActivityIntent });
   useEffect(() => {
-    preloadRef.current = { location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions };
-  }, [location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions]);
+    preloadRef.current = { location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions, sessionActivityIntent };
+  }, [location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions, sessionActivityIntent]);
   const preloadedDeckRef = useRef(preloadedDeck);
   useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
   const geminiPoolRef = useRef<Suggestion[]>([]);
@@ -337,7 +348,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           setActivityLogState([]);
           setDisabledCalendarsState([]);
           setInProgressPlanSessionState(null);
+          setSessionActivityIntentState('');
           setSmartTodosState([]);
+          setIgnoredExternalEventKeysState([]);
           setOnboardingComplete(false);
           setAvailabilityState(null);
           setLocationState(defaultLocation);
@@ -356,6 +369,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           storedPlanSession,
           storedSaved,
           storedSmartTodos,
+          storedIgnoredExternalEventKeys,
           storedIsBusinessOnly,
           storedPreloadedDeck,
           guestPrefs,
@@ -368,6 +382,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           guestPlanSession,
           guestSaved,
           guestSmartTodos,
+          guestIgnoredExternalEventKeys,
           guestIsBusinessOnly,
           guestPreloadedDeck,
         ] = await Promise.all([
@@ -382,6 +397,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadInProgressPlanSession(userId),
           loadSavedSuggestions(userId),
           loadSmartTodos(userId),
+          loadIgnoredExternalEventKeys(userId),
           loadIsBusinessOnly(userId),
           loadPreloadedDeck(userId),
           loadPrefs(null),
@@ -395,6 +411,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           loadInProgressPlanSession(null),
           loadSavedSuggestions(null),
           loadSmartTodos(null),
+          loadIgnoredExternalEventKeys(null),
           loadIsBusinessOnly(null),
           loadPreloadedDeck(null),
         ]);
@@ -473,6 +490,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         const mergedSaved = fbSaved ?? storedSaved ?? guestSaved ?? [];
         setSavedSuggestionsState(mergedSaved);
         setSmartTodosState(storedSmartTodos ?? guestSmartTodos ?? []);
+        setIgnoredExternalEventKeysState(storedIgnoredExternalEventKeys ?? guestIgnoredExternalEventKeys ?? []);
         if (fbSaved && !storedSaved) {
           saveSavedSuggestions(fbSaved, userId).catch(() => undefined);
         }
@@ -761,7 +779,31 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setLocationState(value);
       setPreferredTimeZone(value.timeZone);
     },
-    setAvailability: (value) => setAvailabilityState(value),
+    setAvailability: (value) => {
+      const next = value
+        ? applyIgnoredEventsToAvailability(value, ignoredExternalEventKeys)
+        : value;
+      setAvailabilityState(next);
+    },
+    setIgnoredExternalEventKeys: (value) => {
+      setIgnoredExternalEventKeysState(value);
+      saveIgnoredExternalEventKeys(value, userId).catch(() => undefined);
+    },
+    addIgnoredExternalEventKey: (value) => {
+      setIgnoredExternalEventKeysState((prev) => {
+        if (prev.includes(value)) return prev;
+        const updated = [...prev, value];
+        saveIgnoredExternalEventKeys(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
+    removeIgnoredExternalEventKey: (value) => {
+      setIgnoredExternalEventKeysState((prev) => {
+        const updated = prev.filter((item) => item !== value);
+        saveIgnoredExternalEventKeys(updated, userId).catch(() => undefined);
+        return updated;
+      });
+    },
     setDisabledCalendars: (value) => {
       setDisabledCalendarsState(value);
       saveDisabledCalendars(value, userId).catch(() => undefined);
@@ -782,6 +824,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             };
           })()
         : avail;
+      const sanitizedAvail = applyIgnoredEventsToAvailability(finalAvail, ignoredExternalEventKeys);
       const id = ++deckBuildId.current;
       setDeckLoading(true);
       setPreloadedDeck(null);
@@ -798,7 +841,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       } = preloadRef.current;
       // Background preload gets a generous 15 s API timeout
       // (the user isn't waiting — they're on HomeScreen or swiping)
-      buildDeck(finalAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, userId)
+      buildDeck(sanitizedAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
         .then((result) => {
           // Only apply if this is still the latest build request
           if (deckBuildId.current === id) {
@@ -836,6 +879,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         syncLocationProfile(value).catch(() => undefined);
       }
     },
+    setSessionActivityIntent: (value) => {
+      setSessionActivityIntentState(value);
+      invalidatePreloadedDeck();
+    },
     addScheduledActivity: (item) => {
       setScheduledActivitiesState((prev) => {
         const updated = [item, ...prev];
@@ -854,6 +901,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             nextEventTitle: null,
           } as any;
         })();
+        const sanitizedAvail = applyIgnoredEventsToAvailability(finalAvail, ignoredExternalEventKeys);
         const id = ++deckBuildId.current;
         setDeckLoading(true);
         setPreloadedDeck(null);
@@ -869,7 +917,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           savedSuggestions: ss,
         } = preloadRef.current;
         // Background preload gets a generous 15 s API timeout
-        buildDeck(finalAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, userId)
+        buildDeck(sanitizedAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
           .then((result) => {
             if (deckBuildId.current === id) {
               setPreloadedDeck(result);
@@ -1023,6 +1071,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             nextEventTitle: null,
           } as any;
         })();
+        const sanitizedAvail = applyIgnoredEventsToAvailability(finalAvail, ignoredExternalEventKeys);
         const id = ++deckBuildId.current;
         setDeckLoading(true);
         setPreloadedDeck(null);
@@ -1037,7 +1086,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           locationProfile: lp,
           savedSuggestions: ss,
         } = preloadRef.current;
-        buildDeck(finalAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, userId)
+        buildDeck(sanitizedAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
           .then((result) => {
             if (deckBuildId.current === id) {
               setPreloadedDeck(result);
@@ -1150,10 +1199,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setPreferredTimeZone(null);
       setTagAffinitiesState({});
       setLocationProfileState(null);
+      setSessionActivityIntentState('');
       setScheduledActivitiesState([]);
       setInProgressPlanSessionState(null);
       setSavedSuggestionsState([]);
       setSmartTodosState([]);
+      setIgnoredExternalEventKeysState([]);
     },
     switchToBusinessMode: (profile) => {
       setBusinessProfileState(profile);
@@ -1180,7 +1231,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setIsPremium(effectivePremium);
       savePremiumActive(effectivePremium, userId).catch(() => undefined);
     },
-  }), [userId, emailHasPremium]);
+  }), [userId, emailHasPremium, sessionActivityIntent, ignoredExternalEventKeys, availability]);
 
   const state: AppState = {
     loading,
@@ -1195,6 +1246,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     activityLog,
     location,
     availability,
+    ignoredExternalEventKeys,
     disabledCalendars,
     preloadedDeck,
     deckLoading,
@@ -1202,6 +1254,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     deckIndex,
     tagAffinities,
     locationProfile,
+    sessionActivityIntent,
     scheduledActivities,
     inProgressPlanSession,
     savedSuggestions,

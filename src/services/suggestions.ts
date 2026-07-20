@@ -1261,6 +1261,7 @@ export const buildDeck = async (
   locProfile: LocationProfile | null = null,
   filter?: string,
   savedSuggestions: SavedSuggestion[] = [],
+  sessionActivityIntent?: string,
   userId?: string | null,
   nowOverride?: Date,
   geminiOverride?: Suggestion[],
@@ -1298,6 +1299,7 @@ export const buildDeck = async (
     lifestyle: prefs.lifestyle,
     selfDescription: prefs.selfDescription,
     customInterests: prefs.customInterests,
+    sessionActivityIntent,
     topPositiveTags,
     topSavedTitles,
   };

@@ -118,6 +118,8 @@ export type Availability = {
   dayEvents?: DayEventInfo[];
   /** Calendar event ID of the currently-happening event (for deep-linking) */
   currentEventId?: string | null;
+  /** End time of the currently-happening event (used when event is ignored in UI). */
+  currentEventEndAt?: string | null;
 };
 
 export type UserPrefs = {

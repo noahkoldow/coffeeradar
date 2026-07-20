@@ -53,6 +53,7 @@ export type GeminiLearningContext = {
   lifestyle?: UserPrefs['lifestyle'];
   selfDescription?: string;
   customInterests?: string[];
+  sessionActivityIntent?: string;
   topPositiveTags?: string[];
   topSavedTitles?: string[];
 };
@@ -253,6 +254,7 @@ const buildCacheKey = (
     lifestyle: learning?.lifestyle ?? null,
     selfDescription: learning?.selfDescription?.slice(0, 140) ?? null,
     customInterests: (learning?.customInterests ?? []).slice(0, 8),
+    sessionActivityIntent: learning?.sessionActivityIntent?.slice(0, 140) ?? null,
     topPositiveTags: (learning?.topPositiveTags ?? []).slice(0, 8),
     topSavedTitles: (learning?.topSavedTitles ?? []).slice(0, 5),
   },
@@ -445,6 +447,7 @@ const buildPrompt = (
     : 'none';
   const lifestyle = learning?.lifestyle ?? prefs.lifestyle ?? 'mixed';
   const selfDescription = learning?.selfDescription ?? prefs.selfDescription ?? 'not provided';
+  const sessionActivityIntent = learning?.sessionActivityIntent?.trim() || '';
 
   // --- Situational awareness signals ---------------------------------------
   const dayOfWeek = tzParts.weekday || 'Unknown';
@@ -520,6 +523,7 @@ const buildPrompt = (
       `- Saved titles: ${topSavedTitles}.`,
       `- Lifestyle: ${lifestyle}.`,
       `- Self-description: ${selfDescription}.`,
+      sessionActivityIntent ? `- Session-only intent: ${sessionActivityIntent}. Treat this as a temporary goal for the current session, not a permanent trait.` : '- Session-only intent: none provided.',
       `- Open to going out now: ${prefs.openToGoingOut}.`,
       '',
       'CURRENT CONTEXT (USE THIS EXPLICITLY)',

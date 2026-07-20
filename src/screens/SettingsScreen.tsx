@@ -72,10 +72,11 @@ const interestGroups = [
 
 type Props = StackScreenProps<RootStackParamList, 'Settings'>;
 
-export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
+export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state, actions } = useAppState();
+  const showRefineIntent = !!route.params?.fromRefine;
   const isAdmin = isBusinessAdmin(state.userEmail);
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
   const [debugMessages, setDebugMessages] = useState<DebugMessage[]>([]);
@@ -85,6 +86,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
   const [interestInput, setInterestInput] = useState('');
   const [selfDescription, setSelfDescription] = useState(state.prefs.selfDescription ?? '');
   const [lifestyle, setLifestyle] = useState(state.prefs.lifestyle ?? 'mixed');
+  const [sessionActivityIntent, setSessionActivityIntent] = useState(state.sessionActivityIntent ?? '');
   const [wakeStartTime, setWakeStartTime] = useState(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
   const [wakeEndTime, setWakeEndTime] = useState(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
   const insets = useSafeAreaInsets();
@@ -123,6 +125,10 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     setSelfDescription(state.prefs.selfDescription ?? '');
     setLifestyle(state.prefs.lifestyle ?? 'mixed');
   }, [state.prefs.interestTags, state.prefs.customInterests, state.prefs.selfDescription, state.prefs.lifestyle]);
+
+  useEffect(() => {
+    setSessionActivityIntent(state.sessionActivityIntent ?? '');
+  }, [state.sessionActivityIntent]);
 
   const buildAvailability = (): Availability => {
     if (state.availability) return state.availability;
@@ -187,6 +193,10 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
     updatePrefs({ customInterests: nextCustomInterests, interestTags: nextInterestTags });
   };
 
+  const saveSessionIntent = () => {
+    actions.setSessionActivityIntent(sessionActivityIntent.trim());
+  };
+
   const requireLocation = () => {
     if (state.location.lat && state.location.lng) return true;
     addDebugMessage('devops', 'Location missing. Enable location.');
@@ -218,6 +228,42 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
         </Pressable>
 
         <Text style={styles.title}>Settings</Text>
+
+        {showRefineIntent && (
+          <View style={styles.sessionIntentShell}>
+            <LinearGradient
+              colors={[theme.colors.accent, theme.isDark ? theme.colors.card : '#FFFFFF']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 1, y: 1 }}
+              style={styles.sessionIntentBorder}
+            >
+              <View style={styles.sessionIntentCard}>
+                <Text style={styles.sessionIntentTitle}>Anything specific you want to add for now?</Text>
+                <Text style={styles.sessionIntentSubtitle}>
+                  Add a temporary direction on what we should curate for you.
+                </Text>
+                <TextInput
+                  style={styles.sessionIntentInput}
+                  value={sessionActivityIntent}
+                  onChangeText={setSessionActivityIntent}
+                  placeholder="e.g. I’d like to do a bike ride"
+                  placeholderTextColor={theme.colors.textMuted}
+                  multiline
+                  textAlignVertical="top"
+                  maxLength={180}
+                />
+                <View style={styles.sessionIntentActions}>
+                  <Pressable style={styles.sessionIntentButton} onPress={saveSessionIntent}>
+                    <Text style={styles.sessionIntentButtonText}>Use for this session</Text>
+                  </Pressable>
+                  <Text style={styles.sessionIntentHint}>
+                    Active goal: {state.sessionActivityIntent?.trim() || 'none'}
+                  </Text>
+                </View>
+              </View>
+            </LinearGradient>
+          </View>
+        )}
 
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Local time</Text>
@@ -515,7 +561,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation }) => {
                 style={styles.debugButton}
                 onPress={() => runTest('gemini_test', async () => {
                   const availability = buildAvailability();
-                  const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null, undefined, state.userId);
+                  const results = await fetchGeminiSuggestions(state.location, state.prefs, availability, null, { sessionActivityIntent: state.sessionActivityIntent }, state.userId);
                   return results.length;
                 })}
               >
@@ -561,6 +607,66 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontSize: 28,
     marginTop: theme.spacing.sm,
     color: theme.colors.text,
+  },
+  sessionIntentShell: {
+    marginTop: theme.spacing.lg,
+  },
+  sessionIntentBorder: {
+    borderRadius: theme.radius.lg,
+    padding: 1,
+  },
+  sessionIntentCard: {
+    borderRadius: theme.radius.lg,
+    backgroundColor: theme.colors.card,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.sm,
+    shadowColor: theme.colors.shadow,
+    shadowOpacity: 0.06,
+    shadowRadius: 14,
+    shadowOffset: { width: 0, height: 5 },
+    elevation: 2,
+  },
+  sessionIntentTitle: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 22,
+    color: theme.colors.text,
+  },
+  sessionIntentSubtitle: {
+    fontFamily: theme.fonts.body,
+    fontSize: 14,
+    color: theme.colors.textMuted,
+    lineHeight: 20,
+  },
+  sessionIntentInput: {
+    marginTop: theme.spacing.xs,
+    minHeight: 104,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    borderRadius: theme.radius.md,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    color: theme.colors.text,
+    fontFamily: theme.fonts.body,
+    backgroundColor: theme.colors.surface,
+  },
+  sessionIntentActions: {
+    gap: theme.spacing.sm,
+  },
+  sessionIntentButton: {
+    alignSelf: 'flex-start',
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: theme.radius.sm,
+  },
+  sessionIntentButtonText: {
+    color: theme.colors.accentText,
+    fontFamily: theme.fonts.semibold,
+  },
+  sessionIntentHint: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
+    fontSize: 12,
   },
   section: {
     marginTop: theme.spacing.lg,
