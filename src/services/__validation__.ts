@@ -12,8 +12,8 @@ import {
   recordActivityCompleted,
   shouldSuggestHabitConversion,
   markRepetitionFriendly,
-} from '../src/services/activityRepetitionService';
-import { Suggestion, HistoryState } from '../src/types';
+} from './activityRepetitionService';
+import { Suggestion, HistoryState } from '../types';
 
 /**
  * Validation 1: 72-Hour Eligibility Window
@@ -62,17 +62,17 @@ function validateCompletionCounting() {
   
   // First completion
   history = recordActivityCompleted('morning-walk', history);
-  console.assert(history.completedActivityIds['morning-walk'] === 1, 'Count should be 1 after first completion');
+  console.assert(history.completedActivityIds?.['morning-walk'] === 1, 'Count should be 1 after first completion');
   console.log('✓ Completion 1: Count = 1');
   
   // Second completion
   history = recordActivityCompleted('morning-walk', history);
-  console.assert(history.completedActivityIds['morning-walk'] === 2, 'Count should be 2 after second completion');
+  console.assert(history.completedActivityIds?.['morning-walk'] === 2, 'Count should be 2 after second completion');
   console.log('✓ Completion 2: Count = 2');
   
   // Third completion
   history = recordActivityCompleted('morning-walk', history);
-  console.assert(history.completedActivityIds['morning-walk'] === 3, 'Count should be 3 after third completion');
+  console.assert(history.completedActivityIds?.['morning-walk'] === 3, 'Count should be 3 after third completion');
   console.log('✓ Completion 3: Count = 3 (HABIT CONVERSION ELIGIBLE)');
   
   console.log('');
@@ -125,7 +125,7 @@ function validateShowTracking() {
   history = recordActivityShown('morning-walk', history, now1);
   
   console.assert(
-    history.lastShownDates['morning-walk'] === now1.toISOString(),
+    history.lastShownDates?.['morning-walk'] === now1.toISOString(),
     'Should record exact timestamp'
   );
   console.log(`✓ Recorded: morning-walk shown at ${now1.toISOString()}`);
@@ -135,7 +135,7 @@ function validateShowTracking() {
   history = recordActivityShown('morning-walk', history, now2);
   
   console.assert(
-    history.lastShownDates['morning-walk'] === now2.toISOString(),
+    history.lastShownDates?.['morning-walk'] === now2.toISOString(),
     'Should update to new timestamp'
   );
   console.log(`✓ Updated: morning-walk shown at ${now2.toISOString()}`);
@@ -194,8 +194,8 @@ function validateCompleteScenario() {
   history = recordActivityShown('morning-walk', history, baseDate);
   history = recordActivityCompleted('morning-walk', history);
   console.log('  - Activity shown and accepted');
-  console.log(`  - Completions: ${history.completedActivityIds['morning-walk']}`);
-  console.log(`  - Conversion ready? ${shouldSuggestHabitConversion('morning-walk', history.completedActivityIds['morning-walk'] || 0)}`);
+  console.log(`  - Completions: ${history.completedActivityIds?.['morning-walk']}`);
+  console.log(`  - Conversion ready? ${shouldSuggestHabitConversion('morning-walk', history.completedActivityIds?.['morning-walk'] || 0)}`);
   
   // Day 2: Hidden (24 hours)
   const day2 = nextDate(baseDate, 1);
@@ -210,8 +210,8 @@ function validateCompleteScenario() {
   console.log('  - Activity shown again ✓');
   history = recordActivityShown('morning-walk', history, day4);
   history = recordActivityCompleted('morning-walk', history);
-  console.log(`  - Completions: ${history.completedActivityIds['morning-walk']}`);
-  console.log(`  - Conversion ready? ${shouldSuggestHabitConversion('morning-walk', history.completedActivityIds['morning-walk'] || 0)}`);
+  console.log(`  - Completions: ${history.completedActivityIds?.['morning-walk']}`);
+  console.log(`  - Conversion ready? ${shouldSuggestHabitConversion('morning-walk', history.completedActivityIds?.['morning-walk'] || 0)}`);
   
   // Day 7: Show third time
   console.log('Day 7 (72h from day 4):');
@@ -221,8 +221,8 @@ function validateCompleteScenario() {
   console.log('  - Activity shown again ✓');
   history = recordActivityShown('morning-walk', history, day7);
   history = recordActivityCompleted('morning-walk', history);
-  console.log(`  - Completions: ${history.completedActivityIds['morning-walk']}`);
-  const ready = shouldSuggestHabitConversion('morning-walk', history.completedActivityIds['morning-walk'] || 0);
+  console.log(`  - Completions: ${history.completedActivityIds?.['morning-walk']}`);
+  const ready = shouldSuggestHabitConversion('morning-walk', history.completedActivityIds?.['morning-walk'] || 0);
   console.assert(ready, 'Should be ready for habit conversion');
   console.log(`  - Conversion ready? ${ready} ✓✓✓ HABIT FORMATION COMPLETE!`);
   

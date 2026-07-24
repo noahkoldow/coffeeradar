@@ -14,7 +14,7 @@ import { ActivityBanner, SkyBanner } from '../components/ActivityBanner';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
-import { deletePlanEvent, getAvailability } from '../services/calendar';
+import { deletePlanEvent, getAvailability, getUpcomingEvents } from '../services/calendar';
 import { getCurrentLocation } from '../services/location';
 import { formatDuration, formatTime, getTimeWindowContext } from '../utils/time';
 import { logEvent } from '../services/analytics';
@@ -23,6 +23,7 @@ import { fetchWeather, WeatherCondition } from '../services/weather';
 import { prefetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { loadProfileAvatarUri, loadWeatherCondition, saveWeatherCondition } from '../utils/storage';
 import { detectLocationProfile } from '../services/locationProfile';
+import { getAvatarInitial } from '../utils/social';
 import { recommendedHabits } from '../data/habits';
 import { ActivityLog, Availability, Habit, ScheduledActivity } from '../types';
 import { formatHabitFrequency, formatHabitTimeOfDay, isHabitDue, streakEmoji, weeklyDots, getHabitUrgency } from '../utils/habits';
@@ -32,6 +33,7 @@ import { buildPlanSessionKey } from '../utils/planSession';
 import { getVisibleTags } from '../utils/visibleTags';
 import { applyTodoChunkCompletion } from '../utils/todoAtomization';
 import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Home'>;
 
@@ -123,6 +125,7 @@ const getDashboardTagTone = (tag: string): DashboardTagTone => {
 export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { t } = useI18n();
   const { state, actions } = useAppState();
   const [loading, setLoading] = useState(false);
   const [manualDuration, setManualDuration] = useState(60);
@@ -133,6 +136,10 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const [bannerPageIndex, setBannerPageIndex] = useState(0);
   const [profileAvatarUri, setProfileAvatarUri] = useState<string | null>(null);
   const insets = useSafeAreaInsets();
+  const actionIndexRef = useRef(actionIndex);
+  useEffect(() => {
+    actionIndexRef.current = actionIndex;
+  }, [actionIndex]);
   const actionsRef = useRef(actions);
   useEffect(() => { actionsRef.current = actions; }, [actions]);
   const deckQueueRef = useRef({
@@ -162,6 +169,15 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     }, [state.userId])
   );
   const isInitialMount = useRef(true);
+  const hasHandledHomeFocusRef = useRef(false);
+  const lastSettingsSignatureRef = useRef<string | null>(null);
+  const lastConsumptionMarkersRef = useRef<Record<ActivityModeKey, string | null>>({
+    all: null,
+    tomorrow: null,
+    productive: null,
+    challenge_me: null,
+    at_home: null,
+  });
   const isAdmin = isBusinessAdmin(state.userEmail);
   const premiumEnabled = state.isPremium;
 
@@ -255,6 +271,8 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     return () => clearInterval(interval);
   }, []);
 
+  const avatarInitial = useMemo(() => getAvatarInitial(state.userEmail), [state.userEmail]);
+
   const isOutsideWakeWindow = useMemo(() => {
     const ctx = getTimeWindowContext(
       new Date(wakeWindowNow),
@@ -267,24 +285,24 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
   const ACTION_MODES = useMemo(() => {
     const baseModes: ActionMode[] = [
-      { key: 'all', label: 'DO SOMETHING NOW', filter: undefined as string | undefined, bg: theme.colors.accent, text: theme.colors.accentText },
+      { key: 'all', label: t('home_action_now'), filter: undefined as string | undefined, bg: theme.colors.accent, text: theme.colors.accentText },
       {
         key: 'productive',
-        label: 'BE PRODUCTIVE',
+        label: t('home_action_productive'),
         filter: 'productive',
         bg: theme.isDark ? '#2A4A5E' : '#A8D8EA',
         text: theme.isDark ? '#D8F0FF' : '#1A3A4A',
       },
       {
         key: 'challenge_me',
-        label: 'CHALLENGE ME',
+        label: t('home_action_challenge'),
         filter: 'challenge_me',
         bg: theme.isDark ? '#4D2E66' : '#D7B9F1',
         text: theme.isDark ? '#F0E3FF' : '#3E2257',
       },
       {
         key: 'at_home',
-        label: 'HOMEBODY IT',
+        label: t('home_action_homebody'),
         filter: 'at_home',
         bg: theme.isDark ? '#54374A' : '#E2B6CF',
         text: theme.isDark ? '#F5DDED' : '#3A1A2E',
@@ -297,7 +315,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       baseModes[0],
       {
         key: 'tomorrow',
-        label: 'PLAN AHEAD',
+        label: t('home_action_plan_ahead'),
         filter: undefined as string | undefined,
         planDate: 'tomorrow' as const,
         bg: theme.isDark ? '#2E4F45' : '#B5EAD7',
@@ -307,7 +325,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       baseModes[2],
       baseModes[3],
     ];
-  }, [premiumEnabled, theme.colors.accent, theme.colors.accentText, theme.isDark]);
+  }, [premiumEnabled, t, theme.colors.accent, theme.colors.accentText, theme.isDark]);
 
   const swipesRemaining = state.swipeBank?.current ?? 0;
   const hasSwipes = swipesRemaining > 0;
@@ -344,6 +362,59 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const activityModeOrder: ActivityModeKey[] = ['all', 'tomorrow', 'productive', 'challenge_me', 'at_home'];
+
+  const settingsSignature = useMemo(() => JSON.stringify({
+    prefs: state.prefs,
+    sessionActivityIntent: state.sessionActivityIntent ?? '',
+    disabledCalendars: [...state.disabledCalendars].sort(),
+    permissions: {
+      calendarGranted: state.permissions.calendarGranted,
+      locationGranted: state.permissions.locationGranted,
+    },
+  }), [
+    state.prefs,
+    state.sessionActivityIntent,
+    state.disabledCalendars,
+    state.permissions.calendarGranted,
+    state.permissions.locationGranted,
+  ]);
+  const settingsSignatureRef = useRef(settingsSignature);
+  useEffect(() => {
+    settingsSignatureRef.current = settingsSignature;
+  }, [settingsSignature]);
+
+  const latestConsumptionMarkers = useMemo<Record<ActivityModeKey, string | null>>(() => {
+    const latest: Record<ActivityModeKey, { ts: number; marker: string } | null> = {
+      all: null,
+      tomorrow: null,
+      productive: null,
+      challenge_me: null,
+      at_home: null,
+    };
+
+    for (const entry of state.activityLog) {
+      const mode = resolveActivityMode(entry);
+      const ts = new Date(entry.timestamp).getTime();
+      if (!Number.isFinite(ts)) continue;
+      const marker = `${entry.id}:${entry.timestamp}`;
+      const prev = latest[mode];
+      if (!prev || ts > prev.ts) {
+        latest[mode] = { ts, marker };
+      }
+    }
+
+    return {
+      all: latest.all?.marker ?? null,
+      tomorrow: latest.tomorrow?.marker ?? null,
+      productive: latest.productive?.marker ?? null,
+      challenge_me: latest.challenge_me?.marker ?? null,
+      at_home: latest.at_home?.marker ?? null,
+    };
+  }, [state.activityLog, resolveActivityMode]);
+  const latestConsumptionMarkersRef = useRef(latestConsumptionMarkers);
+  useEffect(() => {
+    latestConsumptionMarkersRef.current = latestConsumptionMarkers;
+  }, [latestConsumptionMarkers]);
 
   const weekGraph = useMemo(() => {
     const anchorDate = new Date();
@@ -618,29 +689,61 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   useFocusEffect(
     useCallback(() => {
       homeScrollRef.current?.scrollTo({ y: 0, animated: true });
+      bannerScrollRef.current?.scrollTo({ x: 0, animated: false });
+      bannerPageRef.current = 0;
+      setBannerPageIndex(0);
       if (isInitialMount.current) {
         isInitialMount.current = false;
       } else {
         setBannerKey((k) => k + 1);
       }
+      if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+      if (hasBadges.current) scheduleBannerSwipe();
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       setSelectedDayKey(today.toDateString());
       pendingGraphScrollRef.current = true;
       scrollGraphToToday(false);
       navigatingRef.current = false;          // reset guard on focus
-      refreshContext();
-    }, [refreshContext, scrollGraphToToday]),
+
+      const currentModes = ACTION_MODES;
+      const selectedMode = currentModes[
+        Math.max(0, Math.min(actionIndexRef.current, currentModes.length - 1))
+      ]?.key ?? 'all';
+
+      const isFirstHomeFocus = !hasHandledHomeFocusRef.current;
+      const settingsChanged = !!(
+        hasHandledHomeFocusRef.current
+        && lastSettingsSignatureRef.current
+        && lastSettingsSignatureRef.current !== settingsSignatureRef.current
+      );
+      const consumedInSelectedMode = !!(
+        hasHandledHomeFocusRef.current
+        && lastConsumptionMarkersRef.current[selectedMode] !== latestConsumptionMarkersRef.current[selectedMode]
+      );
+
+      if (isFirstHomeFocus || settingsChanged || consumedInSelectedMode) {
+        refreshContext();
+      }
+
+      hasHandledHomeFocusRef.current = true;
+      lastSettingsSignatureRef.current = settingsSignatureRef.current;
+      lastConsumptionMarkersRef.current = latestConsumptionMarkersRef.current;
+
+      return () => {
+        if (bannerTimerRef.current) clearTimeout(bannerTimerRef.current);
+      };
+    }, [ACTION_MODES, refreshContext, scheduleBannerSwipe, scrollGraphToToday]),
   );
 
   useEffect(() => {
     if (state.availability?.durationMin && state.availability.durationMin < 20) {
-      Alert.alert('Tight window', 'Your next event starts soon. You can still pick a quick action.');
+      Alert.alert(t('home_tight_window_title'), t('home_tight_window_body'));
     }
-  }, [state.availability?.durationMin]);
+  }, [state.availability?.durationMin, t]);
 
   const isBusyNow = !!(state.permissions.calendarGranted && state.availability && state.availability.durationMin === 0);
-  const currentEventTitle = state.availability?.nextEventTitle || 'Current event';
+  const currentEventTitle = state.availability?.nextEventTitle || t('home_current_event');
   const currentEventIgnoreKey = useMemo(() => {
     const currentEventId = state.availability?.currentEventId?.trim();
     if (currentEventId) return `id:${currentEventId}`;
@@ -666,12 +769,12 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
 
     if (!linkedScheduled.length) {
       Alert.alert(
-        'Ignore external event?',
-        'This is an externally sourced event. Do you want to ignore it?',
+        t('home_ignore_external_title'),
+        t('home_ignore_external_body'),
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: t('common_cancel'), style: 'cancel' },
           {
-            text: 'Ignore',
+            text: t('home_ignore'),
             onPress: () => {
               const fallbackTitleKey = state.availability?.nextEventTitle?.trim().toLowerCase();
               const eventKey = `id:${eventId}` || (fallbackTitleKey ? `title:${fallbackTitleKey}` : null);
@@ -684,10 +787,10 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
 
-    Alert.alert('Delete this activity?', 'This removes it from your calendar.', [
-      { text: 'Keep', style: 'cancel' },
+    Alert.alert(t('home_delete_activity_title'), t('home_delete_activity_body'), [
+      { text: t('home_keep'), style: 'cancel' },
       {
-        text: 'Delete',
+        text: t('common_delete'),
         style: 'destructive',
         onPress: async () => {
           try {
@@ -698,21 +801,21 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             await refreshContext();
           } catch (error) {
             console.warn('Failed to delete current event', error);
-            Alert.alert('Could not delete', 'Please try again from your calendar app.');
+            Alert.alert(t('home_could_not_delete_title'), t('home_could_not_delete_body'));
           }
         },
       },
     ]);
-  }, [actions, refreshContext, state.availability?.currentEventId, state.availability?.nextEventTitle, state.scheduledActivities]);
+  }, [actions, refreshContext, state.availability?.currentEventId, state.availability?.nextEventTitle, state.scheduledActivities, t]);
   const availabilityLabel = state.availability
     ? isBusyNowEffective
-      ? 'You are busy right now'
+      ? t('home_busy_now')
       : state.availability.durationMin >= 240
-        ? 'You are free for the next few hours'
+        ? t('home_busy_next_hours')
         : state.availability.durationMin === 0
-          ? 'You are free right now'
-          : `You are free for ${formatDuration(state.availability.durationMin)}`
-    : 'Pick something you can do right now';
+          ? t('home_free_now')
+          : t('home_free_for', { value: formatDuration(state.availability.durationMin) })
+    : t('home_pick_now');
 
   const availabilityEmoji = state.availability
     ? isBusyNowEffective
@@ -783,6 +886,9 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const beforeLabel = nextEventTitle ? `before ${nextEventTitle}` : '';
   const untilLabel = nextEventStartDate ? formatTime(nextEventStartDate) : '';
   const showTappableUntil = !isBusyNowEffective && !!untilLabel && !!linkedUpcomingScheduledActivity;
+  const canPressAvailabilitySubtext = !isBusyNowEffective
+    && state.permissions.calendarGranted
+    && (!!linkedUpcomingScheduledActivity || !!nextEventTitle || !!nextEventStartDate);
 
   const availabilitySubtextPrefix = isBusyNowEffective
     ? ''
@@ -926,7 +1032,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     const normalizedTitle = entry.title.trim().toLowerCase();
     if (!normalizedTitle) return;
     if (existingHabitNames.has(normalizedTitle)) {
-      Alert.alert('Already in habits', 'This activity is already in your habits list.');
+      Alert.alert(t('home_already_in_habits_title'), t('home_already_in_habits_body'));
       return;
     }
 
@@ -985,11 +1091,11 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     }
     if (isBusyNowEffective) {
       Alert.alert(
-        'You are busy right now',
-        `Current plan: ${currentEventTitle}. Start something else anyway?`,
+        t('home_busy_prompt_title'),
+        t('home_busy_prompt_body', { title: currentEventTitle }),
         [
-          { text: 'Keep plan', style: 'cancel' },
-          { text: 'Proceed', onPress: () => startDeck(currentMode.filter, currentMode.planDate) },
+          { text: t('home_keep_plan'), style: 'cancel' },
+          { text: t('home_proceed'), onPress: () => startDeck(currentMode.filter, currentMode.planDate) },
         ],
       );
       return;
@@ -1007,15 +1113,78 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   }, [navigation, openPlanSession]);
 
   const onPressAvailabilityUntil = useCallback(() => {
-    if (!linkedUpcomingScheduledActivity) return;
-    openScheduledActivity(linkedUpcomingScheduledActivity);
-  }, [linkedUpcomingScheduledActivity, openScheduledActivity]);
+    const openExternalCalendar = (eventId?: string | null) => {
+      if (Platform.OS === 'ios') {
+        Linking.openURL('calshow:').catch(() => {});
+        return;
+      }
+
+      const fallbackTimeUrl = nextEventStartDate
+        ? `content://com.android.calendar/time/${nextEventStartDate.getTime()}`
+        : 'content://com.android.calendar/time/';
+
+      if (eventId) {
+        Linking.openURL(`content://com.android.calendar/events/${eventId}`).catch(() => {
+          Linking.openURL(fallbackTimeUrl).catch(() =>
+            Linking.openURL('content://com.android.calendar/time/').catch(() => {}),
+          );
+        });
+        return;
+      }
+
+      Linking.openURL(fallbackTimeUrl).catch(() =>
+        Linking.openURL('content://com.android.calendar/time/').catch(() => {}),
+      );
+    };
+
+    if (linkedUpcomingScheduledActivity) {
+      openScheduledActivity(linkedUpcomingScheduledActivity);
+      return;
+    }
+
+    if (!state.permissions.calendarGranted) return;
+
+    const resolveAndOpenExternal = async () => {
+      if (!nextEventStartDate) {
+        openExternalCalendar(null);
+        return;
+      }
+
+      try {
+        const searchStart = new Date(nextEventStartDate.getTime() - 10 * 60 * 1000);
+        const searchEnd = new Date(nextEventStartDate.getTime() + 10 * 60 * 1000);
+        const normalizedNextTitle = nextEventTitle.trim().toLowerCase();
+        const nearbyEvents = await getUpcomingEvents(searchStart, searchEnd, state.disabledCalendars);
+
+        const exactMatch = nearbyEvents.find((event) => {
+          if (event.allDay) return false;
+          if (Math.abs(event.startDate.getTime() - nextEventStartDate.getTime()) > 2 * 60 * 1000) return false;
+          if (!normalizedNextTitle) return true;
+          return event.title.trim().toLowerCase() === normalizedNextTitle;
+        });
+
+        openExternalCalendar(exactMatch?.id ?? nearbyEvents.find((event) => !event.allDay)?.id ?? null);
+      } catch (error) {
+        console.warn('Failed to resolve upcoming external event', error);
+        openExternalCalendar(null);
+      }
+    };
+
+    resolveAndOpenExternal().catch(() => openExternalCalendar(null));
+  }, [
+    linkedUpcomingScheduledActivity,
+    nextEventStartDate,
+    nextEventTitle,
+    openScheduledActivity,
+    state.disabledCalendars,
+    state.permissions.calendarGranted,
+  ]);
 
   const removeScheduledActivity = useCallback((item: ScheduledActivity) => {
-    Alert.alert('Delete this activity?', 'This removes it from your scheduled activities and your calendar.', [
-      { text: 'Keep', style: 'cancel' },
+    Alert.alert(t('home_delete_activity_title'), t('home_delete_scheduled_body'), [
+      { text: t('home_keep'), style: 'cancel' },
       {
-        text: 'Delete',
+        text: t('common_delete'),
         style: 'destructive',
         onPress: async () => {
           const linkedEventId = item.calendarEventId ?? item.commitment.calendarEventId;
@@ -1024,7 +1193,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
               await deletePlanEvent(linkedEventId);
             } catch (error) {
               console.warn('Failed to delete scheduled activity from calendar', error);
-              Alert.alert('Could not delete', 'Please try again from your calendar app.');
+              Alert.alert(t('home_could_not_delete_title'), t('home_could_not_delete_body'));
               return;
             }
           }
@@ -1034,7 +1203,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         },
       },
     ]);
-  }, [actions, refreshContext]);
+  }, [actions, refreshContext, t]);
 
   const completeScheduledActivity = useCallback((item: ScheduledActivity) => {
     const scheduledStart = new Date(item.startAt);
@@ -1077,11 +1246,15 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.topBar}>
           <View style={styles.logoContainer}>
             <View style={styles.logoRow}>
-              {profileAvatarUri ? (
-                <Pressable onPress={() => navigation.navigate('Profile')}>
+              <Pressable onPress={() => navigation.navigate('Profile')}>
+                {profileAvatarUri ? (
                   <Image source={{ uri: profileAvatarUri }} style={styles.headerAvatar} />
-                </Pressable>
-              ) : null}
+                ) : (
+                  <View style={styles.headerAvatarFallback}>
+                    <Text style={styles.headerAvatarFallbackText}>{avatarInitial}</Text>
+                  </View>
+                )}
+              </Pressable>
               <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
             </View>
             <View style={styles.locationRow}>
@@ -1110,10 +1283,10 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             </View>
             <View style={styles.headerRight}>
               <Pressable onPress={() => navigation.navigate('Profile')}>
-                <Text style={styles.settings}>Profile</Text>
+                <Text style={styles.settings}>{t('home_profile')}</Text>
               </Pressable>
               <Pressable onPress={() => navigation.navigate('Settings')}>
-                <Text style={styles.settings}>Settings</Text>
+                <Text style={styles.settings}>{t('home_settings')}</Text>
               </Pressable>
             </View>
           </View>
@@ -1151,15 +1324,15 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           >
             <View style={[styles.bannerPage, { width: screenWidth }]}>
               <View style={styles.skyWrapper}>
-                <SkyBanner weather={weatherCondition} />
+                <SkyBanner key={`sky-${bannerKey}`} weather={weatherCondition} />
               </View>
-              <ActivityBanner weather={weatherCondition} restartKey={bannerKey} sleepMode={isOutsideWakeWindow} />
+              <ActivityBanner key={`activity-${bannerKey}`} weather={weatherCondition} restartKey={bannerKey} sleepMode={isOutsideWakeWindow} />
             </View>
             {badgeProgress.length > 0 && (
               <View style={[styles.bannerPage, styles.badgeBannerPage, { width: screenWidth }]}>
                 {badgeProgress.slice(0, 3).map((badge) => (
                   <Pressable key={badge.id} style={styles.bannerBadgeItem} onPress={() => navigation.navigate('BadgeDetail', { badgeId: badge.id })}>
-                    <Text style={styles.badgeLevelLabel}>Level {badge.level}</Text>
+                    <Text style={styles.badgeLevelLabel}>{t('home_level', { value: badge.level })}</Text>
                     <View style={styles.bannerBadgeIconWrap}>
                       <BadgeRing size={41} strokeWidth={4} progress={badge.progress} level={badge.level} color={badge.color} />
                       <View style={styles.bannerBadgeOverlay}>
@@ -1192,7 +1365,7 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                   const modeMuted = !modeAvailable || (isBusyNowEffective && item.key !== 'tomorrow');
                   return (
                 <PrimaryButton
-                  label={loading ? 'Working...' : item.label}
+                  label={loading ? t('home_working') : item.label}
                   glow={!isBusyNowEffective && modeAvailable}
                   variant={modeMuted ? 'muted' : 'default'}
                   bgColor={modeMuted ? undefined : item.bg}
@@ -1236,9 +1409,9 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 }
               }}
             >
-              <Text style={styles.busyLabel}>Happening now</Text>
+              <Text style={styles.busyLabel}>{t('home_happening_now')}</Text>
               <Text style={styles.busyTitle}>{activePlanSession?.suggestion?.title ?? currentEventTitle}</Text>
-              <Text style={styles.busyHint}>{activePlanSession || currentScheduledActivity ? 'Tap to resume activity' : 'Tap to open in calendar'}</Text>
+              <Text style={styles.busyHint}>{activePlanSession || currentScheduledActivity ? t('home_tap_resume') : t('home_tap_calendar')}</Text>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Delete current activity from calendar"
@@ -1258,21 +1431,33 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
           )}
           {!!availabilitySubtext && (
             <View style={styles.deckMetaRow}>
-              <Text style={styles.subtext}>
-                {availabilitySubtextPrefix}
-                {!!availabilitySubtextSuffix && availabilitySubtextSuffix}
-                {showTappableUntil ? (
-                  <Text
-                    accessibilityRole="button"
-                    onPress={onPressAvailabilityUntil}
-                    style={styles.subtextLink}
-                  >
-                    {untilLabel}
+              {canPressAvailabilitySubtext ? (
+                <Pressable accessibilityRole="button" onPress={onPressAvailabilityUntil} style={styles.deckMetaPressable}>
+                  <Text style={styles.subtext}>
+                    {availabilitySubtextPrefix}
+                    {!!availabilitySubtextSuffix && availabilitySubtextSuffix}
+                    {showTappableUntil ? (
+                      <Text style={styles.subtextLink}>
+                        {untilLabel}
+                      </Text>
+                    ) : (
+                      !!untilLabel && <Text>{untilLabel}</Text>
+                    )}
                   </Text>
-                ) : (
-                  !!untilLabel && <Text>{untilLabel}</Text>
-                )}
-              </Text>
+                </Pressable>
+              ) : (
+                <Text style={styles.subtext}>
+                  {availabilitySubtextPrefix}
+                  {!!availabilitySubtextSuffix && availabilitySubtextSuffix}
+                  {showTappableUntil ? (
+                    <Text style={styles.subtextLink}>
+                      {untilLabel}
+                    </Text>
+                  ) : (
+                    !!untilLabel && <Text>{untilLabel}</Text>
+                  )}
+                </Text>
+              )}
             </View>
           )}
           {/* ������ Scheduled activities ������ */}
@@ -1287,8 +1472,8 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                 <View style={styles.scheduledSectionTitleRow}>
                   <Text style={styles.scheduledSectionTitle}>
                     {isScheduledCollapsed
-                      ? `Scheduled (${dashboardScheduledActivities.length} today)`
-                      : 'Scheduled'}
+                      ? t('home_scheduled_today_count', { count: dashboardScheduledActivities.length })
+                      : t('home_scheduled')}
                   </Text>
                   {isScheduledCollapsed && <Text style={styles.scheduledSectionTriangle}>▸</Text>}
                 </View>
@@ -1310,13 +1495,13 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
                     <View style={styles.scheduledCardRow}>
                       {isOverdue && (
                         <View style={styles.scheduledOverdueMarker}>
-                          <Text style={styles.scheduledOverdueMarkerText}>OVERDUE</Text>
+                          <Text style={styles.scheduledOverdueMarkerText}>{t('home_overdue')}</Text>
                         </View>
                       )}
                       <View style={{ flex: 1 }}>
                         <Text style={styles.scheduledTitle} numberOfLines={1}>{item.title}</Text>
                         <Text style={[styles.scheduledMeta, isOverdue && styles.scheduledMetaOverdue]}>
-                          {isOverdue ? 'Overdue | ' : ''}
+                          {isOverdue ? t('home_overdue_prefix') : ''}
                           {new Date(item.startAt).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })} | {formatTime(new Date(item.startAt))} | {item.durationMin} min
                         </Text>
                       </View>
@@ -1658,6 +1843,8 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     paddingHorizontal: theme.spacing.xl,
     zIndex: 10,
     elevation: 10,
+    backgroundColor: theme.colors.background,
+    paddingBottom: theme.spacing.xs,
   },
   headerFade: {
     position: 'absolute',
@@ -1676,12 +1863,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   logoContainer: {
     alignItems: 'flex-start',
     gap: 2,
+    flexGrow: 1,
+    flexShrink: 1,
+    minWidth: 0,
   },
   logoRow: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 4,
     flexShrink: 1,
+    minWidth: 0,
   },
   headerAvatar: {
     width: LOGO_HEIGHT + 4,
@@ -1689,6 +1880,22 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderRadius: (LOGO_HEIGHT + 4) / 2,
     borderWidth: 1,
     borderColor: 'rgba(0,0,0,0.06)',
+  },
+  headerAvatarFallback: {
+    width: LOGO_HEIGHT + 4,
+    height: LOGO_HEIGHT + 4,
+    borderRadius: (LOGO_HEIGHT + 4) / 2,
+    borderWidth: 1,
+    borderColor: 'rgba(0,0,0,0.06)',
+    backgroundColor: '#D6DADF',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerAvatarFallbackText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 14,
+    color: '#5E6670',
+    lineHeight: 16,
   },
   topBar: {
     flexDirection: 'row',
@@ -1700,6 +1907,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     alignItems: 'flex-end',
     gap: theme.spacing.xs,
     paddingTop: 0,
+    flexShrink: 0,
   },
   bankActionRow: {
     flexDirection: 'row',
@@ -1780,6 +1988,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     justifyContent: 'space-between',
     gap: theme.spacing.sm,
     marginTop: theme.spacing.md,
+  },
+  deckMetaPressable: {
+    flex: 1,
   },
   footer: {
     position: 'absolute',

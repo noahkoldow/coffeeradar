@@ -11,6 +11,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 import { requestLocationPermission } from '../services/location';
 import { logEvent } from '../services/analytics';
+import { useI18n } from '../i18n/I18nProvider';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
@@ -20,10 +21,12 @@ type Props = StackScreenProps<RootStackParamList, 'LocationPermission'>;
 export const LocationPermissionScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
   const [radiusKm, setRadiusKm] = useState(state.prefs.radiusKm);
+  const isGerman = language === 'de';
 
   const onRequest = async () => {
     setLoading(true);
@@ -48,13 +51,17 @@ export const LocationPermissionScreen: React.FC<Props> = ({ navigation }) => {
     >
       <View style={styles.content}>
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-        <Text style={styles.title}>Allow location 📍</Text>
+        <Text style={styles.title}>{isGerman ? 'Standort erlauben 📍' : 'Allow location 📍'}</Text>
         <Text style={styles.subtitle}>
-          We use your location to make sure you can arrive on time and to find nearby things that fit you.
+          {isGerman
+            ? 'Wir nutzen deinen Standort, damit du rechtzeitig ankommst und passende Dinge in deiner Nahe findest.'
+            : 'We use your location to make sure you can arrive on time and to find nearby things that fit you.'}
         </Text>
         <View style={styles.radiusCard}>
-          <Text style={styles.radiusLabel}>Search radius — {radiusKm} km</Text>
-          <Text style={styles.radiusHint}>Pick how far we should look for good nearby options.</Text>
+          <Text style={styles.radiusLabel}>{isGerman ? 'Suchradius' : 'Search radius'} - {radiusKm} km</Text>
+          <Text style={styles.radiusHint}>
+            {isGerman ? 'Lege fest, wie weit wir nach guten Optionen in deiner Nahe suchen sollen.' : 'Pick how far we should look for good nearby options.'}
+          </Text>
           <Slider
             style={styles.slider}
             minimumValue={1}
@@ -73,12 +80,12 @@ export const LocationPermissionScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       </View>
       <PrimaryButton
-        label={loading ? 'Requesting...' : 'Allow location'}
+        label={loading ? '...' : (isGerman ? 'Standort erlauben' : 'Allow location')}
         onPress={onRequest}
         style={styles.button}
       />
       <Text style={styles.skip} onPress={() => navigation.navigate('Preferences')}>
-        Not now
+        {isGerman ? 'Jetzt nicht' : 'Not now'}
       </Text>
     </LinearGradient>
   );

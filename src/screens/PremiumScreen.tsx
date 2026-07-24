@@ -7,6 +7,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Premium'>;
 
@@ -27,8 +28,10 @@ const COMPARISON_ROWS: ComparisonRow[] = [
 export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
   const insets = useSafeAreaInsets();
   const { state } = useAppState();
+  const isGerman = language === 'de';
   const purchaseTemporarilyDisabled = true;
   const nextRenewalDate = useMemo(() => {
     const renewal = new Date();
@@ -41,11 +44,11 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
   }, []);
 
   const PREMIUM_BENEFITS = [
-    'Smart Calendar auto-planning',
-    'To-do import from photo',
-    '30 swipe credits max',
-    'Faster swipe regeneration',
-    'Smarter habit-to-schedule fitting',
+    isGerman ? 'Smart Calendar Auto-Planung' : 'Smart Calendar auto-planning',
+    isGerman ? 'To-do-Import per Foto' : 'To-do import from photo',
+    isGerman ? 'Maximal 30 Swipe-Credits' : '30 swipe credits max',
+    isGerman ? 'Schnellere Swipe-Regeneration' : 'Faster swipe regeneration',
+    isGerman ? 'Intelligenteres Habit-Schedule-Matching' : 'Smarter habit-to-schedule fitting',
   ];
 
   return (
@@ -60,14 +63,16 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
           <>
             <View style={[styles.heroCard, styles.activeHeroCard]}>
               <Text style={styles.heroEyebrow}>BITS PREMIUM</Text>
-              <Text style={styles.title}>You are Premium</Text>
+              <Text style={styles.title}>{isGerman ? 'Du nutzt Premium' : 'You are Premium'}</Text>
               <Text style={styles.subtitle}>
-                Your account is active and all premium planning features are unlocked.
+                {isGerman
+                  ? 'Dein Konto ist aktiv und alle Premium-Planungsfunktionen sind freigeschaltet.'
+                  : 'Your account is active and all premium planning features are unlocked.'}
               </Text>
             </View>
 
             <View style={styles.activeBenefitsCard}>
-              <Text style={styles.activeBenefitsTitle}>Your benefits</Text>
+              <Text style={styles.activeBenefitsTitle}>{isGerman ? 'Deine Vorteile' : 'Your benefits'}</Text>
               {PREMIUM_BENEFITS.map((benefit) => (
                 <View key={benefit} style={styles.benefitRow}>
                   <Text style={styles.benefitIcon}>✦</Text>
@@ -77,29 +82,29 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
             </View>
 
             <View style={styles.renewalCard}>
-              <Text style={styles.renewalLabel}>Next renewal date</Text>
+              <Text style={styles.renewalLabel}>{isGerman ? 'Nächstes Verlängerungsdatum' : 'Next renewal date'}</Text>
               <Text style={styles.renewalDate}>{nextRenewalDate}</Text>
-              <Text style={styles.renewalMeta}>Your membership renews automatically on this date.</Text>
+              <Text style={styles.renewalMeta}>{isGerman ? 'Deine Mitgliedschaft verlängert sich an diesem Datum automatisch.' : 'Your membership renews automatically on this date.'}</Text>
             </View>
 
             <View style={styles.secondaryAction}>
-              <PrimaryButton label="Back" variant="muted" onPress={() => navigation.goBack()} />
+              <PrimaryButton label={isGerman ? 'Zuruck' : 'Back'} variant="muted" onPress={() => navigation.goBack()} />
             </View>
           </>
         ) : (
           <>
             <View style={styles.heroCard}>
               <Text style={styles.heroEyebrow}>BITS PREMIUM</Text>
-              <Text style={styles.title}>Upgrade your momentum</Text>
+              <Text style={styles.title}>{isGerman ? 'Mehr aus deiner Zeit machen' : 'Upgrade your momentum'}</Text>
               <Text style={styles.subtitle}>
-                Unlock smarter planning and get more from your free time.
+                {isGerman ? 'Schalte smartere Planung frei und hol mehr aus deiner freien Zeit.' : 'Unlock smarter planning and get more from your free time.'}
               </Text>
             </View>
 
             <View style={styles.tableCard}>
               <View style={[styles.tableRow, styles.headerRow]}>
                 <Text style={[styles.headerCell, styles.featureCell]}>Feature</Text>
-                <Text style={styles.headerCell}>Free</Text>
+                <Text style={styles.headerCell}>{isGerman ? 'Gratis' : 'Free'}</Text>
                 <Text style={styles.headerCell}>Premium</Text>
               </View>
               {COMPARISON_ROWS.map((row) => (
@@ -113,21 +118,23 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
 
             <View style={styles.purchaseCard}>
               <Text style={styles.priceLabel}>€4.99 / month</Text>
-              <Text style={styles.priceSubtext}>Cancel anytime. Instant access after purchase.</Text>
+              <Text style={styles.priceSubtext}>{isGerman ? 'Jederzeit kündbar. Sofortiger Zugriff nach dem Kauf.' : 'Cancel anytime. Instant access after purchase.'}</Text>
               <PrimaryButton
-                label="Purchase Premium (Coming soon)"
+                label={isGerman ? 'Premium kaufen (bald verfügbar)' : 'Purchase Premium (Coming soon)'}
                 onPress={() => undefined}
                 disabled={purchaseTemporarilyDisabled}
               />
               <View style={styles.secondaryAction}>
-                <PrimaryButton label="Back" variant="muted" onPress={() => navigation.goBack()} />
+                <PrimaryButton label={isGerman ? 'Zuruck' : 'Back'} variant="muted" onPress={() => navigation.goBack()} />
               </View>
             </View>
 
             <View style={styles.infoCard}>
-              <Text style={styles.infoTitle}>Further info</Text>
+              <Text style={styles.infoTitle}>{isGerman ? 'Weitere Infos' : 'Further info'}</Text>
               <Text style={styles.infoText}>
-                Bits Premium allows you to plan to never have no plans again. Boost your productivity with smart suggestions, fit your habits into your schedule and make more out of your free time. Bits is for healthy habits.
+                {isGerman
+                  ? 'Bits Premium hilft dir, leere Zeitblöcke zu vermeiden - mit besseren Vorschlagen, besserem Schedule-Fit und konstanterem Umsetzen der Dinge, die dir wichtig sind.'
+                  : 'Bits Premium helps you avoid empty time blocks with smarter suggestions, better schedule fit, and more consistent follow-through on the activities that matter to you.'}
               </Text>
             </View>
           </>

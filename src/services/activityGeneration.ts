@@ -1,5 +1,6 @@
 import { addDoc, collection, doc, getDocs, limit, orderBy, query, serverTimestamp, updateDoc, where, Timestamp } from 'firebase/firestore';
-import { db, firebaseEnabled } from './firebase';
+import { httpsCallable } from 'firebase/functions';
+import { db, firebaseEnabled, functionsClient } from './firebase';
 
 type ActivityRequest = {
   attributes?: string[];
@@ -32,6 +33,9 @@ type ActivityDoc = {
 
 const COLLECTION = 'activities';
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
+const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
+const allowDirectModelCalls = isDevBuild
+  || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 
 function normalizeList(values: string[] = []) {
   return [...new Set(values.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))].sort();
@@ -126,17 +130,17 @@ async function fetchBestDbMatch(request: ActivityRequest) {
 
   const seenIds = new Set<string>();
   for (const snap of attributeSnaps) {
-    snap.docs.forEach((docSnap) => {
-      if (seenIds.has(docSnap.id)) return;
+    for (const docSnap of snap.docs) {
+      if (seenIds.has(docSnap.id)) continue;
       seenIds.add(docSnap.id);
       const activity = docSnap.data() as ActivityDoc;
-      if (isExpired(activity)) return;
-      if (request.onlyVerified && !activity.verified) return;
+      if (isExpired(activity)) continue;
+      if (request.onlyVerified && !activity.verified) continue;
       const score = scoreActivity(activity, request);
       if (!best || score > best.score || (score === best.score && (activity.usage_count ?? 0) > (best.activity.usage_count ?? 0))) {
         best = { id: docSnap.id, activity, source: 'DB', score };
       }
-    });
+    }
   }
 
   if (best && best.score >= (request.minScore ?? 3)) return best;
@@ -164,6 +168,9 @@ function parseGeminiJson(text: string) {
 }
 
 async function callGemini(request: ActivityRequest) {
+  if (!allowDirectModelCalls) {
+    throw new Error('Direct model calls are disabled. Route AI requests through secured backend functions.');
+  }
   const apiKey = env.EXPO_PUBLIC_GEMINI_API_KEY;
   if (!apiKey) throw new Error('Missing EXPO_PUBLIC_GEMINI_API_KEY');
 
@@ -205,6 +212,42 @@ function ttlFromGenerated(activity: any, request: ActivityRequest) {
 export async function findOrGenerateActivity(request: ActivityRequest) {
   const dbHit = await fetchBestDbMatch(request);
   if (dbHit) return { ...dbHit, activity: { ...dbHit.activity, source_info: { ...(dbHit.activity.source_info || {}), origin: 'DB' } } };
+
+  if (!allowDirectModelCalls) {
+    if (!functionsClient) {
+      throw new Error('Backend activity generation is unavailable: Firebase Functions client is not initialized.');
+    }
+
+    const callable = httpsCallable(functionsClient, 'findOrGenerateActivity');
+    const response = await callable({
+      attributes: request.attributes || [],
+      latLonBucket: request.latLonBucket,
+      timeHints: request.timeHints || [],
+      minScore: request.minScore ?? 3,
+      intentText: request.intentText || '',
+      onlyVerified: request.onlyVerified === true,
+    });
+
+    const payload = (response?.data ?? {}) as any;
+    const serverActivity = payload?.activity;
+    if (!serverActivity?.title || !serverActivity?.description) {
+      throw new Error('Backend activity generation returned an invalid payload.');
+    }
+
+    const origin = payload?.source === 'db' ? 'DB' : 'AI';
+    return {
+      id: String(serverActivity.id || ''),
+      source: origin,
+      score: Number(payload?.score || 0),
+      activity: {
+        ...serverActivity,
+        source_info: {
+          ...(serverActivity.source_info || {}),
+          origin,
+        },
+      },
+    };
+  }
 
   const generated = await callGemini(request);
   const requestKey = makeRequestKey(request);

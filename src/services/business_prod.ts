@@ -1,5 +1,4 @@
 import {
-  getFirestore,
   doc,
   setDoc,
   getDoc,
@@ -14,12 +13,11 @@ import {
   FieldValue,
   deleteField,
 } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
 import { BusinessProfile, BusinessCategory } from '../types/business';
-import { firebaseEnabled } from './firebase';
+import { auth as sharedAuth, db as sharedDb, firebaseEnabled } from './firebase';
 
-const db = getFirestore();
-const auth = getAuth();
+const db = sharedDb as any;
+const auth = sharedAuth as any;
 
 /**
  * Types for business platform operations
@@ -92,10 +90,11 @@ export const createBusinessProfile = async (
   }
 
   const businessId = `biz_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  const now = Timestamp.now();
+  const now = new Date().toISOString();
 
   const businessData: BusinessProfile = {
     id: businessId,
+    userId: ownerId,
     ownerId,
     businessName: input.businessName.trim(),
     category: input.category,
@@ -119,17 +118,10 @@ export const createBusinessProfile = async (
     verificationBadge: false,
     createdAt: now,
     updatedAt: now,
-    metrics: {
-      campaignsCount: 0,
-      totalImpressions: 0,
-      totalClicks: 0,
-      totalConversions: 0,
-      totalSpent: 0,
-    },
+    onboardingComplete: true,
     teamMembers: {
       [ownerId]: 'owner',
     },
-    apiKeys: [],
   };
 
   try {
@@ -520,7 +512,13 @@ export const deleteBusinessProfile = async (businessId: string): Promise<void> =
  */
 export const updateBusinessMetrics = async (
   businessId: string,
-  updates: Partial<BusinessProfile['metrics']>
+  updates: {
+    campaignsCount?: number;
+    totalImpressions?: number;
+    totalClicks?: number;
+    totalConversions?: number;
+    totalSpent?: number;
+  }
 ): Promise<void> => {
   if (!firebaseEnabled) {
     throw new Error('Firebase is not enabled');
@@ -573,7 +571,7 @@ export const userHasBusinessAccess = async (businessId: string, userId: string):
       return false;
     }
 
-    return business.ownerId === userId || !!business.teamMembers[userId];
+    return business.ownerId === userId || !!business.teamMembers?.[userId];
   } catch (error) {
     console.error('Error checking business access:', error);
     return false;
@@ -601,7 +599,7 @@ export const getUserRoleInBusiness = async (
       return 'owner';
     }
 
-    return business.teamMembers[userId] || null;
+    return business.teamMembers?.[userId] || null;
   } catch (error) {
     console.error('Error getting user role:', error);
     return null;

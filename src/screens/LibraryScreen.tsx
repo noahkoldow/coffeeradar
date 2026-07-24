@@ -242,7 +242,7 @@ const SavedActivityCard: React.FC<{
   );
 
   const back = (
-    <View style={[cardStyles.cardFront, cardStyles.cardBack]}>
+    <View style={cardStyles.cardFront}>
       <Text style={cardStyles.backKicker}>Saved activity</Text>
       <Text style={cardStyles.backTitle}>Turn this into a habit</Text>
       <Text style={cardStyles.backDesc}>{item.suggestion.hook ?? item.suggestion.description}</Text>
@@ -335,7 +335,6 @@ export const LibraryScreen: React.FC<Props> = ({ navigation }) => {
           <Text style={styles.back}>Back</Text>
         </Pressable>
         <Text style={styles.title}>Saved Library</Text>
-        <Text style={styles.subtitle}>Saved activities now feel like cards, not a list.</Text>
       </View>
 
       <ScrollView
@@ -610,16 +609,15 @@ const createCardStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.crea
 
 const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   container: { flex: 1, padding: theme.spacing.lg },
-  header: { marginBottom: theme.spacing.md },
+  header: { marginBottom: 0 },
   back: { color: theme.colors.textMuted, fontFamily: theme.fonts.semibold },
   title: { marginTop: theme.spacing.sm, fontSize: 28, color: theme.colors.text, fontFamily: theme.fonts.heading },
-  subtitle: { marginTop: theme.spacing.xs, color: theme.colors.textMuted, fontFamily: theme.fonts.body, lineHeight: 20 },
   filterBar: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: theme.spacing.xs,
     paddingRight: theme.spacing.sm,
-    marginBottom: theme.spacing.sm,
+    marginBottom: 0,
   },
   filterButton: {
     flexDirection: 'row',
@@ -674,7 +672,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   legendRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: theme.spacing.md,
+    marginBottom: 0,
     paddingHorizontal: 4,
   },
   legendItem: {
@@ -692,7 +690,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.body,
     fontSize: 12,
   },
-  content: { gap: theme.spacing.md, paddingBottom: theme.spacing.xxl },
+  content: { gap: theme.spacing.sm, paddingBottom: theme.spacing.xxl },
   emptyCard: {
     backgroundColor: theme.colors.card,
     borderColor: theme.colors.border,

@@ -11,12 +11,15 @@ import { StackScreenProps } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'BusinessAudience'>;
 
 export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
 
   const [targeting, setTargeting] = useState({
@@ -36,36 +39,36 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
   const features = [
     {
       id: 'byMood',
-      title: 'Target by Mood',
-      description: 'Show your campaign when users are feeling relaxed, energetic, or social',
+      title: isGerman ? 'Targeting nach Stimmung' : 'Target by Mood',
+      description: isGerman ? 'Zeige deine Kampagne, wenn Nutzer entspannt, energiegeladen oder sozial sind' : 'Show your campaign when users are feeling relaxed, energetic, or social',
       icon: '😊',
       available: true,
     },
     {
       id: 'byWeather',
-      title: 'Target by Weather',
-      description: 'Display ads based on current weather conditions (sunny, rainy, cloudy)',
+      title: isGerman ? 'Targeting nach Wetter' : 'Target by Weather',
+      description: isGerman ? 'Zeige Anzeigen passend zu aktuellen Wetterbedingungen (sonnig, regnerisch, bewolkt)' : 'Display ads based on current weather conditions (sunny, rainy, cloudy)',
       icon: '🌤️',
       available: true,
     },
     {
       id: 'byLocation',
-      title: 'Target by Location',
-      description: 'Reach users within specific geographic areas and radius',
+      title: isGerman ? 'Targeting nach Standort' : 'Target by Location',
+      description: isGerman ? 'Erreiche Nutzer in bestimmten geografischen Bereichen und Radien' : 'Reach users within specific geographic areas and radius',
       icon: '📍',
       available: true,
     },
     {
       id: 'byInterest',
-      title: 'Target by Interest',
-      description: 'Focus on users interested in fitness, food, music, and more',
+      title: isGerman ? 'Targeting nach Interesse' : 'Target by Interest',
+      description: isGerman ? 'Fokussiere dich auf Nutzer mit Interessen wie Fitness, Essen, Musik und mehr' : 'Focus on users interested in fitness, food, music, and more',
       icon: '🎯',
       available: true,
     },
     {
       id: 'byTimeOfDay',
-      title: 'Target by Time of Day',
-      description: 'Show campaigns during specific time windows or days',
+      title: isGerman ? 'Targeting nach Tageszeit' : 'Target by Time of Day',
+      description: isGerman ? 'Zeige Kampagnen in bestimmten Zeitfenstern oder an bestimmten Tagen' : 'Show campaigns during specific time windows or days',
       icon: '⏰',
       available: true,
     },
@@ -75,23 +78,24 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>Back</Text>
+          <Text style={styles.backButton}>{isGerman ? 'Zuruck' : 'Back'}</Text>
         </Pressable>
-        <Text style={styles.headerTitle}>Audience Targeting</Text>
+        <Text style={styles.headerTitle}>{isGerman ? 'Zielgruppen-Targeting' : 'Audience Targeting'}</Text>
       </View>
 
       <ScrollView contentContainerStyle={styles.content}>
         {/* Introduction */}
         <View style={styles.introSection}>
           <Text style={styles.introText}>
-            Precisely target your ideal audience using multiple dimensions of targeting. Campaigns
-            with specific targeting see 3x higher engagement on average.
+            {isGerman
+              ? 'Sprich deine ideale Zielgruppe prazise uber mehrere Targeting-Dimensionen an. Kampagnen mit spezifischem Targeting erzielen im Schnitt 3x hoheres Engagement.'
+              : 'Precisely target your ideal audience using multiple dimensions of targeting. Campaigns with specific targeting see 3x higher engagement on average.'}
           </Text>
         </View>
 
         {/* Targeting Features */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Targeting Dimensions</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Targeting-Dimensionen' : 'Targeting Dimensions'}</Text>
           {features.map((feature) => (
             <View key={feature.id} style={styles.featureCard}>
               <View style={styles.featureContent}>
@@ -117,7 +121,7 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
                 />
               )}
               {!feature.available && (
-                <Text style={styles.comingSoonBadge}>Coming Soon</Text>
+                <Text style={styles.comingSoonBadge}>{isGerman ? 'Bald verfugbar' : 'Coming Soon'}</Text>
               )}
             </View>
           ))}
@@ -125,12 +129,12 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
 
         {/* Advanced Options */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>User Segmentation</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Nutzersegmentierung' : 'User Segmentation'}</Text>
           <View style={styles.optionCard}>
             <View style={styles.optionContent}>
-              <Text style={styles.optionTitle}>High Engagement Users</Text>
+              <Text style={styles.optionTitle}>{isGerman ? 'Nutzer mit hohem Engagement' : 'High Engagement Users'}</Text>
               <Text style={styles.optionDescription}>
-                Users who actively engage with activity recommendations
+                {isGerman ? 'Nutzer, die aktiv mit Aktivitatsvorschlagen interagieren' : 'Users who actively engage with activity recommendations'}
               </Text>
             </View>
             <Switch
@@ -148,9 +152,9 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.optionCard}>
             <View style={styles.optionContent}>
-              <Text style={styles.optionTitle}>Regular Users</Text>
+              <Text style={styles.optionTitle}>{isGerman ? 'Regelmassige Nutzer' : 'Regular Users'}</Text>
               <Text style={styles.optionDescription}>
-                Users with consistent app usage patterns
+                {isGerman ? 'Nutzer mit konstanten App-Nutzungsmustern' : 'Users with consistent app usage patterns'}
               </Text>
             </View>
             <Switch
@@ -168,9 +172,9 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.optionCard}>
             <View style={styles.optionContent}>
-              <Text style={styles.optionTitle}>New Users Only</Text>
+              <Text style={styles.optionTitle}>{isGerman ? 'Nur neue Nutzer' : 'New Users Only'}</Text>
               <Text style={styles.optionDescription}>
-                Reach users who recently joined the platform
+                {isGerman ? 'Erreiche Nutzer, die der Plattform erst kurzlich beigetreten sind' : 'Reach users who recently joined the platform'}
               </Text>
             </View>
             <Switch
@@ -191,17 +195,18 @@ export const BusinessAudienceScreen: React.FC<Props> = ({ navigation }) => {
         <View style={styles.proTipCard}>
           <Text style={styles.proTipIcon}>💡</Text>
           <View style={styles.proTipContent}>
-            <Text style={styles.proTipTitle}>Pro Tip</Text>
+            <Text style={styles.proTipTitle}>{isGerman ? 'Pro-Tipp' : 'Pro Tip'}</Text>
             <Text style={styles.proTipText}>
-              Combine multiple targeting dimensions for better results. For example, target yoga
-              enthusiasts in sunny weather during morning hours for your fitness class campaign.
+              {isGerman
+                ? 'Kombiniere mehrere Targeting-Dimensionen fur bessere Ergebnisse. Zum Beispiel: Yoga-Interessierte bei sonnigem Wetter in den Morgenstunden fur deine Fitness-Kampagne.'
+                : 'Combine multiple targeting dimensions for better results. For example, target yoga enthusiasts in sunny weather during morning hours for your fitness class campaign.'}
             </Text>
           </View>
         </View>
 
         {/* CTA */}
         <Pressable onPress={() => navigation.goBack()} style={styles.doneButton}>
-          <Text style={styles.doneButtonText}>Got it, close guide</Text>
+          <Text style={styles.doneButtonText}>{isGerman ? 'Verstanden, Anleitung schliessen' : 'Got it, close guide'}</Text>
         </Pressable>
       </ScrollView>
     </View>

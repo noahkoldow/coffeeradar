@@ -11,6 +11,7 @@ import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 import { normalizeClockTime } from '../utils/time';
+import { useI18n } from '../i18n/I18nProvider';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
@@ -67,6 +68,8 @@ const interestGroups = [
 export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const [step, setStep] = useState(0);
@@ -77,7 +80,10 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
   const [lifestyle, setLifestyle] = useState(state.prefs.lifestyle ?? 'mixed');
   const [wakeStartTime, setWakeStartTime] = useState(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
   const [wakeEndTime, setWakeEndTime] = useState(normalizeClockTime(state.prefs.wakeEndTime ?? '23:00', '23:00'));
+  const [ageInput, setAgeInput] = useState(state.prefs.age ? String(state.prefs.age) : '');
   const transition = useRef(new Animated.Value(0)).current;
+  const finishScale = useRef(new Animated.Value(1)).current;
+  const scrollRef = useRef<ScrollView | null>(null);
 
   useEffect(() => {
     transition.setValue(0);
@@ -86,6 +92,11 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
       duration: 220,
       useNativeDriver: true,
     }).start();
+
+    // Keep each onboarding step anchored at the top.
+    requestAnimationFrame(() => {
+      scrollRef.current?.scrollTo({ y: 0, animated: false });
+    });
   }, [step, transition]);
 
   const toggleInterest = (tag: string) => {
@@ -107,10 +118,28 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const onFinish = () => {
+    const parsedAge = Number.parseInt(ageInput.trim(), 10);
+    if (!Number.isFinite(parsedAge)) return;
+    if (parsedAge < 13) return;
+
+    Animated.sequence([
+      Animated.timing(finishScale, {
+        toValue: 0.98,
+        duration: 90,
+        useNativeDriver: true,
+      }),
+      Animated.timing(finishScale, {
+        toValue: 1,
+        duration: 90,
+        useNativeDriver: true,
+      }),
+    ]).start();
+
     actions.setPrefs({
       openToGoingOut: state.prefs.openToGoingOut,
       allowSerendipity: state.prefs.allowSerendipity,
       radiusKm: state.prefs.radiusKm,
+      age: parsedAge,
       interestTags,
       customInterests,
       lifestyle,
@@ -119,8 +148,13 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
       wakeEndTime: normalizeClockTime(wakeEndTime, '23:00'),
       themeMode: state.prefs.themeMode,
     });
-    navigation.navigate('OnboardingComplete');
+    actions.completeOnboarding();
+    navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
   };
+
+  const parsedAge = Number.parseInt(ageInput.trim(), 10);
+  const isAgeValid = Number.isFinite(parsedAge) && parsedAge >= 13;
+  const showAgeBlocked = ageInput.trim().length > 0 && Number.isFinite(parsedAge) && parsedAge < 13;
 
   const contentOpacity = transition;
   const contentTranslate = transition.interpolate({
@@ -133,20 +167,20 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
       colors={[theme.colors.background, theme.colors.backgroundAlt]}
       style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}
     >
-      <ScrollView contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+      <ScrollView ref={scrollRef} contentContainerStyle={styles.scroll} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
         <Animated.View style={[styles.content, { opacity: contentOpacity, transform: [{ translateY: contentTranslate }] }]}>
           <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-          <Text style={styles.stepLabel}>Step {step + 1} of 2</Text>
-          <Text style={styles.title}>{step === 0 ? 'Pick your interests' : 'Shape the rest'}</Text>
+          <Text style={styles.stepLabel}>{isGerman ? 'Schritt' : 'Step'} {step + 1} {isGerman ? 'von' : 'of'} 2</Text>
+          <Text style={styles.title}>{step === 0 ? (isGerman ? 'Wahle deine Interessen' : 'Pick your interests') : (isGerman ? 'Stimme den Rest ab' : 'Shape the rest')}</Text>
           <Text style={styles.subtitle}>
             {step === 0
-              ? 'Keep this quick. We use these to tailor the first ideas you see.'
-              : 'Set your rhythm so suggestions fit the way you actually live.'}
+              ? (isGerman ? 'Halte es kurz. Damit passen wir deine ersten Vorschlage an.' : 'Keep this quick. We use these to tailor the first ideas you see.')
+              : (isGerman ? 'Setze deinen Rhythmus, damit Vorschlage zu deinem Alltag passen.' : 'Set your rhythm so suggestions fit the way you actually live.')}
           </Text>
 
           {step === 0 ? (
             <>
-              <Text style={styles.sectionTitle}>Choose a few that fit you</Text>
+              <Text style={styles.sectionTitle}>{isGerman ? 'Wahle ein paar, die zu dir passen' : 'Choose a few that fit you'}</Text>
               {interestGroups.map((group) => (
                 <View key={group.title}>
                   <Text style={styles.groupLabel}>{group.title}</Text>
@@ -163,19 +197,19 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
                 </View>
               ))}
 
-              <Text style={styles.sectionTitle}>Add your own interests</Text>
+              <Text style={styles.sectionTitle}>{isGerman ? 'Eigene Interessen hinzufugen' : 'Add your own interests'}</Text>
               <View style={styles.inlineRow}>
                 <TextInput
                   style={styles.textInput}
                   value={interestInput}
                   onChangeText={setInterestInput}
-                  placeholder="e.g. pottery, climbing, stand-up comedy"
+                  placeholder={isGerman ? 'z. B. Topfern, Klettern, Stand-up-Comedy' : 'e.g. pottery, climbing, stand-up comedy'}
                   placeholderTextColor={theme.colors.textMuted}
                   returnKeyType="done"
                   onSubmitEditing={addCustomInterest}
                 />
                 <Pressable onPress={addCustomInterest} style={styles.addPill}>
-                  <Text style={styles.addPillText}>Add</Text>
+                  <Text style={styles.addPillText}>{isGerman ? 'Hinzufugen' : 'Add'}</Text>
                 </Pressable>
               </View>
               {customInterests.length > 0 && (
@@ -196,7 +230,7 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
             </>
           ) : (
             <>
-              <Text style={styles.sectionTitle}>Your lifestyle</Text>
+              <Text style={styles.sectionTitle}>{isGerman ? 'Dein Lebensstil' : 'Your lifestyle'}</Text>
               <View style={styles.chipsWrap}>
                 {[
                   { id: 'active', label: 'Active' },
@@ -213,20 +247,20 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
                 ))}
               </View>
 
-              <Text style={styles.sectionTitle}>Tell us about your daily life</Text>
+              <Text style={styles.sectionTitle}>{isGerman ? 'Erzahl uns von deinem Alltag' : 'Tell us about your daily life'}</Text>
               <TextInput
                 style={styles.textArea}
                 value={selfDescription}
                 onChangeText={setSelfDescription}
-                placeholder="What do your days look like? What energizes you? What do you usually avoid?"
+                placeholder={isGerman ? 'Wie sehen deine Tage aus? Was gibt dir Energie? Was vermeidest du eher?' : 'What do your days look like? What energizes you? What do you usually avoid?'}
                 placeholderTextColor={theme.colors.textMuted}
                 multiline
                 textAlignVertical="top"
                 maxLength={420}
               />
 
-              <Text style={styles.sectionTitle}>Wake window</Text>
-              <Text style={styles.helperText}>This can wrap around midnight, so early mornings and late nights both work.</Text>
+              <Text style={styles.sectionTitle}>{isGerman ? 'Wachzeitfenster' : 'Wake window'}</Text>
+              <Text style={styles.helperText}>{isGerman ? 'Kann uber Mitternacht gehen, dadurch funktionieren fruhe Morgen und spate Abende.' : 'This can wrap around midnight, so early mornings and late nights both work.'}</Text>
               <View style={styles.wakeWindowContainer}>
                 <WakeWindowRange
                   start={wakeStartTime}
@@ -237,20 +271,34 @@ export const PreferencesScreen: React.FC<Props> = ({ navigation }) => {
                   }}
                 />
               </View>
+
+              <Text style={styles.sectionTitle}>{isGerman ? 'Dein Alter' : 'Your age'}</Text>
+              <TextInput
+                style={styles.textInput}
+                value={ageInput}
+                onChangeText={(value) => setAgeInput(value.replace(/[^0-9]/g, ''))}
+                placeholder={isGerman ? 'Gib dein Alter ein' : 'Enter your age'}
+                placeholderTextColor={theme.colors.textMuted}
+                keyboardType="number-pad"
+                maxLength={3}
+              />
+              {showAgeBlocked ? <Text style={styles.blockedText}>{isGerman ? 'Du musst mindestens 13 Jahre alt sein.' : 'You need to be 13 or older.'}</Text> : null}
             </>
           )}
         </Animated.View>
 
         <View style={styles.buttonRow}>
           {step === 1 ? (
-            <PrimaryButton label="Back" onPress={() => setStep(0)} variant="muted" style={styles.secondaryButton} />
+            <PrimaryButton label={isGerman ? 'Zuruck' : 'Back'} onPress={() => setStep(0)} variant="muted" style={styles.secondaryButton} />
           ) : (
             <View style={styles.secondaryButton} />
           )}
           {step === 0 ? (
-            <PrimaryButton label="Next" onPress={() => setStep(1)} style={styles.primaryButton} />
+            <PrimaryButton label={isGerman ? 'Weiter' : 'Next'} onPress={() => setStep(1)} style={styles.primaryButton} />
           ) : (
-            <PrimaryButton label="Finish setup" onPress={onFinish} style={styles.primaryButton} />
+            <Animated.View style={[styles.primaryButton, { transform: [{ scale: finishScale }] }]}>
+              <PrimaryButton label={isGerman ? 'Fertig' : 'Finish'} onPress={onFinish} disabled={!isAgeValid} />
+            </Animated.View>
           )}
         </View>
       </ScrollView>
@@ -355,6 +403,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     marginTop: theme.spacing.xs,
     fontFamily: theme.fonts.body,
     color: theme.colors.textMuted,
+    fontSize: 12,
+  },
+  blockedText: {
+    marginTop: theme.spacing.xs,
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.danger,
     fontSize: 12,
   },
   wakeWindowContainer: {

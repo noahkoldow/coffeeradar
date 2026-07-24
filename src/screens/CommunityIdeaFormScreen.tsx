@@ -392,9 +392,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     borderColor: theme.colors.border,
     backgroundColor: theme.colors.card,
   },
+  typeChipActive: {
+    borderColor: theme.colors.accent,
+    backgroundColor: theme.colors.accent,
+  },
   typeChipText: {
     fontFamily: theme.fonts.semibold,
     color: theme.colors.textMuted,
+  },
+  typeChipTextActive: {
+    color: theme.colors.accentText,
   },
   tagScrollContent: {
     gap: 8,

@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
+import { Alert, Linking, Pressable, StyleSheet, Text, TextInput, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { StackScreenProps } from '@react-navigation/stack';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { BrandCollabLockup } from '../components/BrandCollabLockup';
+import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import {
   signInWithEmail,
@@ -14,15 +16,19 @@ import {
 } from '../services/auth';
 import { persistOnboardingComplete } from '../services/user';
 import { firebaseEnabled } from '../services/firebase';
+import { getPrivacyPolicyUrl, getTermsOfServiceUrl } from '../legal/legalLinks';
+import { useI18n } from '../i18n/I18nProvider';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
 
 type Mode = 'signup' | 'login';
+type Props = StackScreenProps<RootStackParamList, 'Auth'>;
 
-export const AuthScreen: React.FC = () => {
+export const AuthScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
   const insets = useSafeAreaInsets();
   const [mode, setMode] = useState<Mode>('signup');
   const [email, setEmail] = useState('');
@@ -30,17 +36,93 @@ export const AuthScreen: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [appleAvailable, setAppleAvailable] = useState(false);
 
+  const privacyPolicyUrl = getPrivacyPolicyUrl();
+  const termsOfServiceUrl = getTermsOfServiceUrl();
+  const isGerman = language === 'de';
+  const copy = isGerman
+    ? {
+        firebaseTitle: 'Firebase nicht konfiguriert',
+        firebaseBody: 'Fuge deine Firebase-Konfiguration in src/services/firebase.ts ein.',
+        missingTitle: 'Details fehlen',
+        missingBody: 'Gib E-Mail und Passwort ein.',
+        signupFailed: 'Registrierung fehlgeschlagen',
+        loginFailed: 'Anmeldung fehlgeschlagen',
+        tryAgain: 'Bitte versuche es erneut.',
+        googleFailed: 'Google-Anmeldung fehlgeschlagen',
+        appleFailed: 'Apple-Anmeldung fehlgeschlagen',
+        title: 'Willkommen',
+        subtitle: 'Erstelle ein Konto, um deine nachsten Aktivitaten zu personalisieren.',
+        createAccount: 'Konto erstellen',
+        login: 'Anmelden',
+        email: 'E-Mail',
+        password: 'Passwort',
+        terms: 'Nutzungsbedingungen',
+        privacy: 'Datenschutz',
+        or: 'oder',
+        continueApple: 'Mit Apple fortfahren',
+        continueGoogle: 'Mit Google fortfahren',
+        firebaseNotice: 'Firebase-Konfiguration fehlt. Fuge sie hinzu, um Konten zu aktivieren.',
+      }
+    : {
+        firebaseTitle: 'Firebase not configured',
+        firebaseBody: 'Add your Firebase config in src/services/firebase.ts.',
+        missingTitle: 'Missing details',
+        missingBody: 'Enter email and password.',
+        signupFailed: 'Sign up failed',
+        loginFailed: 'Log in failed',
+        tryAgain: 'Try again.',
+        googleFailed: 'Google sign-in failed',
+        appleFailed: 'Apple sign-in failed',
+        title: 'Welcome',
+        subtitle: 'Create an account to personalize what you do next.',
+        createAccount: 'Create account',
+        login: 'Log in',
+        email: 'Email',
+        password: 'Password',
+        terms: 'Terms',
+        privacy: 'Privacy',
+        or: 'or',
+        continueApple: 'Continue with Apple',
+        continueGoogle: 'Continue with Google',
+        firebaseNotice: 'Firebase config missing. Add it to enable accounts.',
+      };
+
   useEffect(() => {
     isAppleSignInAvailable().then(setAppleAvailable);
   }, []);
 
+  const openLegalLink = async (url: string | null, fallbackRoute: 'PrivacyPolicy' | 'TermsOfService') => {
+    if (!url) {
+      navigation.navigate(fallbackRoute);
+      return;
+    }
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) {
+        navigation.navigate(fallbackRoute);
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      navigation.navigate(fallbackRoute);
+    }
+  };
+
+  const openPrivacyPolicy = () => {
+    void openLegalLink(privacyPolicyUrl, 'PrivacyPolicy');
+  };
+
+  const openTermsOfService = () => {
+    void openLegalLink(termsOfServiceUrl, 'TermsOfService');
+  };
+
   const handleSubmit = async () => {
     if (!firebaseEnabled) {
-      Alert.alert('Firebase not configured', 'Add your Firebase config in src/services/firebase.ts.');
+      Alert.alert(copy.firebaseTitle, copy.firebaseBody);
       return;
     }
     if (!email || !password) {
-      Alert.alert('Missing details', 'Enter email and password.');
+      Alert.alert(copy.missingTitle, copy.missingBody);
       return;
     }
     setLoading(true);
@@ -53,7 +135,7 @@ export const AuthScreen: React.FC = () => {
         await signInWithEmail(email, password);
       }
     } catch (error: any) {
-        Alert.alert(mode === 'signup' ? 'Sign up failed' : 'Log in failed', error?.message ?? 'Try again.');
+      Alert.alert(mode === 'signup' ? copy.signupFailed : copy.loginFailed, error?.message ?? copy.tryAgain);
     } finally {
       setLoading(false);
     }
@@ -66,7 +148,7 @@ export const AuthScreen: React.FC = () => {
       await persistOnboardingComplete(!isNewUser);
     } catch (error: any) {
       if (!error?.message?.includes('cancelled')) {
-        Alert.alert('Google sign-in failed', error?.message ?? 'Try again.');
+        Alert.alert(copy.googleFailed, error?.message ?? copy.tryAgain);
       }
     } finally {
       setLoading(false);
@@ -80,7 +162,7 @@ export const AuthScreen: React.FC = () => {
       await persistOnboardingComplete(!isNewUser);
     } catch (error: any) {
       if ((error as any)?.code !== 'ERR_REQUEST_CANCELED') {
-        Alert.alert('Apple sign-in failed', error?.message ?? 'Try again.');
+        Alert.alert(copy.appleFailed, error?.message ?? copy.tryAgain);
       }
     } finally {
       setLoading(false);
@@ -94,8 +176,8 @@ export const AuthScreen: React.FC = () => {
     >
       <View style={styles.content}>
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-        <Text style={styles.title}>Welcome</Text>
-        <Text style={styles.subtitle}>Create an account to personalize what you do next.</Text>
+        <Text style={styles.title}>{copy.title}</Text>
+        <Text style={styles.subtitle}>{copy.subtitle}</Text>
 
         {/* ── Email / password ── */}
         <View style={styles.toggleRow}>
@@ -104,7 +186,7 @@ export const AuthScreen: React.FC = () => {
             onPress={() => setMode('signup')}
           >
             <Text style={[styles.toggleText, mode === 'signup' && styles.toggleTextActive]}>
-              Create account
+              {copy.createAccount}
             </Text>
           </Pressable>
           <Pressable
@@ -112,7 +194,7 @@ export const AuthScreen: React.FC = () => {
             onPress={() => setMode('login')}
           >
             <Text style={[styles.toggleText, mode === 'login' && styles.toggleTextActive]}>
-              Log in
+              {copy.login}
             </Text>
           </Pressable>
         </View>
@@ -120,7 +202,7 @@ export const AuthScreen: React.FC = () => {
         <View style={styles.form}>
           <TextInput
             style={styles.input}
-            placeholder="Email"
+            placeholder={copy.email}
             placeholderTextColor={theme.colors.textMuted}
             autoCapitalize="none"
             keyboardType="email-address"
@@ -129,23 +211,35 @@ export const AuthScreen: React.FC = () => {
           />
           <TextInput
             style={styles.input}
-            placeholder="Password"
+            placeholder={copy.password}
             placeholderTextColor={theme.colors.textMuted}
             secureTextEntry
             value={password}
             onChangeText={setPassword}
           />
           <PrimaryButton
-            label={loading ? 'Working...' : mode === 'signup' ? 'Create account' : 'Log in'}
+            label={loading ? '...' : mode === 'signup' ? copy.createAccount : copy.login}
             onPress={handleSubmit}
             disabled={loading}
           />
+
+          <View style={styles.complianceWrap}>
+            <View style={styles.legalLinksRow}>
+              <Pressable onPress={openTermsOfService}>
+                <Text style={styles.legalLink}>{copy.terms}</Text>
+              </Pressable>
+              <Text style={styles.legalDot}>•</Text>
+              <Pressable onPress={openPrivacyPolicy}>
+                <Text style={styles.legalLink}>{copy.privacy}</Text>
+              </Pressable>
+            </View>
+          </View>
         </View>
 
         {/* ── Divider ── */}
         <View style={styles.dividerRow}>
           <View style={styles.dividerLine} />
-          <Text style={styles.dividerText}>or</Text>
+          <Text style={styles.dividerText}>{copy.or}</Text>
           <View style={styles.dividerLine} />
         </View>
 
@@ -158,7 +252,7 @@ export const AuthScreen: React.FC = () => {
               disabled={loading}
             >
               <Text style={styles.appleIcon}>{'\uF8FF'}</Text>
-              <Text style={[styles.socialLabel, styles.appleLabel]}>Continue with Apple</Text>
+              <Text style={[styles.socialLabel, styles.appleLabel]}>{copy.continueApple}</Text>
             </Pressable>
           )}
 
@@ -174,13 +268,13 @@ export const AuthScreen: React.FC = () => {
               disabled={loading}
             >
               <Text style={styles.googleIcon}>G</Text>
-              <Text style={[styles.socialLabel, styles.googleLabel]}>Continue with Google</Text>
+              <Text style={[styles.socialLabel, styles.googleLabel]}>{copy.continueGoogle}</Text>
             </Pressable>
           </LinearGradient>
         </View>
 
         {!firebaseEnabled && (
-          <Text style={styles.notice}>Firebase config missing. Add it to enable accounts.</Text>
+          <Text style={styles.notice}>{copy.firebaseNotice}</Text>
         )}
       </View>
     </LinearGradient>
@@ -293,6 +387,23 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   form: {
     gap: theme.spacing.md,
+  },
+  complianceWrap: {
+    gap: theme.spacing.xs,
+  },
+  legalLinksRow: {
+    marginTop: theme.spacing.xs,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  legalLink: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accent,
+  },
+  legalDot: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
   },
   input: {
     borderWidth: 1,

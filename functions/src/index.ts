@@ -11,7 +11,30 @@ const ACTIVITIES = 'activities';
 const VOUCHERS = 'vouchers';
 const CONVERSIONS = 'conversions';
 
-const VOUCHER_SECRET = functions.config().app?.voucher_secret || process.env.VOUCHER_SECRET || 'dev_voucher_secret';
+const VOUCHER_SECRET = functions.config().app?.voucher_secret || process.env.VOUCHER_SECRET;
+if (!VOUCHER_SECRET) {
+	throw new Error('Missing voucher signing secret. Configure app.voucher_secret or VOUCHER_SECRET.');
+}
+
+const ENFORCE_APP_CHECK = String(
+	functions.config().app?.enforce_app_check
+		?? process.env.ENFORCE_APP_CHECK
+		?? 'true'
+).toLowerCase() === 'true';
+
+function requireAuth(
+	ctx: functions.https.CallableContext
+): asserts ctx is functions.https.CallableContext & { auth: NonNullable<functions.https.CallableContext['auth']> } {
+	if (!ctx.auth) {
+		throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+	}
+}
+
+function requireAppCheck(ctx: functions.https.CallableContext) {
+	if (ENFORCE_APP_CHECK && !ctx.app) {
+		throw new functions.https.HttpsError('failed-precondition', 'App Check token required');
+	}
+}
 
 function normalizeScope(value?: string | null) {
 	return String(value || 'global').trim().toLowerCase() || 'global';
@@ -49,7 +72,7 @@ async function searchActivities(wantedAttrs: string[], timeHints: string[], latL
 	queryCandidates.push(db.collection(ACTIVITIES).orderBy('usage_count', 'desc').limit(25).get());
 
 	const candidateSnaps = await Promise.all(queryCandidates);
-	const candidates = candidateSnaps.flatMap(snap => snap.docs.map(d => ({ id: d.id, ...d.data() })));
+	const candidates = candidateSnaps.flatMap(snap => snap.docs.map((d: any) => ({ id: d.id, ...d.data() })));
 	let best: any = null;
 	let bestScore = -1;
 	const seen = new Set<string>();
@@ -70,6 +93,13 @@ async function searchActivities(wantedAttrs: string[], timeHints: string[], latL
 
 function fingerprint(obj: any) {
 	return crypto.createHash('sha256').update(JSON.stringify(obj)).digest('hex');
+}
+
+function timingSafeKeyMatch(candidate: string, expected: string) {
+	const a = Buffer.from(String(candidate));
+	const b = Buffer.from(String(expected));
+	if (a.length !== b.length) return false;
+	return crypto.timingSafeEqual(a, b);
 }
 
 function sanitizeString(s: any) {
@@ -131,7 +161,8 @@ function scoreMatch(item: any, wantedAttrs: string[], timeTags: string[], geoSco
  * returns: { hit: boolean, activity?: {...}, score?: number }
  */
 export const dbLookup = functions.https.onCall(async (payload, ctx) => {
-	if (!ctx.auth) throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+	requireAuth(ctx);
+	requireAppCheck(ctx);
 	const { attributes = [], latLonBucket, timeHints = [], minScore = 3 } = payload || {};
 	const wantedAttrs = normalizeAttributes(attributes);
 
@@ -175,7 +206,8 @@ export const dbLookup = functions.https.onCall(async (payload, ctx) => {
 
 // Full endpoint: DB-first lookup, then Gemini fallback, persist generated activity
 export const findOrGenerateActivity = functions.https.onCall(async (payload, ctx) => {
-	if (!ctx.auth) throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+	requireAuth(ctx);
+	requireAppCheck(ctx);
 	const { attributes = [], latLonBucket, timeHints = [], minScore = 3, intentText = '', onlyVerified = false } = payload || {};
 	const wantedAttrs = normalizeAttributes(attributes || []);
 
@@ -243,11 +275,15 @@ export const findOrGenerateActivity = functions.https.onCall(async (payload, ctx
 
 // Voucher generation
 export const generateVoucher = functions.https.onCall(async (data, ctx) => {
-	if (!ctx.auth) throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
-	const { affiliateId, expiresInSecs = 3600, userId } = data || {};
+	requireAuth(ctx);
+	requireAppCheck(ctx);
+	const { affiliateId, expiresInSecs = 3600 } = data || {};
 	if (!affiliateId) throw new functions.https.HttpsError('invalid-argument', 'affiliateId required');
+	if (!Number.isFinite(expiresInSecs) || expiresInSecs < 60 || expiresInSecs > 24 * 3600) {
+		throw new functions.https.HttpsError('invalid-argument', 'expiresInSecs must be between 60 and 86400');
+	}
 	const voucherId = crypto.randomUUID();
-	const payload = { voucherId, affiliateId, userId: userId || ctx.auth.uid, iat: Math.floor(Date.now()/1000) };
+	const payload = { voucherId, affiliateId, userId: ctx.auth.uid, iat: Math.floor(Date.now()/1000) };
 	const token = jwt.sign(payload, VOUCHER_SECRET, { expiresIn: expiresInSecs });
 	const now = admin.firestore.Timestamp.now();
 	const doc = {
@@ -256,7 +292,7 @@ export const generateVoucher = functions.https.onCall(async (data, ctx) => {
 		expires_at: admin.firestore.Timestamp.fromMillis(Date.now() + expiresInSecs * 1000),
 		redeemed: false,
 		token_sig: crypto.createHash('sha256').update(token).digest('hex'),
-		userId: userId || ctx.auth.uid
+		userId: ctx.auth.uid
 	};
 	await db.collection(VOUCHERS).doc(voucherId).set(doc);
 	return { voucherToken: token, voucherId };
@@ -264,10 +300,15 @@ export const generateVoucher = functions.https.onCall(async (data, ctx) => {
 
 // Redeem voucher (callable)
 export const redeemVoucher = functions.https.onCall(async (data, ctx) => {
+	requireAuth(ctx);
+	requireAppCheck(ctx);
 	const { voucherToken, proof } = data || {};
 	if (!voucherToken) throw new functions.https.HttpsError('invalid-argument', 'voucherToken required');
 	let decoded: any;
 	try { decoded = jwt.verify(voucherToken, VOUCHER_SECRET) as any; } catch (e) { throw new functions.https.HttpsError('invalid-argument', 'Invalid token'); }
+	if (!decoded?.userId || decoded.userId !== ctx.auth.uid) {
+		throw new functions.https.HttpsError('permission-denied', 'Voucher does not belong to caller');
+	}
 	const voucherId = decoded.voucherId;
 	const tokenHash = crypto.createHash('sha256').update(voucherToken).digest('hex');
 	const voucherRef = db.collection(VOUCHERS).doc(voucherId);
@@ -296,7 +337,7 @@ export const vendorRedeem = functions.https.onRequest(async (req, res) => {
 		const vendorKeyHeader = (req.headers['x-vendor-key'] || req.headers['X-Vendor-Key'] || '') as string;
 		const vendorKeysRaw = functions.config().vendors?.api_keys || process.env.VENDOR_KEYS || '';
 		const vendorKeys = String(vendorKeysRaw).split(',').map(s => s.trim()).filter(Boolean);
-		if (!vendorKeys.includes(vendorKeyHeader)) {
+		if (!vendorKeys.some((key) => timingSafeKeyMatch(vendorKeyHeader, key))) {
 			res.status(401).send('Unauthorized');
 			return;
 		}
@@ -330,7 +371,8 @@ export const vendorRedeem = functions.https.onRequest(async (req, res) => {
 });
 
 export const markActivityVerified = functions.https.onCall(async (data, ctx) => {
-	if (!ctx.auth) throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+	requireAuth(ctx);
+	requireAppCheck(ctx);
 	const adminEmailsRaw = functions.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
 	const adminEmails = String(adminEmailsRaw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 	const userEmail = (ctx.auth.token.email || '').toLowerCase();
@@ -339,6 +381,32 @@ export const markActivityVerified = functions.https.onCall(async (data, ctx) => 
 	if (!activityId) throw new functions.https.HttpsError('invalid-argument', 'activityId required');
 	await db.collection(ACTIVITIES).doc(activityId).update({ verified: !!verified, updated_at: admin.firestore.Timestamp.now() });
 	return { success: true };
+});
+
+export const rankTodoSlots = functions.https.onCall(async (data, ctx) => {
+	requireAuth(ctx);
+	requireAppCheck(ctx);
+
+	const prompt = String(data?.prompt || '').trim();
+	if (!prompt) {
+		throw new functions.https.HttpsError('invalid-argument', 'prompt is required');
+	}
+
+	if (prompt.length > 12000) {
+		throw new functions.https.HttpsError('invalid-argument', 'prompt is too large');
+	}
+
+	try {
+		const resp = await callGemini(prompt);
+		let text = '';
+		if (typeof resp?.text === 'string') text = resp.text;
+		else text = JSON.stringify(resp);
+		const parsed = tryParseModelText(text) || {};
+		return { payload: parsed };
+	} catch (e: any) {
+		console.error('rankTodoSlots failed', e);
+		throw new functions.https.HttpsError('internal', 'Unable to rank todo slots right now');
+	}
 });
 
 function tryParseModelText(txt: string) {

@@ -10,10 +10,13 @@ import Constants from 'expo-constants';
  * `isAdsAvailable` before touching the SDK.
  */
 
-const isExpoGo = Constants.appOwnership === 'expo';
+export const isExpoGo = Constants.appOwnership === 'expo';
+
+/** Expo Go cannot load the native AdMob SDK, but we still render ad placeholders. */
+export const isAdPlaceholderMode = Platform.OS !== 'web' && isExpoGo;
 
 const loadAdsSdk = (): any => {
-  if (Platform.OS === 'web' || isExpoGo) return null;
+  if (Platform.OS === 'web' || isAdPlaceholderMode) return null;
 
   try {
     // Use indirect eval to avoid Metro statically resolving this module in Expo Go.
@@ -29,7 +32,7 @@ let sdk: any = loadAdsSdk();
 export const adsSdk = sdk;
 
 /** True when the native AdMob SDK is present and usable on this platform. */
-export const isAdsAvailable: boolean = !!sdk && Platform.OS !== 'web' && !isExpoGo;
+export const isAdsAvailable: boolean = !!sdk && Platform.OS !== 'web' && !isAdPlaceholderMode;
 
 let initPromise: Promise<void> | null = null;
 

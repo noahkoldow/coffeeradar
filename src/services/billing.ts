@@ -1,5 +1,4 @@
 import {
-  getFirestore,
   doc,
   setDoc,
   getDoc,
@@ -13,11 +12,9 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
-import { firebaseEnabled } from './firebase';
+import { db, firebaseEnabled } from './firebase';
 
-const db = getFirestore();
-const auth = getAuth();
+const firestoreDb = db as any;
 
 /**
  * Billing types
@@ -95,6 +92,9 @@ export const createBillingAccount = async (
   if (!firebaseEnabled) {
     throw new Error('Firebase is not enabled');
   }
+  if (!firestoreDb) {
+    throw new Error('Firestore is not initialized');
+  }
 
   const billingId = `bill_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
   const now = Timestamp.now();
@@ -113,7 +113,7 @@ export const createBillingAccount = async (
   };
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'billing', billingId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'billing', billingId);
     await setDoc(docRef, billingData);
     return billingData;
   } catch (error) {
@@ -134,10 +134,13 @@ export const getBillingAccount = async (businessId: string): Promise<BillingAcco
   if (!firebaseEnabled) {
     throw new Error('Firebase is not enabled');
   }
+  if (!firestoreDb) {
+    throw new Error('Firestore is not initialized');
+  }
 
   try {
     const q = query(
-      collection(db, 'businesses', businessId, 'billing'),
+      collection(firestoreDb, 'businesses', businessId, 'billing'),
       where('businessId', '==', businessId),
       limit(1)
     );
@@ -173,7 +176,7 @@ export const updateBillingAccount = async (
   }
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'billing', billingId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'billing', billingId);
 
     const updatePayload: Record<string, any> = {
       updatedAt: Timestamp.now(),
@@ -217,7 +220,7 @@ export const addPaymentMethod = async (
   };
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'payment_methods', methodId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'payment_methods', methodId);
     await setDoc(docRef, methodData);
     return methodId;
   } catch (error) {
@@ -241,7 +244,7 @@ export const getPaymentMethods = async (businessId: string): Promise<PaymentMeth
 
   try {
     const q = query(
-      collection(db, 'businesses', businessId, 'payment_methods'),
+      collection(firestoreDb, 'businesses', businessId, 'payment_methods'),
       where('status', '==', 'active')
     );
     const snap = await getDocs(q);
@@ -266,7 +269,7 @@ export const removePaymentMethod = async (businessId: string, methodId: string):
   }
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'payment_methods', methodId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'payment_methods', methodId);
     await updateDoc(docRef, {
       status: 'expired',
       updatedAt: Timestamp.now(),
@@ -294,17 +297,17 @@ export const setDefaultPaymentMethod = async (
   }
 
   try {
-    const batch = writeBatch(db);
+    const batch = writeBatch(firestoreDb);
 
     // Get all current payment methods and unset their default
     const allMethods = await getPaymentMethods(businessId);
     allMethods.forEach((method) => {
-      const docRef = doc(db, 'businesses', businessId, 'payment_methods', method.id);
+      const docRef = doc(firestoreDb, 'businesses', businessId, 'payment_methods', method.id);
       batch.update(docRef, { isDefault: false });
     });
 
     // Set new default
-    const newDefaultRef = doc(db, 'businesses', businessId, 'payment_methods', methodId);
+    const newDefaultRef = doc(firestoreDb, 'businesses', businessId, 'payment_methods', methodId);
     batch.update(newDefaultRef, { isDefault: true });
 
     await batch.commit();
@@ -345,7 +348,7 @@ export const createInvoice = async (
   };
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'billing', 'invoices', invoiceId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'billing', 'invoices', invoiceId);
     await setDoc(docRef, invoiceData);
     return invoiceId;
   } catch (error) {
@@ -370,7 +373,7 @@ export const getInvoices = async (businessId: string, limit_n: number = 50): Pro
 
   try {
     const q = query(
-      collection(db, 'businesses', businessId, 'billing', 'invoices'),
+      collection(firestoreDb, 'businesses', businessId, 'billing', 'invoices'),
       orderBy('createdAt', 'desc'),
       limit(limit_n)
     );
@@ -396,7 +399,7 @@ export const markInvoiceAsPaid = async (businessId: string, invoiceId: string): 
   }
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'billing', 'invoices', invoiceId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'billing', 'invoices', invoiceId);
     await updateDoc(docRef, {
       status: 'paid',
       paidAt: Timestamp.now(),
@@ -436,7 +439,7 @@ export const recordTransaction = async (
   };
 
   try {
-    const docRef = doc(db, 'businesses', businessId, 'billing', 'transactions', transactionId);
+    const docRef = doc(firestoreDb, 'businesses', businessId, 'billing', 'transactions', transactionId);
     await setDoc(docRef, transactionData);
 
     // Update billing account balance
@@ -482,7 +485,7 @@ export const getTransactionHistory = async (
 
   try {
     const q = query(
-      collection(db, 'businesses', businessId, 'billing', 'transactions'),
+      collection(firestoreDb, 'businesses', businessId, 'billing', 'transactions'),
       orderBy('createdAt', 'desc'),
       limit(limit_n)
     );
@@ -587,17 +590,17 @@ export const suspendBillingAccount = async (businessId: string, reason: string):
       throw new Error('Billing account not found');
     }
 
-    const batch = writeBatch(db);
+    const batch = writeBatch(firestoreDb);
 
     // Update billing account status
-    const billingRef = doc(db, 'businesses', businessId, 'billing', billingAccount.id);
+    const billingRef = doc(firestoreDb, 'businesses', businessId, 'billing', billingAccount.id);
     batch.update(billingRef, {
       status: 'suspended',
       updatedAt: Timestamp.now(),
     });
 
     // Pause all active campaigns
-    const campaignsRef = collection(db, 'businesses', businessId, 'campaigns');
+    const campaignsRef = collection(firestoreDb, 'businesses', businessId, 'campaigns');
     const activeCampaignsQ = query(
       campaignsRef,
       where('status', 'in', ['active', 'approved'])
@@ -613,7 +616,7 @@ export const suspendBillingAccount = async (businessId: string, reason: string):
 
     // Record transaction
     const transactionRef = doc(
-      db,
+      firestoreDb,
       'businesses',
       businessId,
       'billing',

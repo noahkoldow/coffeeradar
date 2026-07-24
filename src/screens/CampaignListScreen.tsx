@@ -27,6 +27,7 @@ const STATUS_COLORS: Record<CampaignStatus, string> = {
   paused: '#8b5cf6',
   ended: '#6b7280',
   rejected: '#ef4444',
+  archived: '#4b5563',
 };
 
 const STATUS_LABELS: Record<CampaignStatus, string> = {
@@ -37,6 +38,7 @@ const STATUS_LABELS: Record<CampaignStatus, string> = {
   paused: 'Paused',
   ended: 'Ended',
   rejected: 'Rejected',
+  archived: 'Archived',
 };
 
 export const CampaignListScreen: React.FC<Props> = ({ navigation }) => {

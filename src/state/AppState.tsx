@@ -75,7 +75,7 @@ import { recordCommunityIdeaCompletion } from '../services/communityIdeas';impor
   persistOnboardingComplete,
   isBusinessPremium,
 } from '../services/user';
-import { setPreferredTimeZone, initializeDeviceTimeZone } from '../utils/time';
+import { setPreferredLocale, setPreferredTimeZone, initializeDeviceTimeZone } from '../utils/time';
 import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
 
 // Swipe bank config
@@ -109,6 +109,7 @@ const defaultPrefs: UserPrefs = {
   wakeStartTime: '07:00',
   wakeEndTime: '23:00',
   themeMode: 'light',
+  language: 'en',
 };
 
 const defaultHistory: HistoryState = {
@@ -184,6 +185,7 @@ type AppActions = {
   removeIgnoredExternalEventKey: (value: string) => void;
   setDisabledCalendars: (value: string[]) => void;
   completeOnboarding: () => void;
+  resetOnboarding: () => void;
   preloadDeck: (availability: Availability, durationOverride?: number | null) => void;
   consumeDeck: () => { deck: DeckSuggestion[]; usedFallback: boolean } | null;
   consumeGeminiForDeck: () => { suggestions: Suggestion[]; max: number; isFirstDeck: boolean };
@@ -255,6 +257,11 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     preloadRef.current = { location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions, sessionActivityIntent };
   }, [location, prefs, history, habits, smartTodos, tagAffinities, locationProfile, savedSuggestions, sessionActivityIntent]);
+
+  useEffect(() => {
+    setPreferredLocale((prefs.language ?? 'en') === 'de' ? 'de-DE' : 'en-US');
+  }, [prefs.language]);
+
   const preloadedDeckRef = useRef(preloadedDeck);
   useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
   const geminiPoolRef = useRef<Suggestion[]>([]);
@@ -375,6 +382,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           guestPrefs,
           guestHistory,
           guestCalendars,
+          guestOnboarding,
           guestHabits,
           guestActivity,
           guestAffinities,
@@ -442,6 +450,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             ...fbProfileContext,
             interestTags: storedPrefs.interestTags ?? [],
             themeMode: storedPrefs.themeMode ?? 'light',
+            language: storedPrefs.language ?? 'en',
           });
         } else {
           const sourcePrefs = guestPrefs ?? defaultPrefs;
@@ -449,6 +458,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
             ...defaultPrefs,
             ...sourcePrefs,
             ...fbProfileContext,
+            language: sourcePrefs.language ?? 'en',
           });
         }
         if (storedHistory) {
@@ -545,7 +555,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
 
         const hasGuestProfile = !!(
-          guestPrefs || guestHistory || guestCalendars ||
+          guestPrefs || guestHistory || guestCalendars || guestOnboarding ||
           (guestHabits && guestHabits.length) ||
           (guestActivity && guestActivity.length) ||
           (guestAffinities && Object.keys(guestAffinities).length) ||
@@ -674,6 +684,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setPermissions: (value) => setPermissions(value),
     setPrefs: (value) => {
       setPrefsState(value);
+      setPreferredLocale(value.language === 'de' ? 'de-DE' : 'en-US');
       savePrefs(value, userId).catch(() => undefined);
       syncUserProfileContext(value).catch(() => undefined);
     },
@@ -811,6 +822,10 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     completeOnboarding: () => {
       setOnboardingComplete(true);
       persistOnboardingComplete(true).catch(() => undefined);
+    },
+    resetOnboarding: () => {
+      setOnboardingComplete(false);
+      persistOnboardingComplete(false).catch(() => undefined);
     },
     preloadDeck: (avail, durationOverride) => {
       const finalAvail = durationOverride
@@ -1197,6 +1212,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       setAvailabilityState(null);
       setLocationState(defaultLocation);
       setPreferredTimeZone(null);
+      setPreferredLocale('en-US');
       setTagAffinitiesState({});
       setLocationProfileState(null);
       setSessionActivityIntentState('');

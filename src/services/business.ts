@@ -1,5 +1,4 @@
 import {
-  getFirestore,
   doc,
   setDoc,
   getDoc,
@@ -12,10 +11,10 @@ import {
   Timestamp,
 } from 'firebase/firestore';
 import { BusinessProfile, BusinessCategory, Campaign } from '../types/business';
-import { firebaseEnabled } from './firebase';
+import { db as sharedDb, firebaseEnabled } from './firebase';
 import { ensureAuth } from './firebase';
 
-const db = getFirestore();
+const db = sharedDb as any;
 
 const normalizeCampaignFromFirestore = (raw: any): Campaign => {
   const ctaObject = raw?.cta && typeof raw.cta === 'object'

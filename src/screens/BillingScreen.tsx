@@ -12,6 +12,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -22,6 +23,8 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
 }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
 
   return (
@@ -33,20 +36,20 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>Back</Text>
+            <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
           </Pressable>
-          <Text style={styles.title}>Billing</Text>
+          <Text style={styles.title}>{isGerman ? 'Abrechnung' : 'Billing'}</Text>
           <View style={styles.spacer} />
         </View>
 
         {/* Current Plan */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Current Plan</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Aktueller Plan' : 'Current Plan'}</Text>
           <View style={styles.planCard}>
             <View style={styles.planHeader}>
-              <Text style={styles.planName}>Professional</Text>
+              <Text style={styles.planName}>{isGerman ? 'Professional' : 'Professional'}</Text>
               <View style={styles.planBadge}>
-                <Text style={styles.planBadgeText}>Active</Text>
+                <Text style={styles.planBadgeText}>{isGerman ? 'Aktiv' : 'Active'}</Text>
               </View>
             </View>
             <Text style={styles.planPrice}>
@@ -64,58 +67,58 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
           </View>
 
           <View style={styles.nextBillingBox}>
-            <Text style={styles.nextBillingLabel}>Next billing date</Text>
+            <Text style={styles.nextBillingLabel}>{isGerman ? 'Nachste Abrechnung' : 'Next billing date'}</Text>
             <Text style={styles.nextBillingDate}>February 15, 2026</Text>
           </View>
         </View>
 
         {/* Pricing Models */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Pricing Models</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Preismodelle' : 'Pricing Models'}</Text>
           <Text style={styles.sectionSubtitle}>
-            Choose how you pay for impressions
+            {isGerman ? 'Wahle, wie du fur Impressionen zahlst' : 'Choose how you pay for impressions'}
           </Text>
 
           <View style={styles.pricingModels}>
             <View style={styles.pricingModel}>
               <Text style={styles.pricingName}>📊 CPM</Text>
-              <Text style={styles.pricingDesc}>Cost per 1000 impressions</Text>
+              <Text style={styles.pricingDesc}>{isGerman ? 'Kosten pro 1000 Impressionen' : 'Cost per 1000 impressions'}</Text>
               <Text style={styles.pricingRate}>$0.03 - $0.05</Text>
-              <Text style={styles.pricingNote}>Best for high volume</Text>
+              <Text style={styles.pricingNote}>{isGerman ? 'Ideal fur hohe Reichweite' : 'Best for high volume'}</Text>
             </View>
 
             <View style={styles.pricingModel}>
               <Text style={styles.pricingName}>👆 CPC</Text>
-              <Text style={styles.pricingDesc}>Cost per click</Text>
+              <Text style={styles.pricingDesc}>{isGerman ? 'Kosten pro Klick' : 'Cost per click'}</Text>
               <Text style={styles.pricingRate}>$0.10 - $0.25</Text>
-              <Text style={styles.pricingNote}>Best for traffic</Text>
+              <Text style={styles.pricingNote}>{isGerman ? 'Ideal fur Traffic' : 'Best for traffic'}</Text>
             </View>
 
             <View style={styles.pricingModel}>
               <Text style={styles.pricingName}>🎯 Conversion</Text>
-              <Text style={styles.pricingDesc}>Cost per conversion</Text>
+              <Text style={styles.pricingDesc}>{isGerman ? 'Kosten pro Conversion' : 'Cost per conversion'}</Text>
               <Text style={styles.pricingRate}>$2.00 - $5.00</Text>
-              <Text style={styles.pricingNote}>Best for ROI</Text>
+              <Text style={styles.pricingNote}>{isGerman ? 'Ideal fur ROI' : 'Best for ROI'}</Text>
             </View>
           </View>
         </View>
 
         {/* Account Balance */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account Balance</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Kontostand' : 'Account Balance'}</Text>
           <View style={styles.balanceBox}>
-            <Text style={styles.balanceLabel}>Current balance</Text>
+            <Text style={styles.balanceLabel}>{isGerman ? 'Aktueller Stand' : 'Current balance'}</Text>
             <Text style={styles.balanceAmount}>$145.50</Text>
             <Text style={styles.balanceSubtext}>
-              Earned from 45,230 impressions this month
+              {isGerman ? 'Verdient durch 45.230 Impressionen in diesem Monat' : 'Earned from 45,230 impressions this month'}
             </Text>
           </View>
-          <PrimaryButton label="Withdraw Earnings" onPress={() => console.log('TODO: Withdraw')} />
+          <PrimaryButton label={isGerman ? 'Einnahmen auszahlen' : 'Withdraw Earnings'} onPress={() => console.log('TODO: Withdraw')} />
         </View>
 
         {/* Spending History */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Monthly Spending</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Monatliche Ausgaben' : 'Monthly Spending'}</Text>
           <View style={styles.sparklineContainer}>
             <View style={[styles.sparklineBar, { height: '40%' }]} />
             <View style={[styles.sparklineBar, { height: '55%' }]} />
@@ -142,13 +145,13 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
 
         {/* Billing History */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Billing History</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Abrechnungshistorie' : 'Billing History'}</Text>
           <View style={styles.invoiceList}>
             {[
-              { date: 'Jan 15, 2026', amount: '$198.75', status: 'Paid' },
-              { date: 'Dec 15, 2025', amount: '$187.50', status: 'Paid' },
-              { date: 'Nov 15, 2025', amount: '$212.00', status: 'Paid' },
-              { date: 'Oct 15, 2025', amount: '$195.25', status: 'Paid' },
+              { date: 'Jan 15, 2026', amount: '$198.75', status: isGerman ? 'Bezahlt' : 'Paid' },
+              { date: 'Dec 15, 2025', amount: '$187.50', status: isGerman ? 'Bezahlt' : 'Paid' },
+              { date: 'Nov 15, 2025', amount: '$212.00', status: isGerman ? 'Bezahlt' : 'Paid' },
+              { date: 'Oct 15, 2025', amount: '$195.25', status: isGerman ? 'Bezahlt' : 'Paid' },
             ].map((invoice, idx) => (
               <View key={idx} style={styles.invoiceRow}>
                 <View style={styles.invoiceInfo}>
@@ -163,25 +166,27 @@ export const BillingScreen: React.FC<BillingScreenProps> = ({
 
         {/* Upgrade Plan Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Want more?</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Mehr gewunscht?' : 'Want more?'}</Text>
           <View style={styles.upgradePromo}>
-            <Text style={styles.upgradeTitle}>Upgrade to Business Plan</Text>
+            <Text style={styles.upgradeTitle}>{isGerman ? 'Upgrade auf Business-Plan' : 'Upgrade to Business Plan'}</Text>
             <Text style={styles.upgradeDesc}>
-              Unlimited campaigns, $1000/month spend included, and dedicated support
+              {isGerman
+                ? 'Unbegrenzte Kampagnen, $1000/Monat Budget inklusive und dedizierter Support'
+                : 'Unlimited campaigns, $1000/month spend included, and dedicated support'}
             </Text>
             <Text style={styles.upgradePrice}>$79/month</Text>
-            <PrimaryButton label="Upgrade Now" onPress={() => console.log('TODO: Upgrade')} />
+            <PrimaryButton label={isGerman ? 'Jetzt upgraden' : 'Upgrade Now'} onPress={() => console.log('TODO: Upgrade')} />
           </View>
         </View>
 
         {/* Support Section */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Questions?</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Fragen?' : 'Questions?'}</Text>
           <Pressable style={styles.supportLink}>
-            <Text style={styles.supportLinkText}>📧 Contact billing support</Text>
+            <Text style={styles.supportLinkText}>{isGerman ? '📧 Abrechnungs-Support kontaktieren' : '📧 Contact billing support'}</Text>
           </Pressable>
           <Pressable style={styles.supportLink}>
-            <Text style={styles.supportLinkText}>📖 View billing FAQ</Text>
+            <Text style={styles.supportLinkText}>{isGerman ? '📖 Abrechnungs-FAQ ansehen' : '📖 View billing FAQ'}</Text>
           </Pressable>
         </View>
       </ScrollView>

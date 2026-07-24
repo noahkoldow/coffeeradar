@@ -4,6 +4,9 @@ import { auth, db, ensureAuth, firebaseEnabled, storage } from './firebase';
 import { CommunityIdeaSubmission, CommunityIdeaSubmissionInput, DeckSuggestion, HabitTimeOfDay, Suggestion } from '../types';
 
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
+const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
+const allowDirectModelCalls = isDevBuild
+  || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 
 const canSync = (): boolean => {
   if (!firebaseEnabled || !db || !auth) return false;
@@ -66,7 +69,10 @@ const uploadCommunityIdeaImage = async (userId: string, ideaId: string, localIma
 
 const isCommunityIdeaPolishEnabled = (): boolean => {
   const enabled = String(env.EXPO_PUBLIC_ENABLE_COMMUNITY_IDEA_POLISH ?? '').toLowerCase() === 'true';
-  return enabled && typeof env.EXPO_PUBLIC_GEMINI_API_KEY === 'string' && env.EXPO_PUBLIC_GEMINI_API_KEY.length > 0;
+  return allowDirectModelCalls
+    && enabled
+    && typeof env.EXPO_PUBLIC_GEMINI_API_KEY === 'string'
+    && env.EXPO_PUBLIC_GEMINI_API_KEY.length > 0;
 };
 
 const parseGeminiJson = (text: string): Record<string, any> => {

@@ -79,6 +79,7 @@ const mockSuggestions: DeckSuggestion[] = [
   {
     id: 'morning-walk',
     title: 'Morning Walk',
+    description: 'Take a short walk to build consistency.',
     type: 'AT_HOME',
     source: 'habit',
     tags: [],
@@ -90,6 +91,7 @@ const mockSuggestions: DeckSuggestion[] = [
   {
     id: 'random-event',
     title: 'Random Event',
+    description: 'Try a local event nearby.',
     type: 'EVENT',
     source: 'ticketmaster',
     tags: [],
@@ -125,15 +127,15 @@ let history: HistoryState = {
 
 history = recordActivityCompleted('activity-1', history);
 test('After 1st completion: count = 1', 
-  history.completedActivityIds['activity-1'] === 1);
+  history.completedActivityIds?.['activity-1'] === 1);
 
 history = recordActivityCompleted('activity-1', history);
 test('After 2nd completion: count = 2',
-  history.completedActivityIds['activity-1'] === 2);
+  history.completedActivityIds?.['activity-1'] === 2);
 
 history = recordActivityCompleted('activity-1', history);
 test('After 3rd completion: count = 3',
-  history.completedActivityIds['activity-1'] === 3);
+  history.completedActivityIds?.['activity-1'] === 3);
 
 // Test 4: Habit conversion detection
 section('Test 4: Habit Conversion Detection');
@@ -163,11 +165,11 @@ let trackingHistory: HistoryState = {
 
 trackingHistory = recordActivityShown('morning-walk', trackingHistory, day1);
 test('Timestamp recorded on first show',
-  trackingHistory.lastShownDates['morning-walk'] === day1.toISOString());
+  trackingHistory.lastShownDates?.['morning-walk'] === day1.toISOString());
 
 trackingHistory = recordActivityShown('morning-walk', trackingHistory, day4);
 test('Timestamp updated on second show',
-  trackingHistory.lastShownDates['morning-walk'] === day4.toISOString());
+  trackingHistory.lastShownDates?.['morning-walk'] === day4.toISOString());
 
 // Test 6: Repetition-friendly marking
 section('Test 6: Repetition-Friendly Marking');
@@ -175,6 +177,7 @@ section('Test 6: Repetition-Friendly Marking');
 const unmapped: Suggestion = {
   id: 'test',
   title: 'Test',
+  description: 'Test description',
   type: 'AT_HOME',
   source: 'habit',
   tags: [],
@@ -201,8 +204,8 @@ let scenarioHistory: HistoryState = {
 scenarioHistory = recordActivityShown('morning-walk', scenarioHistory, day1);
 scenarioHistory = recordActivityCompleted('morning-walk', scenarioHistory);
 test('Day 1: Activity shown and completed',
-  scenarioHistory.completedActivityIds['morning-walk'] === 1 &&
-  scenarioHistory.lastShownDates['morning-walk'] === day1.toISOString()
+  scenarioHistory.completedActivityIds?.['morning-walk'] === 1 &&
+  scenarioHistory.lastShownDates?.['morning-walk'] === day1.toISOString()
 );
 
 // Day 2 (24h) - should be hidden
@@ -218,7 +221,7 @@ test('Day 4 (72h): Activity eligible',
 scenarioHistory = recordActivityShown('morning-walk', scenarioHistory, day4);
 scenarioHistory = recordActivityCompleted('morning-walk', scenarioHistory);
 test('Day 4: Activity shown and completed again',
-  scenarioHistory.completedActivityIds['morning-walk'] === 2);
+  scenarioHistory.completedActivityIds?.['morning-walk'] === 2);
 
 // Day 7 (72h from day 4)
 const day7Eligible = isEligibleForRepetition('morning-walk', scenarioHistory.lastShownDates, day7);
@@ -228,10 +231,10 @@ test('Day 7 (72h from day 4): Activity eligible',
 scenarioHistory = recordActivityShown('morning-walk', scenarioHistory, day7);
 scenarioHistory = recordActivityCompleted('morning-walk', scenarioHistory);
 test('Day 7: Activity shown and completed (3rd time)',
-  scenarioHistory.completedActivityIds['morning-walk'] === 3);
+  scenarioHistory.completedActivityIds?.['morning-walk'] === 3);
 
 const isHabitReady = shouldSuggestHabitConversion('morning-walk', 
-  scenarioHistory.completedActivityIds['morning-walk'] || 0);
+  scenarioHistory.completedActivityIds?.['morning-walk'] || 0);
 test('Day 7: Habit conversion READY',
   isHabitReady);
 

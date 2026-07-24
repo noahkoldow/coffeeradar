@@ -9,6 +9,7 @@ import { useAppState } from '../state/AppState';
 import { getCalendars } from '../services/calendar';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { BrandCollabLockup } from '../components/BrandCollabLockup';
+import { useI18n } from '../i18n/I18nProvider';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
@@ -18,9 +19,11 @@ type Props = StackScreenProps<RootStackParamList, 'CalendarSelect'>;
 export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
+  const isGerman = language === 'de';
 
   useEffect(() => {
     const loadCalendars = async () => {
@@ -50,12 +53,16 @@ export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
     >
       <View style={styles.content}>
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-        <Text style={styles.title}>Pick calendars to use</Text>
-        <Text style={styles.subtitle}>We read event names and times only to personalize your suggestions — sent securely to our AI to tailor ideas to your day. Never sold, never shared with other people.</Text>
+        <Text style={styles.title}>{isGerman ? 'Kalender auswahlen' : 'Pick calendars to use'}</Text>
+        <Text style={styles.subtitle}>
+          {isGerman
+            ? 'Wir lesen nur Event-Namen und Zeiten, um Vorschlage fur deinen Tag zu personalisieren und sicher an unsere KI zu geben. Nie verkauft, nie mit anderen geteilt.'
+            : 'We read event names and times only to personalize your suggestions — sent securely to our AI to tailor ideas to your day. Never sold, never shared with other people.'}
+        </Text>
 
         {!state.permissions.calendarGranted ? (
           <View style={styles.noticeBox}>
-            <Text style={styles.noticeText}>Calendar permission not granted. You can skip this step.</Text>
+            <Text style={styles.noticeText}>{isGerman ? 'Kalenderberechtigung nicht erteilt. Du kannst diesen Schritt uberspringen.' : 'Calendar permission not granted. You can skip this step.'}</Text>
           </View>
         ) : (
           <View style={styles.list}>
@@ -69,20 +76,20 @@ export const CalendarSelectScreen: React.FC<Props> = ({ navigation }) => {
                 >
                   <Text style={styles.rowTitle}>{cal.title}</Text>
                   <Text style={[styles.rowStatus, enabled && styles.rowStatusOn]}>
-                    {enabled ? 'On' : 'Off'}
+                    {enabled ? (isGerman ? 'An' : 'On') : (isGerman ? 'Aus' : 'Off')}
                   </Text>
                 </Pressable>
               );
             })}
             {!calendars.length && (
-              <Text style={styles.emptyText}>No calendars found.</Text>
+              <Text style={styles.emptyText}>{isGerman ? 'Keine Kalender gefunden.' : 'No calendars found.'}</Text>
             )}
           </View>
         )}
       </View>
 
       <PrimaryButton
-        label="Continue"
+        label={isGerman ? 'Weiter' : 'Continue'}
         onPress={() => navigation.navigate('LocationPermission')}
         style={styles.button}
       />

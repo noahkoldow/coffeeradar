@@ -26,16 +26,16 @@ const progressBenefitCopy: Record<string, [string, string]> = {
     'Each level shows that you are choosing grounding moments that reduce mental fatigue and bring you back feeling more balanced and present.',
   ],
   wellness: [
-    'Wellness activities are your personal reset when stress starts to stack up. They help regulate emotions, lower tension, and improve how you feel in your body.',
-    'This badge reflects a powerful habit: taking care of yourself before exhaustion hits, so your energy and focus stay stable over time.',
+    'Wellness activities create room to reset when your day gets busy. They help you slow down, recharge, and stay more balanced in daily routines.',
+    'This badge reflects a consistent self-care habit that supports steady energy and focus over time.',
   ],
   social: [
-    'Social connection protects mental health and reminds you that you do not have to do everything alone. Meaningful interactions can lower stress and lift motivation.',
-    'Your progress here shows emotional courage: reaching out, showing up, and building relationships that make hard days easier to carry.',
+    'Social connection helps you stay connected and supported instead of handling everything alone. Meaningful interactions can improve motivation and day-to-day momentum.',
+    'Your progress here shows consistency in reaching out, showing up, and building relationships that make everyday life feel lighter.',
   ],
   art: [
-    'Art gives your mind a healthy break from pressure while helping you express feelings that are hard to say out loud. Creative flow can calm anxiety and improve mood.',
-    'Each step here celebrates your imagination and your courage to create something new, which builds both joy and self-trust over time.',
+    'Art gives your mind a break from pressure while helping you express ideas in new ways. Creative flow can restore focus and spark curiosity.',
+    'Each step here celebrates imagination and consistency, helping you build confidence through regular creative practice.',
   ],
   food: [
     'Food and coffee rituals can turn ordinary moments into meaningful recovery breaks. Preparing or sharing something good helps you slow down and reconnect with the present.',

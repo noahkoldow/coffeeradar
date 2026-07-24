@@ -15,12 +15,14 @@ import { getCurrentLocation } from '../services/location';
 import { haversineKm } from '../services/travel';
 import { getConfirmedSocialProofCount } from '../utils/social';
 import { buildPlanSessionKey } from '../utils/planSession';
+import { useI18n } from '../i18n/I18nProvider';
 
 const sameTime = (a: Date, b: Date): boolean => a.getTime() === b.getTime();
 
 export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { t } = useI18n();
   const { commitment, suggestion } = route.params;
   const fromDoSomethingNow = route.params?.fromDoSomethingNow === true;
   const activityMode = route.params?.activityMode ?? (suggestion.type === 'AT_HOME' ? 'at_home' : 'all');
@@ -106,7 +108,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const openActivityLocation = useCallback(async () => {
     const coords = activityLocation.lat != null && activityLocation.lng != null ? `${activityLocation.lat},${activityLocation.lng}` : null;
-    const query = coords ? `ll=${coords}&q=${encodeURIComponent(activityLocation.name)}` : `q=${encodeURIComponent(activityLocation.address ?? activityLocation.name)}`;
+    const locationQuery = activityLocation.name ?? activityLocation.address ?? 'destination';
+    const query = coords ? `ll=${coords}&q=${encodeURIComponent(locationQuery)}` : `q=${encodeURIComponent(locationQuery)}`;
     await Linking.openURL(`https://maps.apple.com/?${query}`);
   }, [activityLocation.address, activityLocation.lat, activityLocation.lng, activityLocation.name]);
 
@@ -115,9 +118,9 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     try {
       await Linking.openURL(ticketmasterTicketUrl);
     } catch (error) {
-      Alert.alert('Could not open ticket link', 'Please try again in a moment.');
+      Alert.alert(t('plan_ticket_link_error_title'), t('plan_ticket_link_error_body'));
     }
-  }, [ticketmasterTicketUrl]);
+  }, [t, ticketmasterTicketUrl]);
 
   const formatElapsed = useCallback((startedAt: Date) => {
     const totalSeconds = Math.max(0, Math.floor((now.getTime() - startedAt.getTime()) / 1000));
@@ -334,11 +337,11 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     if (manualStartAt) return;
     if (scheduledStartAt && scheduledStartAt.getTime() > Date.now()) {
       Alert.alert(
-        'Scheduled for later',
-        `This activity is scheduled for ${scheduledForLabel ?? formatTime(scheduledStartAt)}. Do you still want to do it now?`,
+        t('plan_scheduled_later_title'),
+        t('plan_scheduled_later_body', { time: scheduledForLabel ?? formatTime(scheduledStartAt) }),
         [
-          { text: 'Keep schedule', style: 'cancel' },
-          { text: 'Start now', onPress: () => { void startActivityNow(); } },
+          { text: t('plan_keep_schedule'), style: 'cancel' },
+          { text: t('plan_start_now'), onPress: () => { void startActivityNow(); } },
         ],
       );
       return;
@@ -381,7 +384,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const finishActivity = useCallback(() => {
     if (challengeFailed) {
-      Alert.alert('Challenge failed', 'Time ran out. Retry this challenge to complete it.');
+      Alert.alert(t('plan_challenge_failed_title'), t('plan_challenge_failed_body'));
       return;
     }
     if (finishingRef.current || !manualStartAt || !canFinish) return;
@@ -469,11 +472,11 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   }, [actions, commitment.calendarEventId, navigation]);
 
   const confirmCancel = useCallback(() => {
-    Alert.alert('Cancel plan?', 'This will remove the plan from your flow.', [
-      { text: 'Keep plan', style: 'cancel' },
-      { text: 'Cancel', style: 'destructive', onPress: cancelPlan },
+    Alert.alert(t('plan_cancel_title'), t('plan_cancel_body'), [
+      { text: t('plan_keep_plan'), style: 'cancel' },
+      { text: t('plan_cancel_cta'), style: 'destructive', onPress: cancelPlan },
     ]);
-  }, [cancelPlan]);
+  }, [cancelPlan, t]);
 
   const { width: screenWidth } = useWindowDimensions();
   const swipeX = useRef(new Animated.Value(0)).current;
@@ -531,30 +534,30 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
               </View>
               <View style={styles.badgeColumn}>
                 {activityStartLabel && <View style={styles.timeBadge}><Text style={styles.timeBadgeText}>{activityStartLabel}</Text></View>}
-                {challengeLabel && <View style={styles.challengeBadge}><Text style={styles.challengeBadgeText}>Challenge</Text></View>}
-                {isSocialActivity && <View style={styles.socialBadge}><Text style={styles.socialBadgeText}>{socialProofCount > 0 ? `${socialProofCount} going` : 'Social'}</Text></View>}
+                {challengeLabel && <View style={styles.challengeBadge}><Text style={styles.challengeBadgeText}>{t('plan_challenge_badge')}</Text></View>}
+                {isSocialActivity && <View style={styles.socialBadge}><Text style={styles.socialBadgeText}>{socialProofCount > 0 ? t('plan_going_count', { count: socialProofCount }) : t('plan_social_badge')}</Text></View>}
               </View>
             </View>
 
             {!manualStartAt ? (
-              <PrimaryButton label="Start" onPress={beginActivity} glow style={styles.startButton} />
+              <PrimaryButton label={t('plan_start')} onPress={beginActivity} glow style={styles.startButton} />
             ) : (
               <View style={[styles.timerPanel, challengeFailed && styles.timerPanelFailed]}>
                 <Text style={[styles.timerLabel, challengeFailed && styles.timerLabelFailed]}>
-                  {isChallengeMode ? 'Challenge Timer' : 'Elapsed'}
+                  {isChallengeMode ? t('plan_timer_challenge') : t('plan_timer_elapsed')}
                 </Text>
                 <Text style={[styles.timerValue, challengeFailed && styles.timerValueFailed]}>
                   {isChallengeMode ? formatCountdown(challengeRemainingSec) : formatElapsed(manualStartAt)}
                 </Text>
                 {isChallengeMode && challengeFailed && (
-                  <Text style={styles.timerFailedText}>Time is up. Retry to complete this challenge.</Text>
+                  <Text style={styles.timerFailedText}>{t('plan_timer_up')}</Text>
                 )}
               </View>
             )}
           </View>
 
           <View style={styles.guideBlock}>
-            <Text style={styles.sectionTitle}>✅ Your activity checklist</Text>
+            <Text style={styles.sectionTitle}>{`✅ ${t('plan_checklist_title')}`}</Text>
             {!!ticketmasterTicketUrl && (
               <Pressable
                 style={({ pressed }) => [
@@ -563,8 +566,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
                 ]}
                 onPress={openTicketmasterTickets}
               >
-                <Text style={styles.ticketLinkLabel}>Tickets</Text>
-                <Text style={styles.ticketLinkText}>Open Ticketmaster</Text>
+                <Text style={styles.ticketLinkLabel}>{t('plan_tickets')}</Text>
+                <Text style={styles.ticketLinkText}>{t('plan_open_ticketmaster')}</Text>
               </Pressable>
             )}
             {guideSteps.map((step, index) => {
@@ -592,14 +595,14 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
               onPress={finishActivity}
               disabled={!canFinish || showChecklistLock}
             >
-              <Text style={styles.finishChecklistTitle}>Finish activity</Text>
+              <Text style={styles.finishChecklistTitle}>{t('plan_finish_activity')}</Text>
               <Text style={[styles.finishChecklistMeta, canFinish && !challengeFailed && styles.finishChecklistMetaHidden]}>
-                {challengeFailed ? '(Challenge failed - retry required)' : '(Complete checklist)'}
+                {challengeFailed ? t('plan_finish_failed') : t('plan_finish_hint')}
               </Text>
             </Pressable>
 
             {isChallengeMode && challengeFailed && (
-              <PrimaryButton label="Retry challenge" onPress={retryChallenge} style={styles.retryButton} />
+              <PrimaryButton label={t('plan_retry_challenge')} onPress={retryChallenge} style={styles.retryButton} />
             )}
 
             {showChecklistLock && (
@@ -614,8 +617,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
                 ]}
               >
                 <Text style={styles.checklistLockIcon}>🔒</Text>
-                <Text style={styles.checklistLockText}>Press Start to unlock checklist</Text>
-                {!!scheduledForLabel && <Text style={styles.checklistLockSubtext}>Scheduled for {scheduledForLabel}</Text>}
+                <Text style={styles.checklistLockText}>{t('plan_unlock_checklist')}</Text>
+                {!!scheduledForLabel && <Text style={styles.checklistLockSubtext}>{t('plan_scheduled_for', { time: scheduledForLabel })}</Text>}
               </Animated.View>
             )}
 
@@ -627,7 +630,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
           </View>
 
           <Pressable onPress={confirmCancel}>
-            <Text style={styles.cancel}>Cancel plan</Text>
+            <Text style={styles.cancel}>{t('plan_cancel_cta')}</Text>
           </Pressable>
         </ScrollView>
       </Animated.View>
@@ -643,6 +646,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   header: { marginTop: theme.spacing.lg, gap: theme.spacing.md },
   topRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'flex-start', gap: theme.spacing.md },
   titleBlock: { flex: 1, gap: 8 },
+  subheadline: { fontFamily: theme.fonts.heading, color: theme.colors.text, fontSize: 26, lineHeight: 30 },
   badgeColumn: { alignItems: 'flex-end', gap: 8 },
   timeBadge: { backgroundColor: theme.colors.backgroundAlt, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 4 },
   timeBadgeText: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted, fontSize: 11, letterSpacing: 0.5 },

@@ -14,6 +14,7 @@ import { formatDuration } from '../utils/time';
 import { buildBadgeProgress, BadgeProgress } from '../utils/badges';
 import { streakEmoji } from '../utils/habits';
 import { logEvent } from '../services/analytics';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Completion'>;
 
@@ -44,6 +45,8 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
   const { title, durationMin, emojis, tags, suggestionType, suggestionId, habitId, description, movementKm } = route.params;
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
   const { state, actions } = useAppState();
   const sessionActivityIntent = state.sessionActivityIntent?.trim() ?? '';
@@ -212,7 +215,11 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const confettiEmojis = emojis?.length ? emojis : ['✨', '🎉', '⭐', '🔥'];
 
-  const typeLabel = suggestionType === 'AT_HOME' ? 'routine' : suggestionType === 'EVENT' ? 'event' : 'outing';
+  const typeLabel = suggestionType === 'AT_HOME'
+    ? (isGerman ? 'Routine' : 'routine')
+    : suggestionType === 'EVENT'
+      ? (isGerman ? 'Event' : 'event')
+      : (isGerman ? 'Ausflug' : 'outing');
 
   const checkRotateInterp = checkRotate.interpolate({
     inputRange: [0, 1],
@@ -236,7 +243,7 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
 
         <Animated.View style={{ opacity: contentOpacity }}>
           <Text style={styles.activityTitle}>{title}</Text>
-          <Text style={styles.durationLabel}>{formatDuration(durationMin)} {typeLabel} completed</Text>
+          <Text style={styles.durationLabel}>{formatDuration(durationMin)} {isGerman ? `${typeLabel} abgeschlossen` : `${typeLabel} completed`}</Text>
         </Animated.View>
       </View>
 
@@ -248,16 +255,16 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
             <Text style={styles.statNumber}>{weekStats.count}</Text>
-            <Text style={styles.statLabel}>this week</Text>
+            <Text style={styles.statLabel}>{isGerman ? 'diese Woche' : 'this week'}</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statNumber}>{formatDuration(weekStats.minutes)}</Text>
-            <Text style={styles.statLabel}>total time</Text>
+            <Text style={styles.statLabel}>{isGerman ? 'Gesamtzeit' : 'total time'}</Text>
           </View>
           {typeof movementKm === 'number' && movementKm > 0 && (
             <View style={styles.statCard}>
               <Text style={styles.statNumber}>{movementKm.toFixed(1)} km</Text>
-              <Text style={styles.statLabel}>movement</Text>
+              <Text style={styles.statLabel}>{isGerman ? 'Bewegung' : 'movement'}</Text>
             </View>
           )}
         </View>
@@ -271,9 +278,9 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
             <Text style={styles.badgeIcon}>🏅</Text>
             <View style={styles.badgeTextWrap}>
               <Text style={[styles.badgeTitle, { color: badgeLevelUp.color }]}>
-                {badgeLevelUp.title} — Level {badgeLevelUp.level}!
+                {badgeLevelUp.title} - {isGerman ? 'Level' : 'Level'} {badgeLevelUp.level}!
               </Text>
-              <Text style={styles.badgeSubtitle}>Tap to see your badge progress</Text>
+              <Text style={styles.badgeSubtitle}>{isGerman ? 'Tippe fur deinen Badge-Fortschritt' : 'Tap to see your badge progress'}</Text>
             </View>
           </Pressable>
         )}
@@ -283,24 +290,26 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
       {habit && (habit.currentStreak ?? 0) > 0 && (
         <Animated.View style={[styles.streakCallout, { opacity: contentOpacity }]}>
           <Text style={styles.streakBigEmoji}>{streakEmoji(habit.currentStreak)}</Text>
-          <Text style={styles.streakBigNum}>{habit.currentStreak}-day streak!</Text>
+          <Text style={styles.streakBigNum}>{habit.currentStreak}-{isGerman ? 'Tage Serie!' : 'day streak!'}</Text>
           {(habit.longestStreak ?? 0) > (habit.currentStreak ?? 0) && (
-            <Text style={styles.streakBest}>Best: {habit.longestStreak}</Text>
+            <Text style={styles.streakBest}>{isGerman ? 'Bestwert' : 'Best'}: {habit.longestStreak}</Text>
           )}
         </Animated.View>
       )}
 
       {sessionActivityIntent && !rememberedSessionIntent && (
         <Animated.View style={[styles.intentCallout, { opacity: contentOpacity }]}>
-          <Text style={styles.intentTitle}>Want to remember this for later?</Text>
+          <Text style={styles.intentTitle}>{isGerman ? 'Mochtest du das fur spater merken?' : 'Want to remember this for later?'}</Text>
           <Text style={styles.intentSubtitle}>
-            We can save “{sessionActivityIntent}” into your daily-life profile so future suggestions can lean this way too.
+            {isGerman
+              ? `Wir konnen "${sessionActivityIntent}" in deinem Profil speichern, damit zukunftige Vorschlage darauf aufbauen.`
+              : `We can save “${sessionActivityIntent}” into your daily-life profile so future suggestions can lean this way too.`}
           </Text>
           <Pressable
             style={({ pressed }) => [styles.intentButton, pressed && { opacity: 0.7, transform: [{ scale: 0.97 }] }]}
             onPress={handleRememberSessionIntent}
           >
-            <Text style={styles.intentButtonText}>Save to profile</Text>
+            <Text style={styles.intentButtonText}>{isGerman ? 'Im Profil speichern' : 'Save to profile'}</Text>
           </Pressable>
         </Animated.View>
       )}
@@ -308,19 +317,19 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
       {/* Add as habit CTA (only if not already a habit) */}
       {!habitId && !addedAsHabit && (
         <Animated.View style={[styles.habitCta, { opacity: contentOpacity }]}>
-          <Text style={styles.habitCtaTitle}>Make this a habit? 🌱</Text>
-          <Text style={styles.habitCtaSubtitle}>Add "{title}" to your daily deck and build a streak.</Text>
+          <Text style={styles.habitCtaTitle}>{isGerman ? 'Als Gewohnheit speichern? 🌱' : 'Make this a habit? 🌱'}</Text>
+          <Text style={styles.habitCtaSubtitle}>{isGerman ? `Fuge "${title}" zu deinem Daily-Deck hinzu und baue eine Serie auf.` : `Add "${title}" to your daily deck and build a streak.`}</Text>
           <Pressable
             style={({ pressed }) => [styles.habitCtaBtn, pressed && { opacity: 0.7, transform: [{ scale: 0.97 }] }]}
             onPress={handleAddAsHabit}
           >
-            <Text style={styles.habitCtaBtnText}>+ Add as habit</Text>
+            <Text style={styles.habitCtaBtnText}>{isGerman ? '+ Als Gewohnheit' : '+ Add as habit'}</Text>
           </Pressable>
         </Animated.View>
       )}
       {addedAsHabit && (
         <Animated.View style={[styles.habitCtaAdded, { opacity: contentOpacity }]}>
-          <Text style={styles.habitCtaAddedText}>✅ Added to your habits!</Text>
+          <Text style={styles.habitCtaAddedText}>{isGerman ? '✅ Zu deinen Gewohnheiten hinzugefugt!' : '✅ Added to your habits!'}</Text>
         </Animated.View>
       )}
 
@@ -330,9 +339,9 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
           style={({ pressed }) => [styles.backButton, pressed && { opacity: 0.7, transform: [{ scale: 0.96 }] }]}
           onPress={goHome}
         >
-          <Text style={styles.backButtonText}>← Home</Text>
+          <Text style={styles.backButtonText}>{isGerman ? '← Home' : '← Home'}</Text>
         </Pressable>
-        <PrimaryButton label="Next activity" onPress={queueNextActivity} glow style={styles.nextButtonWrap} />
+        <PrimaryButton label={isGerman ? 'Nachste Aktivitat' : 'Next activity'} onPress={queueNextActivity} glow style={styles.nextButtonWrap} />
       </Animated.View>
 
       <EmojiConfetti visible={showConfetti} emojis={confettiEmojis} />

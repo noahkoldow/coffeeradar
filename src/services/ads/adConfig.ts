@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
 import { LocationState, UserPrefs } from '../../types';
+import { getAdsComplianceState } from './consent';
 
 /**
  * AdMob configuration for the two production apps (iOS "bits_ios" / Android
@@ -70,10 +71,18 @@ export const buildAdKeywords = (
   location: LocationState | undefined,
   mode: 'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me',
 ): string[] => {
+  const compliance = getAdsComplianceState();
   const keywords = new Set<string>();
 
   // Deck mode as intent signal.
   keywords.add(`mode:${mode}`);
+
+  // When only non-personalized ads are permitted, avoid user-profile-derived
+  // targeting signals and keep keywords contextual.
+  if (compliance.requestNonPersonalizedAdsOnly) {
+    keywords.add('bits-app');
+    return Array.from(keywords).filter(Boolean).slice(0, 6);
+  }
 
   // Interests (curated + custom).
   prefs?.interestTags?.forEach((t) => t && keywords.add(t.toLowerCase()));

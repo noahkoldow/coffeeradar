@@ -1,5 +1,4 @@
 import {
-  getFirestore,
   doc,
   setDoc,
   getDoc,
@@ -16,9 +15,9 @@ import {
   DocumentReference,
 } from 'firebase/firestore';
 import { Campaign, CampaignStatus, CampaignMetrics, CampaignApproval } from '../types/business';
-import { firebaseEnabled } from './firebase';
+import { db as sharedDb, firebaseEnabled } from './firebase';
 
-const db = getFirestore();
+const db = sharedDb as any;
 
 /**
  * Create a new campaign
@@ -40,14 +39,14 @@ export const createCampaign = async (
     title: campaign.title || '',
     hook: campaign.hook || '',
     description: campaign.description || '',
-    cta: campaign.cta || { text: 'Learn More', action: 'link', value: '' },
+    cta: campaign.cta || { text: 'Learn More', action: 'url', value: '' },
     category: campaign.category || 'other',
     media: campaign.media || [],
     targeting: campaign.targeting || {
       interests: [],
       moods: [],
       locations: [],
-      weather: [],
+      weatherConditions: [],
       timeWindows: [],
     },
     dateRange: campaign.dateRange || {
@@ -57,6 +56,7 @@ export const createCampaign = async (
     budget: campaign.budget,
     status: 'draft',
     createdAt: now,
+    updatedAt: now,
   };
 
   const docRef = doc(db, 'campaigns', campaignId);

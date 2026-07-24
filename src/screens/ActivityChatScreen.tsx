@@ -8,18 +8,21 @@ import { useTheme } from '../theme/ThemeProvider';
 import { ensureActivityChatThread, loadActivityChatThread, makeActivityChatThreadId, sendActivityChatMessage, subscribeActivityChatMessages, ActivityChatMessage } from '../services/activityChat';
 import { useAppState } from '../state/AppState';
 import { formatDuration } from '../utils/time';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'ActivityChat'>;
 
 export const ActivityChatScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
   const insets = useSafeAreaInsets();
   const { state } = useAppState();
   const [messages, setMessages] = useState<ActivityChatMessage[]>([]);
   const [threadTitle, setThreadTitle] = useState(route.params.title);
   const [composer, setComposer] = useState('');
   const [expired, setExpired] = useState(false);
+  const isGerman = language === 'de';
 
   useEffect(() => {
     let active = true;
@@ -60,7 +63,13 @@ export const ActivityChatScreen: React.FC<Props> = ({ navigation, route }) => {
   }, [route.params.expiresAt]);
 
   const remaining = Math.max(0, new Date(route.params.expiresAt).getTime() - Date.now());
-  const remainingLabel = remaining > 0 ? `${formatDuration(Math.ceil(remaining / 60000))} left` : 'Expired';
+  const remainingLabel = remaining > 0
+    ? isGerman
+      ? `${formatDuration(Math.ceil(remaining / 60000))} ubrig`
+      : `${formatDuration(Math.ceil(remaining / 60000))} left`
+    : isGerman
+      ? 'Abgelaufen'
+      : 'Expired';
 
   const send = async () => {
     const body = composer.trim();
@@ -73,22 +82,29 @@ export const ActivityChatScreen: React.FC<Props> = ({ navigation, route }) => {
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <View style={[styles.header, { paddingTop: insets.top + theme.spacing.md }]}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
+          <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
         </Pressable>
         <Text style={styles.title}>{threadTitle}</Text>
         <Text style={styles.subtitle}>
-          Chat stays open for 24 hours. {remainingLabel}
+          {isGerman ? 'Der Chat bleibt 24 Stunden offen.' : 'Chat stays open for 24 hours.'} {remainingLabel}
         </Text>
         {state.userId && (
-          <Text style={styles.meta}>You are chatting as {state.userEmail ?? state.userId}</Text>
+          <Text style={styles.meta}>
+            {isGerman ? 'Du chattest als ' : 'You are chatting as '}
+            {state.userEmail ?? state.userId}
+          </Text>
         )}
       </View>
 
       <ScrollView contentContainerStyle={styles.messages}>
         {messages.length === 0 && (
           <View style={styles.emptyCard}>
-            <Text style={styles.emptyTitle}>Be the first to say hello</Text>
-            <Text style={styles.emptyText}>People going to the same activity will show up here.</Text>
+            <Text style={styles.emptyTitle}>{isGerman ? 'Sag als Erste:r hallo' : 'Be the first to say hello'}</Text>
+            <Text style={styles.emptyText}>
+              {isGerman
+                ? 'Hier erscheinen Menschen, die zur gleichen Aktivitat gehen.'
+                : 'People going to the same activity will show up here.'}
+            </Text>
           </View>
         )}
         {messages.map((message) => (
@@ -104,14 +120,14 @@ export const ActivityChatScreen: React.FC<Props> = ({ navigation, route }) => {
           <TextInput
             value={composer}
             onChangeText={setComposer}
-            placeholder={expired ? 'Chat expired' : 'Say something'}
+            placeholder={expired ? (isGerman ? 'Chat abgelaufen' : 'Chat expired') : (isGerman ? 'Schreib etwas' : 'Say something')}
             editable={!expired}
             placeholderTextColor={theme.colors.textMuted}
             style={styles.input}
             multiline
           />
           <Pressable onPress={send} disabled={expired || !composer.trim()} style={({ pressed }) => [styles.sendBtn, (expired || !composer.trim()) && styles.sendBtnDisabled, pressed && !expired && composer.trim() && { opacity: 0.85 }]}>
-            <Text style={styles.sendBtnText}>Send</Text>
+            <Text style={styles.sendBtnText}>{isGerman ? 'Senden' : 'Send'}</Text>
           </Pressable>
         </View>
       </KeyboardAvoidingView>

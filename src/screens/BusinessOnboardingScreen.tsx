@@ -274,7 +274,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
     },
     progressBar: {
       height: '100%',
-      transition: 'width 0.3s ease',
     },
     indicatorsContainer: {
       flexDirection: 'row',

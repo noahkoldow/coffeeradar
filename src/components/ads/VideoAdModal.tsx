@@ -25,7 +25,8 @@ export const VideoAdModal: React.FC<Props> = ({ ad, onClose, deckColors }) => {
   const [remaining, setRemaining] = useState(SKIP_AFTER_SECONDS);
   const adRef = useRef<any>(null);
 
-  const visible = !!ad && isAdsAvailable;
+  const isPlaceholderAd = !!ad?.__placeholder || !isAdsAvailable;
+  const visible = !!ad;
 
   useEffect(() => {
     if (!visible) return undefined;
@@ -43,10 +44,60 @@ export const VideoAdModal: React.FC<Props> = ({ ad, onClose, deckColors }) => {
     onClose();
   };
 
+  const canSkip = remaining <= 0;
+
   if (!visible) return null;
 
+  if (isPlaceholderAd) {
+    return (
+      <Modal visible transparent animationType="fade" onRequestClose={canSkip ? handleClose : undefined}>
+        <View style={styles.backdrop}>
+          <View style={styles.container}>
+            <View style={styles.topBar}>
+              <View style={styles.adBadge}>
+                <Text style={styles.adBadgeText}>Preview</Text>
+              </View>
+              <Pressable
+                onPress={canSkip ? handleClose : undefined}
+                disabled={!canSkip}
+                hitSlop={10}
+                style={[styles.skipButton, !canSkip && styles.skipButtonDisabled]}
+              >
+                <Text style={styles.skipText}>{canSkip ? 'Skip  ✕' : `Skip in ${remaining}s`}</Text>
+              </Pressable>
+            </View>
+
+            <View style={styles.placeholderHero}>
+              <Text style={styles.placeholderEyebrow}>Sponsored surface</Text>
+              <Text style={styles.placeholderHeadline}>AdMob is unavailable in Expo Go</Text>
+              <Text style={styles.placeholderBody}>
+                This is the fallback layout that keeps the ad slot visible without loading the native SDK.
+              </Text>
+              <View style={styles.placeholderMedia}>
+                <View style={styles.placeholderMediaInset} />
+              </View>
+            </View>
+
+            <View style={styles.info}>
+              <View style={styles.infoHeader}>
+                <View style={styles.icon} />
+                <View style={styles.infoText}>
+                  <Text style={styles.headline} numberOfLines={2}>Sponsored preview</Text>
+                  <Text style={styles.advertiser} numberOfLines={1}>Fallback ad infrastructure</Text>
+                </View>
+              </View>
+
+              <View style={styles.cta}>
+                <Text style={styles.ctaText} numberOfLines={1}>Continue</Text>
+              </View>
+            </View>
+          </View>
+        </View>
+      </Modal>
+    );
+  }
+
   const { NativeAdView, NativeAsset, NativeAssetType, NativeMediaView } = adsSdk;
-  const canSkip = remaining <= 0;
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={canSkip ? handleClose : undefined}>
@@ -155,6 +206,49 @@ const createStyles = (
     media: {
       flex: 1,
       marginVertical: theme.spacing.lg,
+    },
+    placeholderHero: {
+      flex: 1,
+      marginVertical: theme.spacing.lg,
+      justifyContent: 'center',
+      gap: theme.spacing.md,
+    },
+    placeholderEyebrow: {
+      fontFamily: theme.fonts.semibold,
+      fontSize: 12,
+      color: 'rgba(255,255,255,0.68)',
+      textTransform: 'uppercase',
+      letterSpacing: 1,
+    },
+    placeholderHeadline: {
+      fontFamily: theme.fonts.heading,
+      fontSize: 28,
+      lineHeight: 34,
+      color: '#FFFFFF',
+    },
+    placeholderBody: {
+      fontFamily: theme.fonts.body,
+      fontSize: 15,
+      lineHeight: 22,
+      color: 'rgba(255,255,255,0.76)',
+    },
+    placeholderMedia: {
+      marginTop: theme.spacing.md,
+      height: 220,
+      borderRadius: theme.radius.lg,
+      backgroundColor: 'rgba(255,255,255,0.08)',
+      overflow: 'hidden',
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.12)',
+      padding: 12,
+    },
+    placeholderMediaInset: {
+      flex: 1,
+      borderRadius: theme.radius.md,
+      backgroundColor: 'rgba(255,255,255,0.08)',
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.08)',
+      borderStyle: 'dashed',
     },
     info: {
       gap: theme.spacing.sm,

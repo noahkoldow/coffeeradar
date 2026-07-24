@@ -13,9 +13,8 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
-import { getAuth } from 'firebase/auth';
 import { getDocs, collection, query, where, Timestamp } from 'firebase/firestore';
-import { getFirestore } from 'firebase/firestore';
+import { auth as sharedAuth, db as sharedDb } from '../services/firebase';
 import { approveCampaign, rejectCampaign, getCampaign } from '../services/campaigns_prod';
 import { Campaign } from '../types/business';
 
@@ -31,8 +30,8 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
-  const auth = getAuth();
-  const db = getFirestore();
+  const auth = sharedAuth;
+  const db = sharedDb as any;
 
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -41,6 +40,11 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
   // Load pending campaigns from approval queue
   useEffect(() => {
     const loadCampaigns = async () => {
+      if (!db) {
+        setApprovals([]);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       try {
         const q = query(
@@ -97,7 +101,8 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
           {
             text: 'Approve',
             onPress: async () => {
-              if (!auth.currentUser) {
+              const reviewerUid = auth?.currentUser?.uid;
+              if (!reviewerUid) {
                 Alert.alert('Error', 'You must be logged in');
                 return;
               }
@@ -107,7 +112,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                 await approveCampaign(
                   item.campaign.businessId,
                   item.campaign.id,
-                  auth.currentUser.uid
+                  reviewerUid
                 );
                 setApprovals((prev) =>
                   prev.filter((a) => a.campaign.id !== item.campaign.id)
@@ -127,7 +132,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         ]
       );
     },
-    [auth.currentUser]
+    [auth]
   );
 
   const handleReject = useCallback(
@@ -139,13 +144,14 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
           { text: 'Cancel', style: 'cancel' },
           {
             text: 'Reject',
-            onPress: async (reason) => {
+            onPress: async (reason?: string) => {
               if (!reason?.trim()) {
                 Alert.alert('Error', 'Please provide a reason for rejection');
                 return;
               }
 
-              if (!auth.currentUser) {
+              const reviewerUid = auth?.currentUser?.uid;
+              if (!reviewerUid) {
                 Alert.alert('Error', 'You must be logged in');
                 return;
               }
@@ -156,7 +162,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                   item.campaign.businessId,
                   item.campaign.id,
                   reason.trim(),
-                  auth.currentUser.uid
+                  reviewerUid
                 );
                 setApprovals((prev) =>
                   prev.filter((a) => a.campaign.id !== item.campaign.id)
@@ -178,7 +184,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         'plain-text'
       );
     },
-    [auth.currentUser]
+    [auth]
   );
 
   const renderApprovalItem = ({ item }: { item: ApprovalItem }) => {
@@ -218,7 +224,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                 {item.campaign.hook}
               </Text>
               <Text style={styles.previewCta} numberOfLines={1}>
-                Button: {item.campaign.cta}
+                Button: {item.campaign.cta.text}
               </Text>
             </View>
           </View>

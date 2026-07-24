@@ -1,4 +1,4 @@
-import { addDoc, collection, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, doc, getDoc, onSnapshot, orderBy, query, serverTimestamp, setDoc, Timestamp, updateDoc, FieldValue } from 'firebase/firestore';
 import { auth, db, firebaseEnabled } from './firebase';
 
 export type ActivityChatThread = {
@@ -7,8 +7,8 @@ export type ActivityChatThread = {
   title: string;
   expiresAt: Timestamp;
   regionLabel?: string | null;
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
+  createdAt?: Timestamp | FieldValue;
+  updatedAt?: Timestamp | FieldValue;
 };
 
 export type ActivityChatMessage = {

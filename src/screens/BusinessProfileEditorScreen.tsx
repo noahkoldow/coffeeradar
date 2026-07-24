@@ -34,10 +34,10 @@ export const BusinessProfileEditorScreen: React.FC<
 
   const business = state.businessProfile;
 
-  const [logoUri, setLogoUri] = useState(business?.logo || '');
+  const [logoUri, setLogoUri] = useState(business?.logo?.url || '');
   const [businessName, setBusinessName] = useState(business?.businessName || '');
-  const [tagline, setTagline] = useState(business?.tagline || '');
-  const [about, setAbout] = useState(business?.about || '');
+  const [tagline, setTagline] = useState('');
+  const [about, setAbout] = useState(business?.description || '');
   const [saving, setSaving] = useState(false);
 
   const handlePickLogo = async () => {
@@ -185,7 +185,6 @@ export const BusinessProfileEditorScreen: React.FC<
                     'We will verify your identity and business details.\n\nRequired:\n• Photo ID\n• Business license/registration\n• Address verification\n\nThis usually takes 1-2 business days.'
                   );
                 }}
-                compact
               />
             )}
           </View>

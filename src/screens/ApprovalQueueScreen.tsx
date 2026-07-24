@@ -3,13 +3,13 @@ import { ActivityIndicator, Alert, FlatList, Image, Modal, Pressable, ScrollView
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { getAuth } from 'firebase/auth';
-import { Timestamp, collection, doc, getDoc, getDocs, getFirestore, query, where } from 'firebase/firestore';
+import { Timestamp, collection, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { approveCampaign, rejectCampaign, getCampaign } from '../services/campaigns_prod';
 import { communityIdeaToSuggestion, reviewCommunityIdea } from '../services/communityIdeas';
 import { loadPendingBusinessSubmissions, reviewBusinessSubmission } from '../services/user';
+import { auth as sharedAuth, db as sharedDb } from '../services/firebase';
 import { BusinessSubmission, CommunityIdeaSubmission, DeckSuggestion } from '../types';
 import { Campaign } from '../types/business';
 import { SuggestionCard } from '../components/SuggestionCard';
@@ -45,8 +45,8 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const insets = useSafeAreaInsets();
-  const auth = getAuth();
-  const db = getFirestore();
+  const auth = sharedAuth;
+  const db = sharedDb as any;
 
   const [items, setItems] = useState<ApprovalQueueItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -117,6 +117,11 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
 
   useEffect(() => {
     const loadQueue = async () => {
+      if (!db) {
+        setItems([]);
+        setLoading(false);
+        return;
+      }
       setLoading(true);
       try {
         const [snap, businessSubmissions] = await Promise.all([
@@ -198,10 +203,11 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         {
           text: 'Approve',
           onPress: async () => {
-            if (!auth.currentUser) return;
+            const reviewerUid = auth?.currentUser?.uid;
+            if (!reviewerUid) return;
             setReviewing(item.id);
             try {
-              await approveCampaign(item.businessId, item.campaignId, auth.currentUser.uid);
+              await approveCampaign(item.businessId, item.campaignId, reviewerUid);
               setItems((prev) => prev.filter((entry) => entry.id !== item.id));
               Alert.alert('Approved', 'Campaign has been activated');
             } catch (error) {
@@ -221,7 +227,8 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         {
           text: 'Approve',
           onPress: async () => {
-            if (!auth.currentUser) return;
+            const reviewerUid = auth?.currentUser?.uid;
+            if (!reviewerUid) return;
             setReviewing(item.id);
             try {
               const ok = await reviewBusinessSubmission(item.id, 'approve');
@@ -245,10 +252,11 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
       {
         text: 'Approve',
         onPress: async () => {
-          if (!auth.currentUser) return;
+          const reviewerUid = auth?.currentUser?.uid;
+          if (!reviewerUid) return;
           setReviewing(item.id);
           try {
-            await reviewCommunityIdea(item.ideaId, 'approve', auth.currentUser.uid);
+            await reviewCommunityIdea(item.ideaId, 'approve', reviewerUid);
             setItems((prev) => prev.filter((entry) => entry.id !== item.id));
             Alert.alert('Approved', 'Community idea is now eligible for the deck');
           } catch (error) {
@@ -259,7 +267,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         },
       },
     ]);
-  }, [auth.currentUser]);
+  }, [auth]);
 
   const handleReject = useCallback((item: ApprovalQueueItem) => {
     const prompt = item.kind === 'campaign'
@@ -275,22 +283,23 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Reject',
-          onPress: async (reason) => {
+          onPress: async (reason?: string) => {
             if (!reason?.trim()) {
               Alert.alert('Error', 'Please provide a reason for rejection');
               return;
             }
-            if (!auth.currentUser) return;
+            const reviewerUid = auth?.currentUser?.uid;
+            if (!reviewerUid) return;
 
             setReviewing(item.id);
             try {
               if (item.kind === 'campaign') {
-                await rejectCampaign(item.businessId, item.campaignId, reason.trim(), auth.currentUser.uid);
+                await rejectCampaign(item.businessId, item.campaignId, reason.trim(), reviewerUid);
               } else if (item.kind === 'business_submission') {
                 const ok = await reviewBusinessSubmission(item.id, 'reject', reason.trim());
                 if (!ok) throw new Error('Failed to reject business account');
               } else {
-                await reviewCommunityIdea(item.ideaId, 'reject', auth.currentUser.uid, reason.trim());
+                await reviewCommunityIdea(item.ideaId, 'reject', reviewerUid, reason.trim());
               }
               setItems((prev) => prev.filter((entry) => entry.id !== item.id));
               setSelectedItem((current) => (current?.id === item.id ? null : current));
@@ -306,7 +315,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
       ],
       'plain-text',
     );
-  }, [auth.currentUser]);
+  }, [auth]);
 
   const renderItem = ({ item }: { item: ApprovalQueueItem }) => {
     const minutesAgo = Math.floor((Date.now() - item.submittedAt.toMillis()) / (1000 * 60));
@@ -589,7 +598,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                   {selectedItem.submission.emojis?.length ? renderDetailTags(selectedItem.submission.emojis, 'emoji') : null}
                   <Text style={styles.modalSectionTitle}>Extras</Text>
                   {selectedItem.submission.place ? renderDetailRow('Location', `${selectedItem.submission.place.name}${selectedItem.submission.place.address ? ` · ${selectedItem.submission.place.address}` : ''}`) : renderDetailRow('Location', 'No location included')}
-                  {selectedItem.submission.event ? renderDetailRow('Event', selectedItem.submission.event.title ?? 'Event details provided') : null}
+                  {selectedItem.submission.event ? renderDetailRow('Event', selectedItem.submission.event.venue ?? 'Event details provided') : null}
                   {selectedItem.submission.imageUrl ? (
                     <View style={styles.mediaList}>
                       <View style={styles.mediaItem}>
@@ -667,7 +676,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                   ) : null}
                   <SuggestionCard suggestion={communitySuggestion} preview />
                 </View>
-              ) : (
+              ) : previewItem.kind === 'business_submission' ? (
                 <View style={styles.previewCardWrap}>
                   <View style={styles.previewBusinessHeader}>
                     {getBusinessAssetUrls(previewItem.submission)[0] ? (
@@ -684,7 +693,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                   <Text style={styles.previewMeta}>{previewItem.submission.business.place.address}</Text>
                   {previewItem.submission.business.targetTags.length ? renderDetailTags(previewItem.submission.business.targetTags.slice(0, 6), 'preview-business') : null}
                 </View>
-              )}
+              ) : null}
 
               <Pressable style={[styles.modalButton, styles.modalApproveButton]} onPress={closePreview}>
                 <Text style={styles.modalApproveText}>Close preview</Text>

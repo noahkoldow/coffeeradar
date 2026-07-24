@@ -2,17 +2,17 @@ import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useTheme } from '../theme/ThemeProvider';
 import BusinessDashboardScreen from '../screens/BusinessDashboardScreen';
-import BusinessOnboardingScreen from '../screens/BusinessOnboardingScreen';
-import BusinessAccountCreationScreen from '../screens/BusinessAccountCreationScreen';
-import CampaignListScreen from '../screens/CampaignListScreen';
-import CampaignDetailsScreen from '../screens/CampaignDetailsScreen';
-import CampaignCreationScreen from '../screens/CampaignCreationScreen';
-import CampaignPreviewScreen from '../screens/CampaignPreviewScreen';
-import AudienceInsightsScreen from '../screens/AudienceInsightsScreen';
-import BillingScreen from '../screens/BillingScreen';
-import BusinessSettingsScreen from '../screens/BusinessSettingsScreen';
-import ApprovalQueueScreen from '../screens/ApprovalQueueScreen';
-import BusinessProfileEditorScreen from '../screens/BusinessProfileEditorScreen';
+import { BusinessOnboarding } from '../screens/BusinessOnboardingScreen';
+import { BusinessAccountCreationScreen } from '../screens/BusinessAccountCreationScreen';
+import { CampaignListScreen } from '../screens/CampaignListScreen';
+import { CampaignDetailsScreen } from '../screens/CampaignDetailsScreen';
+import { CampaignCreationScreen } from '../screens/CampaignCreationScreen';
+import { CampaignPreviewScreen } from '../screens/CampaignPreviewScreen';
+import { AudienceInsightsScreen } from '../screens/AudienceInsightsScreen';
+import { BillingScreen } from '../screens/BillingScreen';
+import { BusinessSettingsScreen } from '../screens/BusinessSettingsScreen';
+import { ApprovalQueueScreen } from '../screens/ApprovalQueueScreen';
+import { BusinessProfileEditorScreen } from '../screens/BusinessProfileEditorScreen';
 
 export type BusinessStackParamList = {
   BusinessOnboarding: undefined;
@@ -38,74 +38,86 @@ export const BusinessNavigator: React.FC = () => {
     <Stack.Navigator
       screenOptions={{
         headerShown: false,
-        animationEnabled: true,
+        animation: 'default',
       }}
     >
       <Stack.Screen
         name="BusinessDashboard"
-        component={BusinessDashboardScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={BusinessDashboardScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="BusinessOnboarding"
-        component={BusinessOnboardingScreen}
         options={{
-          cardStyle: { backgroundColor: theme.colors.background },
+          contentStyle: { backgroundColor: theme.colors.background },
           gestureEnabled: false,
         }}
-      />
+      >
+        {({ navigation }) => (
+          <BusinessOnboarding
+            onComplete={() => navigation.replace('BusinessAccountCreation')}
+            onSkip={() => navigation.goBack()}
+          />
+        )}
+      </Stack.Screen>
       <Stack.Screen
         name="BusinessAccountCreation"
-        component={BusinessAccountCreationScreen}
         options={{
-          cardStyle: { backgroundColor: theme.colors.background },
+          contentStyle: { backgroundColor: theme.colors.background },
           gestureEnabled: false,
         }}
-      />
+      >
+        {({ navigation }) => (
+          <BusinessAccountCreationScreen
+            onComplete={() => navigation.replace('BusinessDashboard')}
+            onBack={() => navigation.goBack()}
+          />
+        )}
+      </Stack.Screen>
       <Stack.Screen
         name="CampaignList"
-        component={CampaignListScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={CampaignListScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="CampaignDetails"
-        component={CampaignDetailsScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={CampaignDetailsScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="CampaignCreate"
-        component={CampaignCreationScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={CampaignCreationScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="CampaignPreview"
-        component={CampaignPreviewScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={CampaignPreviewScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="AudienceInsights"
-        component={AudienceInsightsScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={AudienceInsightsScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="Billing"
-        component={BillingScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={BillingScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="BusinessSettings"
-        component={BusinessSettingsScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={BusinessSettingsScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="ApprovalQueue"
-        component={ApprovalQueueScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={ApprovalQueueScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
       <Stack.Screen
         name="BusinessProfileEditor"
-        component={BusinessProfileEditorScreen}
-        options={{ cardStyle: { backgroundColor: theme.colors.background } }}
+        component={BusinessProfileEditorScreen as any}
+        options={{ contentStyle: { backgroundColor: theme.colors.background } }}
       />
     </Stack.Navigator>
   );

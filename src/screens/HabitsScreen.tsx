@@ -24,6 +24,7 @@ import {
 } from '../utils/habits';
 import { Commitment, DeckSuggestion } from '../types';
 import { formatClockTime } from '../utils/time';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Habits'>;
 
@@ -63,6 +64,8 @@ const FlipCard: React.FC<{ front: React.ReactNode; back: React.ReactNode; flippe
 export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const navigatingRef = useRef(false);
@@ -144,14 +147,14 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const confirmDelete = useCallback((habit: Habit) => {
     Alert.alert(
-      'Delete habit?',
-      `Remove "${habit.name}" from your habits? This cannot be undone.`,
+      isGerman ? 'Gewohnheit loschen?' : 'Delete habit?',
+      isGerman ? `"${habit.name}" aus deinen Gewohnheiten entfernen? Das kann nicht ruckgangig gemacht werden.` : `Remove "${habit.name}" from your habits? This cannot be undone.`,
       [
-        { text: 'Cancel', style: 'cancel' },
-        { text: 'Delete', style: 'destructive', onPress: () => actions.removeHabit(habit.id) },
+        { text: isGerman ? 'Abbrechen' : 'Cancel', style: 'cancel' },
+        { text: isGerman ? 'Loschen' : 'Delete', style: 'destructive', onPress: () => actions.removeHabit(habit.id) },
       ],
     );
-  }, [actions]);
+  }, [actions, isGerman]);
 
   const handleDoNow = useCallback((habit: Habit) => {
     if (navigatingRef.current) return;
@@ -224,8 +227,8 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
         {/* Stats row */}
         {(streak > 0 || longest > 0) && (
           <View style={styles.statsRow}>
-            {streak > 0 && <Text style={styles.statText}>Current: {streak}</Text>}
-            {longest > 0 && <Text style={styles.statText}>Best: {longest}</Text>}
+            {streak > 0 && <Text style={styles.statText}>{isGerman ? 'Aktuell' : 'Current'}: {streak}</Text>}
+            {longest > 0 && <Text style={styles.statText}>{isGerman ? 'Bestwert' : 'Best'}: {longest}</Text>}
           </View>
         )}
 
@@ -264,18 +267,18 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
                 style={({ pressed }) => [styles.editBtn, pressed && styles.btnPressed]}
                 onPress={() => {
                   Alert.alert('Habit options', habit.name, [
-                    { text: 'Cancel', style: 'cancel' },
-                    { text: 'Edit', onPress: () => navigation.push('HabitForm', { habit }) },
-                    { text: 'Delete', style: 'destructive', onPress: () => confirmDelete(habit) },
+                    { text: isGerman ? 'Abbrechen' : 'Cancel', style: 'cancel' },
+                    { text: isGerman ? 'Bearbeiten' : 'Edit', onPress: () => navigation.push('HabitForm', { habit }) },
+                    { text: isGerman ? 'Loschen' : 'Delete', style: 'destructive', onPress: () => confirmDelete(habit) },
                   ]);
                 }}
               >
-                <Text style={styles.editBtnText}>Edit</Text>
+                <Text style={styles.editBtnText}>{isGerman ? 'Bearbeiten' : 'Edit'}</Text>
               </Pressable>
           </View>
         </View>
 
-        <Text style={styles.flipHint}>Tap card to see history</Text>
+        <Text style={styles.flipHint}>{isGerman ? 'Tippe auf die Karte fur den Verlauf' : 'Tap card to see history'}</Text>
       </View>
     );
 
@@ -283,7 +286,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
       <View style={[styles.habitCard, styles.habitCardBack]}>
         <View style={styles.backHeader}>
           <Text style={styles.habitName}>{habit.name} — History</Text>
-          <Text style={styles.flipHint}>Tap to flip back</Text>
+          <Text style={styles.flipHint}>{isGerman ? 'Tippe zum Zuruckdrehen' : 'Tap to flip back'}</Text>
         </View>
         {/* Day labels header */}
         <View style={styles.weekRow}>
@@ -331,7 +334,7 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
         <View style={styles.headerContainer}>
           <View style={styles.headerTopRow}>
             <Pressable onPress={() => navigation.goBack()}>
-              <Text style={styles.back}>Back</Text>
+              <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
             </Pressable>
             <Pressable onPress={() => navigation.push('HabitForm')}>
               <View style={styles.addButtonSmall}>
@@ -340,8 +343,8 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
             </Pressable>
           </View>
           <View style={styles.headerTitleBlock}>
-            <Text style={styles.title}>Your Habits</Text>
-            <Text style={styles.subtitle}>Build routines that stick 🎯</Text>
+            <Text style={styles.title}>{isGerman ? 'Deine Gewohnheiten' : 'Your Habits'}</Text>
+            <Text style={styles.subtitle}>{isGerman ? 'Baue Routinen auf, die bleiben 🎯' : 'Build routines that stick 🎯'}</Text>
           </View>
         </View>
 
@@ -360,13 +363,13 @@ export const HabitsScreen: React.FC<Props> = ({ navigation, route }) => {
         {state.habits.length === 0 && (
           <View style={styles.emptyCard}>
             <Text style={styles.emptyEmoji}>🌱</Text>
-            <Text style={styles.emptyText}>No habits yet</Text>
-            <Text style={styles.emptySubtext}>Start by adding a habit to build streaks!</Text>
+            <Text style={styles.emptyText}>{isGerman ? 'Noch keine Gewohnheiten' : 'No habits yet'}</Text>
+            <Text style={styles.emptySubtext}>{isGerman ? 'Starte mit einer Gewohnheit und baue eine Serie auf!' : 'Start by adding a habit to build streaks!'}</Text>
             <Pressable
               onPress={() => navigation.push('HabitForm')}
               style={({ pressed }) => [styles.emptyButton, pressed && { opacity: 0.85 }]}
             >
-              <Text style={styles.emptyButtonText}>Create your first habit</Text>
+              <Text style={styles.emptyButtonText}>{isGerman ? 'Erste Gewohnheit erstellen' : 'Create your first habit'}</Text>
             </Pressable>
           </View>
         )}

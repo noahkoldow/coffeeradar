@@ -1,5 +1,4 @@
 import {
-  getFirestore,
   doc,
   setDoc,
   getDoc,
@@ -16,7 +15,6 @@ import {
   orderBy,
   limit,
 } from 'firebase/firestore';
-import { getAuth } from 'firebase/auth';
 import {
   Campaign,
   BusinessCategory,
@@ -25,10 +23,10 @@ import {
   CampaignApproval,
   CampaignTargeting,
 } from '../types/business';
-import { firebaseEnabled } from './firebase';
+import { auth as sharedAuth, db as sharedDb, firebaseEnabled } from './firebase';
 
-const db = getFirestore();
-const auth = getAuth();
+const db = sharedDb as any;
+const auth = sharedAuth as any;
 
 /**
  * Types for campaign operations

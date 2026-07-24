@@ -126,6 +126,7 @@ export type UserPrefs = {
   openToGoingOut: boolean;
   allowSerendipity: boolean;
   radiusKm: number;
+  age?: number;
   interestTags: string[];
   customInterests?: string[];
   lifestyle?: 'active' | 'moderate' | 'chill' | 'mixed';
@@ -133,6 +134,7 @@ export type UserPrefs = {
   wakeStartTime?: string;
   wakeEndTime?: string;
   themeMode: 'light' | 'dark';
+  language?: 'en' | 'de';
 };
 
 export type SavedSuggestion = {
@@ -217,7 +219,7 @@ export type ActivityLog = {
   durationMin: number;
   timestamp: string;
   activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me';
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community';
+  source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community' | 'ad';
   isHabit?: boolean;
   habitId?: string;
   tags?: string[];

@@ -10,6 +10,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { firebaseEnabled } from '../services/firebase';
 import { loadMyCommunityIdeas } from '../services/communityIdeas';
 import { CommunityIdeaSubmission } from '../types';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'MyActivities'>;
 
@@ -30,18 +31,17 @@ const formatMinutes = (minutes: number): string => {
   return rest === 0 ? `${hours} h` : `${hours} h ${rest} min`;
 };
 
-const statusLabel: Record<CommunityIdeaSubmission['status'], string> = {
-  pending: 'In review',
-  approved: 'Live',
-  rejected: 'Not approved',
-};
-
 export const MyActivitiesScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
   const [ideas, setIdeas] = useState<CommunityIdeaSubmission[]>([]);
   const [loading, setLoading] = useState(true);
+  const statusLabel: Record<CommunityIdeaSubmission['status'], string> = isGerman
+    ? { pending: 'In Prufung', approved: 'Live', rejected: 'Nicht freigegeben' }
+    : { pending: 'In review', approved: 'Live', rejected: 'Not approved' };
 
   useFocusEffect(
     useCallback(() => {
@@ -76,30 +76,30 @@ export const MyActivitiesScreen: React.FC<Props> = ({ navigation }) => {
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
+          <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
         </Pressable>
 
-        <Text style={styles.title}>My activities</Text>
-        <Text style={styles.subtitle}>Activities you submitted and the impact they had.</Text>
+        <Text style={styles.title}>{isGerman ? 'Meine Aktivitaten' : 'My activities'}</Text>
+        <Text style={styles.subtitle}>{isGerman ? 'Von dir eingereichte Aktivitaten und ihre Wirkung.' : 'Activities you submitted and the impact they had.'}</Text>
 
         {!firebaseEnabled && (
           <View style={styles.section}>
-            <Text style={styles.rowText}>Firebase config missing. Sign in to see your submitted activities.</Text>
+            <Text style={styles.rowText}>{isGerman ? 'Firebase-Konfiguration fehlt. Melde dich an, um deine eingereichten Aktivitaten zu sehen.' : 'Firebase config missing. Sign in to see your submitted activities.'}</Text>
           </View>
         )}
 
         <View style={styles.statsRow}>
           <View style={styles.statCard}>
             <Text style={styles.statValue}>{ideas.length}</Text>
-            <Text style={styles.statLabel}>Submitted</Text>
+            <Text style={styles.statLabel}>{isGerman ? 'Eingereicht' : 'Submitted'}</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statValue}>{totals.people}</Text>
-            <Text style={styles.statLabel}>People did it</Text>
+            <Text style={styles.statLabel}>{isGerman ? 'Haben es gemacht' : 'People did it'}</Text>
           </View>
           <View style={styles.statCard}>
             <Text style={styles.statValue}>{formatMinutes(totals.minutes)}</Text>
-            <Text style={styles.statLabel}>Helped others</Text>
+            <Text style={styles.statLabel}>{isGerman ? 'Anderen geholfen' : 'Helped others'}</Text>
           </View>
         </View>
 
@@ -109,11 +109,13 @@ export const MyActivitiesScreen: React.FC<Props> = ({ navigation }) => {
           </View>
         ) : ideas.length === 0 ? (
           <View style={styles.section}>
-            <Text style={styles.emptyTitle}>No activities yet</Text>
+            <Text style={styles.emptyTitle}>{isGerman ? 'Noch keine Aktivitaten' : 'No activities yet'}</Text>
             <Text style={styles.rowText}>
-              Share an activity idea with the community. When people do it, you'll see how many joined and how much time you helped them enjoy.
+              {isGerman
+                ? 'Teile eine Aktivitatsidee mit der Community. Wenn Leute sie machen, siehst du, wie viele mitgemacht haben und wie viel Zeit du bereichert hast.'
+                : 'Share an activity idea with the community. When people do it, you\'ll see how many joined and how much time you helped them enjoy.'}
             </Text>
-            <PrimaryButton label="Submit an activity" onPress={() => navigation.navigate('CommunityIdeaForm')} />
+            <PrimaryButton label={isGerman ? 'Aktivitat einreichen' : 'Submit an activity'} onPress={() => navigation.navigate('CommunityIdeaForm')} />
           </View>
         ) : (
           <View style={styles.list}>
@@ -154,15 +156,15 @@ export const MyActivitiesScreen: React.FC<Props> = ({ navigation }) => {
                   <View style={styles.cardStatsRow}>
                     <View style={styles.cardStat}>
                       <Text style={styles.cardStatValue}>{completions}</Text>
-                      <Text style={styles.cardStatLabel}>people did it</Text>
+                      <Text style={styles.cardStatLabel}>{isGerman ? 'haben es gemacht' : 'people did it'}</Text>
                     </View>
                     <View style={styles.cardStat}>
                       <Text style={styles.cardStatValue}>{formatMinutes(minutes)}</Text>
-                      <Text style={styles.cardStatLabel}>helped others</Text>
+                      <Text style={styles.cardStatLabel}>{isGerman ? 'anderen geholfen' : 'helped others'}</Text>
                     </View>
                     <View style={styles.cardStat}>
                       <Text style={styles.cardStatValue}>{idea.durationMin} min</Text>
-                      <Text style={styles.cardStatLabel}>each</Text>
+                      <Text style={styles.cardStatLabel}>{isGerman ? 'jeweils' : 'each'}</Text>
                     </View>
                   </View>
                 </View>

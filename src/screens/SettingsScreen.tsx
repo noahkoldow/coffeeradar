@@ -22,6 +22,13 @@ import { fetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { Availability } from '../types';
 import { formatClockTime, formatTime, normalizeClockTime } from '../utils/time';
 import { isBusinessAdmin } from '../services/user';
+import { resetAdsConsent, showAdsPrivacyOptions, useAdsCompliance } from '../services/ads/consent';
+import { getPrivacyPolicyUrl, getTermsOfServiceUrl } from '../legal/legalLinks';
+import { useI18n } from '../i18n/I18nProvider';
+import { AppLanguage, languageLabels } from '../i18n/translations';
+
+const APP_PRIVACY_POLICY_URL = getPrivacyPolicyUrl();
+const APP_TERMS_URL = getTermsOfServiceUrl();
 
 const interestGroups = [
   {
@@ -76,6 +83,9 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { state, actions } = useAppState();
+  const { t, language } = useI18n();
+  const isGerman = language === 'de';
+  const adsCompliance = useAdsCompliance();
   const showRefineIntent = !!route.params?.fromRefine;
   const isAdmin = isBusinessAdmin(state.userEmail);
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
@@ -220,14 +230,84 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
     }
   };
 
+  const openUrl = async (url: string) => {
+    try {
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) {
+        Alert.alert(isGerman ? 'Link kann nicht geoffnet werden' : 'Unable to open link', isGerman ? 'Dieser Link wird auf diesem Gerat nicht unterstutzt.' : 'This link is not supported on this device.');
+        return;
+      }
+      await Linking.openURL(url);
+    } catch {
+      Alert.alert(isGerman ? 'Link kann nicht geoffnet werden' : 'Unable to open link', isGerman ? 'Bitte versuche es spater erneut.' : 'Please try again later.');
+    }
+  };
+
+  const handleManageAdsPrivacy = async () => {
+    const next = await showAdsPrivacyOptions();
+    Alert.alert(
+      isGerman ? 'Werbe-Datenschutz aktualisiert' : 'Ad privacy updated',
+      `${isGerman ? 'Einwilligungsstatus' : 'Consent status'}: ${next.consentStatus}\n${isGerman ? 'Werbemodus' : 'Ad mode'}: ${next.requestNonPersonalizedAdsOnly ? (isGerman ? 'Nicht personalisiert' : 'Non-personalized') : (isGerman ? 'Personalisiert' : 'Personalized')}`,
+    );
+  };
+
+  const handleResetAdsConsent = () => {
+    Alert.alert(
+      isGerman ? 'Werbeeinwilligung zurucksetzen' : 'Reset ad consent',
+      isGerman ? 'Dadurch werden deine Werbeeinwilligungen geloscht und bei Bedarf erneut abgefragt.' : 'This will clear your ad-consent choices and ask again where required.',
+      [
+        { text: t('common_cancel'), style: 'cancel' },
+        {
+          text: isGerman ? 'Zurucksetzen' : 'Reset',
+          style: 'destructive',
+          onPress: async () => {
+            const next = await resetAdsConsent();
+            Alert.alert(isGerman ? 'Werbeeinwilligung zuruckgesetzt' : 'Ad consent reset', `${isGerman ? 'Einwilligungsstatus' : 'Consent status'}: ${next.consentStatus}`);
+          },
+        },
+      ],
+    );
+  };
+
+  const openPrivacyPolicy = () => {
+    if (APP_PRIVACY_POLICY_URL) {
+      void openUrl(APP_PRIVACY_POLICY_URL);
+      return;
+    }
+    navigation.navigate('PrivacyPolicy');
+  };
+
+  const openTermsOfService = () => {
+    if (APP_TERMS_URL) {
+      void openUrl(APP_TERMS_URL);
+      return;
+    }
+    navigation.navigate('TermsOfService');
+  };
+
   return (
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
+          <Text style={styles.back}>{t('common_back')}</Text>
         </Pressable>
 
-        <Text style={styles.title}>Settings</Text>
+        <Text style={styles.title}>{t('settings_title')}</Text>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{t('settings_language_title')}</Text>
+          <Text style={styles.rowText}>{t('settings_language_label')}</Text>
+          <View style={styles.chipsWrap}>
+            {(['en', 'de'] as AppLanguage[]).map((lang) => (
+              <Chip
+                key={lang}
+                label={languageLabels[lang]}
+                selected={(state.prefs.language ?? 'en') === lang}
+                onPress={() => actions.setPrefs({ ...state.prefs, language: lang })}
+              />
+            ))}
+          </View>
+        </View>
 
         {showRefineIntent && (
           <View style={styles.sessionIntentShell}>
@@ -240,13 +320,13 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
               <View style={styles.sessionIntentCard}>
                 <Text style={styles.sessionIntentTitle}>Anything specific you want to add for now?</Text>
                 <Text style={styles.sessionIntentSubtitle}>
-                  Add a temporary direction on what we should curate for you.
+                  {isGerman ? 'Fuge eine temporare Richtung hinzu, worauf wir uns bei Vorschlagen konzentrieren sollen.' : 'Add a temporary direction on what we should curate for you.'}
                 </Text>
                 <TextInput
                   style={styles.sessionIntentInput}
                   value={sessionActivityIntent}
                   onChangeText={setSessionActivityIntent}
-                  placeholder="e.g. I’d like to do a bike ride"
+                  placeholder={isGerman ? 'z. B. Ich mochte eine Radtour machen' : 'e.g. I\'d like to do a bike ride'}
                   placeholderTextColor={theme.colors.textMuted}
                   multiline
                   textAlignVertical="top"
@@ -254,10 +334,10 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
                 />
                 <View style={styles.sessionIntentActions}>
                   <Pressable style={styles.sessionIntentButton} onPress={saveSessionIntent}>
-                    <Text style={styles.sessionIntentButtonText}>Use for this session</Text>
+                    <Text style={styles.sessionIntentButtonText}>{isGerman ? 'Fur diese Session nutzen' : 'Use for this session'}</Text>
                   </Pressable>
                   <Text style={styles.sessionIntentHint}>
-                    Active goal: {state.sessionActivityIntent?.trim() || 'none'}
+                    {isGerman ? 'Aktives Ziel' : 'Active goal'}: {state.sessionActivityIntent?.trim() || (isGerman ? 'keins' : 'none')}
                   </Text>
                 </View>
               </View>
@@ -266,17 +346,15 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
         )}
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Local time</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Lokale Zeit' : 'Local time'}</Text>
           <Text style={styles.rowText}>{formatTime(new Date(clockTick))}</Text>
-          <Text style={styles.rowText}>Timezone: {state.location.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}</Text>
-          <Text style={styles.rowText}>Wake window: {formatClockTime(wakeStartTime)} - {formatClockTime(wakeEndTime)}</Text>
+          <Text style={styles.rowText}>{isGerman ? 'Zeitzone' : 'Timezone'}: {state.location.timeZone ?? Intl.DateTimeFormat().resolvedOptions().timeZone}</Text>
+          <Text style={styles.rowText}>{isGerman ? 'Wachzeitfenster' : 'Wake window'}: {formatClockTime(wakeStartTime)} - {formatClockTime(wakeEndTime)}</Text>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Permissions</Text>
-          <Text style={styles.rowText}>
-            Calendar: {state.permissions.calendarGranted ? 'Granted' : 'Not granted'}
-          </Text>
+          <Text style={styles.sectionTitle}>{t('settings_permissions_title')}</Text>
+          <Text style={styles.rowText}>{t('settings_permission_calendar', { value: state.permissions.calendarGranted ? t('settings_granted') : t('settings_not_granted') })}</Text>
           {!state.permissions.calendarGranted && (
             <Pressable
               style={styles.actionButton}
@@ -289,12 +367,10 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
                 }
               }}
             >
-              <Text style={styles.actionText}>Grant calendar</Text>
+              <Text style={styles.actionText}>{t('settings_grant_calendar')}</Text>
             </Pressable>
           )}
-          <Text style={styles.rowText}>
-            Location: {state.permissions.locationGranted ? 'Granted' : 'Not granted'}
-          </Text>
+          <Text style={styles.rowText}>{t('settings_permission_location', { value: state.permissions.locationGranted ? t('settings_granted') : t('settings_not_granted') })}</Text>
           {!state.permissions.locationGranted && (
             <Pressable
               style={styles.actionButton}
@@ -303,25 +379,25 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
                 actions.setPermissions({ ...state.permissions, locationGranted: granted });
               }}
             >
-              <Text style={styles.actionText}>Grant location</Text>
+              <Text style={styles.actionText}>{t('settings_grant_location')}</Text>
             </Pressable>
           )}
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Business Account</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Business-Konto' : 'Business Account'}</Text>
           <ToggleRow
-            label="Business-only mode"
+            label={isGerman ? 'Nur-Business-Modus' : 'Business-only mode'}
             value={state.isBusinessOnly}
             onValueChange={(value) => {
               if (value) {
                 Alert.alert(
-                  'Enable business-only mode?',
-                  'Consumer screens will be hidden until you turn this off again.',
+                  isGerman ? 'Nur-Business-Modus aktivieren?' : 'Enable business-only mode?',
+                  isGerman ? 'Consumer-Screens werden ausgeblendet, bis du den Modus wieder deaktivierst.' : 'Consumer screens will be hidden until you turn this off again.',
                   [
-                    { text: 'Cancel', style: 'cancel' },
+                    { text: t('common_cancel'), style: 'cancel' },
                     {
-                      text: 'Enable',
+                      text: t('common_enable'),
                       onPress: () => {
                         actions.setIsBusinessOnly(true);
                         navigation.reset({ index: 0, routes: [{ name: 'BusinessHub' }] });
@@ -336,23 +412,25 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
             }}
           />
           <Text style={styles.rowText}>
-            When enabled, consumer screens, Home, and AI queuing are hidden until you disable it.
+            {isGerman
+              ? 'Wenn aktiv, sind Consumer-Screens, Home und KI-Queueing ausgeblendet, bis du den Modus deaktivierst.'
+              : 'When enabled, consumer screens, Home, and AI queuing are hidden until you disable it.'}
           </Text>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Mode</Text>
+          <Text style={styles.sectionTitle}>{t('settings_mode_title')}</Text>
           <ToggleRow
-            label="Dark theme"
+            label={t('settings_dark_theme')}
             value={state.prefs.themeMode === 'dark'}
             onValueChange={(value) => actions.setPrefs({ ...state.prefs, themeMode: value ? 'dark' : 'light' })}
           />
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Preferences</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Prferenzen' : 'Preferences'}</Text>
 
-          <Text style={styles.preferenceLabel}>Choose a few that fit you</Text>
+          <Text style={styles.preferenceLabel}>{isGerman ? 'Wahle ein paar, die zu dir passen' : 'Choose a few that fit you'}</Text>
           {interestGroups.map((group) => (
             <View key={group.title}>
               <Text style={styles.groupLabel}>{group.title}</Text>
@@ -369,13 +447,13 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
             </View>
           ))}
 
-          <Text style={styles.preferenceLabel}>Add your own interests</Text>
+          <Text style={styles.preferenceLabel}>{isGerman ? 'Eigene Interessen hinzufugen' : 'Add your own interests'}</Text>
           <View style={styles.inlineRow}>
             <TextInput
               style={styles.textInput}
               value={interestInput}
               onChangeText={setInterestInput}
-              placeholder="e.g. pottery, climbing, stand-up comedy"
+              placeholder={isGerman ? 'z. B. Topfern, Klettern, Stand-up-Comedy' : 'e.g. pottery, climbing, stand-up comedy'}
               placeholderTextColor={theme.colors.textMuted}
               returnKeyType="done"
               onSubmitEditing={addCustomInterest}
@@ -397,7 +475,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
             </View>
           )}
 
-          <Text style={styles.preferenceLabel}>Your lifestyle</Text>
+          <Text style={styles.preferenceLabel}>{isGerman ? 'Dein Lebensstil' : 'Your lifestyle'}</Text>
           <View style={styles.chipsWrap}>
             {[
               { id: 'active', label: 'Active' },
@@ -417,20 +495,20 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
             ))}
           </View>
 
-          <Text style={styles.preferenceLabel}>Tell us about your daily life</Text>
+          <Text style={styles.preferenceLabel}>{isGerman ? 'Erzahl uns von deinem Alltag' : 'Tell us about your daily life'}</Text>
           <TextInput
             style={styles.textArea}
             value={selfDescription}
             onChangeText={setSelfDescription}
             onBlur={() => updatePrefs({ selfDescription: selfDescription.trim() })}
-            placeholder="What do your days look like? What energizes you? What do you usually avoid?"
+            placeholder={isGerman ? 'Wie sehen deine Tage aus? Was gibt dir Energie? Was vermeidest du eher?' : 'What do your days look like? What energizes you? What do you usually avoid?'}
             placeholderTextColor={theme.colors.textMuted}
             multiline
             textAlignVertical="top"
             maxLength={420}
           />
 
-          <Text style={styles.rowText}>Discovery radius ({state.prefs.radiusKm} km)</Text>
+          <Text style={styles.rowText}>{isGerman ? 'Entdeckungsradius' : 'Discovery radius'} ({state.prefs.radiusKm} km)</Text>
           <Slider
             style={styles.slider}
             step={1}
@@ -447,8 +525,8 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
             <Text style={styles.sliderLabel}>25 km</Text>
           </View>
 
-          <Text style={styles.rowText}>Wake window</Text>
-          <Text style={styles.helperText}>Keeps suggestions away from sleep time unless you are clearly awake irregularly.</Text>
+          <Text style={styles.rowText}>{isGerman ? 'Wachzeitfenster' : 'Wake window'}</Text>
+          <Text style={styles.helperText}>{isGerman ? 'Halt Vorschlage von Schlafenszeiten fern, ausser du bist erkennbar unregelmassig wach.' : 'Keeps suggestions away from sleep time unless you are clearly awake irregularly.'}</Text>
           <View style={styles.wakeWindowContainer}>
             <WakeWindowRange
               start={wakeStartTime}
@@ -459,7 +537,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Calendars</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Kalender' : 'Calendars'}</Text>
           {state.permissions.calendarGranted ? (
             calendars.map((cal) => {
               const enabled = !state.disabledCalendars.includes(cal.id);
@@ -477,26 +555,38 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
                   }}
                 >
                   <Text style={styles.calendarTitle}>{cal.title}</Text>
-                  <Text style={styles.calendarStatus}>{enabled ? 'On' : 'Off'}</Text>
+                  <Text style={styles.calendarStatus}>{enabled ? (isGerman ? 'An' : 'On') : (isGerman ? 'Aus' : 'Off')}</Text>
                 </Pressable>
               );
             })
           ) : (
-            <Text style={styles.rowText}>Grant calendar access to manage calendars.</Text>
+            <Text style={styles.rowText}>{isGerman ? 'Erlaube Kalenderzugriff, um Kalender zu verwalten.' : 'Grant calendar access to manage calendars.'}</Text>
           )}
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Privacy</Text>
-            <Pressable onPress={() => Linking.openURL('https://firebase.google.com/support/privacy')}>
-              <Text style={styles.link}>Data privacy</Text>
-            </Pressable>
+          <Text style={styles.sectionTitle}>{t('settings_privacy_title')}</Text>
+          <Pressable onPress={openPrivacyPolicy}>
+            <Text style={styles.link}>{t('settings_privacy_policy')}</Text>
+          </Pressable>
+          <Pressable onPress={openTermsOfService}>
+            <Text style={styles.link}>{t('settings_terms')}</Text>
+          </Pressable>
+          <Text style={styles.helperText}>
+            {isGerman ? 'Werbeeinwilligung' : 'Ad consent status'}: {adsCompliance.consentStatus} | {isGerman ? 'Modus' : 'Mode'}: {adsCompliance.requestNonPersonalizedAdsOnly ? (isGerman ? 'Nicht personalisierte Werbung' : 'Non-personalized ads') : (isGerman ? 'Personalisierte Werbung' : 'Personalized ads')}
+          </Text>
+          <Pressable onPress={handleManageAdsPrivacy}>
+            <Text style={styles.link}>{isGerman ? 'Werbe-Datenschutz verwalten' : 'Manage ad privacy choices'}</Text>
+          </Pressable>
+          <Pressable onPress={handleResetAdsConsent}>
+            <Text style={styles.link}>{isGerman ? 'Werbeeinwilligung zurucksetzen' : 'Reset ad consent'}</Text>
+          </Pressable>
           <Pressable
             onPress={() => {
-              Alert.alert('Delete my data', 'This clears your local data and user record.', [
-                { text: 'Cancel', style: 'cancel' },
+              Alert.alert(isGerman ? 'Meine Daten loschen' : 'Delete my data', isGerman ? 'Das loscht kontobezogene personliche Daten und behalt nur anonymisierte Aggregat-Analysen.' : 'This deletes account-linked personal data and keeps only anonymized aggregate analytics.', [
+                { text: t('common_cancel'), style: 'cancel' },
                 {
-                  text: 'Delete',
+                  text: t('common_delete'),
                   style: 'destructive',
                   onPress: async () => {
                     await deleteUserData();
@@ -506,7 +596,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
               ]);
             }}
           >
-            <Text style={styles.delete}>Delete my data</Text>
+            <Text style={styles.delete}>{isGerman ? 'Meine Daten loschen' : 'Delete my data'}</Text>
           </Pressable>
         </View>
 

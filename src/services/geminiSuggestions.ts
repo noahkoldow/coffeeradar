@@ -6,6 +6,9 @@ import { loadGeminiUsage, loadPremiumActive, saveGeminiUsage } from '../utils/st
 import { selectChallengeCandidates } from '../utils/challengeMode';
 
 const GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY;
+const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
+const allowDirectModelCalls = isDevBuild
+  || String((globalThis as any).process?.env?.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
 const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MAX_SUGGESTIONS = 15; // Grab more from Gemini during this permissive phase
@@ -448,6 +451,9 @@ const buildPrompt = (
   const lifestyle = learning?.lifestyle ?? prefs.lifestyle ?? 'mixed';
   const selfDescription = learning?.selfDescription ?? prefs.selfDescription ?? 'not provided';
   const sessionActivityIntent = learning?.sessionActivityIntent?.trim() || '';
+  const outputLanguageInstruction = prefs.language === 'de'
+    ? 'Output language rule: Write all user-facing fields in natural German (de-DE).'
+    : 'Output language rule: Write all user-facing fields in natural English (en-US).';
 
   // --- Situational awareness signals ---------------------------------------
   const dayOfWeek = tzParts.weekday || 'Unknown';
@@ -514,6 +520,7 @@ const buildPrompt = (
   if (learning?.filter === 'challenge_me') {
     return [
       'You are generating CHALLENGE MODE cards only.',
+      outputLanguageInstruction,
       'Output ONLY real challenges. Never output normal activities disguised as challenges.',
       '',
       'USER PROFILE',
@@ -625,6 +632,7 @@ const buildPrompt = (
 
   return [
     'You are the user\'s sharp, well-informed friend who is great at deciding what to do when they can\'t.',
+    outputLanguageInstruction,
     'They are a little bored or uninspired and want you to take the decision off their hands.',
     'Think like a real person answering: "I\'m in this situation right now, with this much time, this is my life and personality — what should I actually do that fits?"',
     'Do NOT list generic filler. Give specific, doable, well-fitted ideas that a thoughtful friend would actually recommend.',
@@ -972,6 +980,11 @@ const runGeminiSuggestions = async (
   learning?: GeminiLearningContext,
   userId?: string | null,
 ): Promise<Suggestion[]> => {
+  if (!allowDirectModelCalls) {
+    addDebugMessage('gemini', 'Direct model calls disabled in this build; using non-Gemini sources only.');
+    return [];
+  }
+
   if (!userId) {
     addDebugMessage('gemini', 'Skipping Gemini source - no user id available for per-user quota.');
     return [];

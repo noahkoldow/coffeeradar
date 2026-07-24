@@ -1,5 +1,6 @@
 const MINUTE_MS = 60 * 1000;
 let preferredTimeZone: string | null = null;
+let preferredLocale: string | null = null;
 let deviceTimezoneInitialized = false;
 const TWELVE_HOUR_TIMEZONE_PREFIXES = ['America/', 'Australia/', 'Pacific/'];
 const TWENTY_FOUR_HOUR_TIMEZONE_PREFIXES = ['Europe/', 'Africa/', 'Asia/', 'Atlantic/', 'Etc/', 'Indian/', 'Antarctica/', 'UTC'];
@@ -42,6 +43,20 @@ export const setPreferredTimeZone = (timeZone?: string | null): void => {
   if (timeZone && timeZone.trim().length > 0) {
     preferredTimeZone = timeZone;
   }
+};
+
+export const setPreferredLocale = (locale?: string | null): void => {
+  if (locale == null) {
+    preferredLocale = null;
+    return;
+  }
+  if (locale && locale.trim().length > 0) {
+    preferredLocale = locale;
+  }
+};
+
+export const getPreferredLocale = (): string => {
+  return preferredLocale ?? Intl.DateTimeFormat().resolvedOptions().locale ?? 'en-US';
 };
 
 export const getPreferredTimeZone = (): string | null => {
@@ -92,7 +107,7 @@ export const normalizeClockTime = (value?: string | null, fallback = '07:00'): s
 
 const getTimeZoneFormatter = (timeZone?: string | null, options: Intl.DateTimeFormatOptions = {}) => {
   const resolved = resolveTimeZone(timeZone);
-  return new Intl.DateTimeFormat('en-AU', { timeZone: resolved, ...options });
+  return new Intl.DateTimeFormat(getPreferredLocale(), { timeZone: resolved, ...options });
 };
 
 const clockModeFromTimeZone = (resolvedTimeZone: string): boolean | null => {
@@ -110,9 +125,10 @@ const prefers24HourClock = (timeZone?: string | null): boolean => {
   const regionalPreference = clockModeFromTimeZone(resolved);
   if (regionalPreference != null) return regionalPreference;
 
-  const localePreference = new Intl.DateTimeFormat(undefined, {
+  const localePreference = new Intl.DateTimeFormat(getPreferredLocale(), {
     hour: 'numeric',
     minute: '2-digit',
+    localeMatcher: 'best fit',
   }).resolvedOptions().hour12;
   return localePreference === false;
 };
@@ -157,7 +173,8 @@ export const getTimeZoneParts = (date: Date, timeZone?: string | null): {
   weekday: string;
 } => {
   const resolved = resolveTimeZone(timeZone);
-  const parts = new Intl.DateTimeFormat('en-AU', {
+  const parts = new Intl.DateTimeFormat(getPreferredLocale(), {
+    localeMatcher: 'best fit',
     timeZone: resolved,
     year: 'numeric',
     month: '2-digit',
@@ -181,7 +198,7 @@ export const getTimeZoneParts = (date: Date, timeZone?: string | null): {
 
 export const formatLocalDateTime = (date: Date, timeZone?: string | null): string => {
   const parts = getTimeZoneParts(date, timeZone);
-  const offsetPart = new Intl.DateTimeFormat('en-US', {
+  const offsetPart = new Intl.DateTimeFormat(getPreferredLocale(), {
     timeZone: parts.timeZone,
     timeZoneName: 'longOffset',
     hour: '2-digit',

@@ -12,10 +12,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn()
-        && request.auth.token.email != null
-        && request.auth.token.email.lower() in [
-          'bitsapp.admin@gmail.com'
-        ];
+        && request.auth.token.admin == true;
     }
 
     function getUserId() {
@@ -178,7 +175,9 @@ service cloud.firestore {
     // ========================================================================
 
     match /businesses/{businessId} {
-      allow read: if true;
+      allow read: if resource.data.verificationStatus == 'verified'
+        || isBusinessMember(businessId)
+        || isAdmin();
 
       allow create: if isSignedIn()
         && request.resource.data.ownerId == request.auth.uid
@@ -195,7 +194,7 @@ service cloud.firestore {
       allow delete: if isAdmin();
 
       // Allow any signed-in user to increment metrics/updatedAt only
-      allow update: if isSignedIn()
+      allow update: if isBusinessMember(businessId)
         && request.resource.data.diff(resource.data).affectedKeys()
              .hasOnly(['metrics', 'updatedAt']);
 
@@ -257,7 +256,9 @@ service cloud.firestore {
         match /metrics/{metricId} {
           allow read: if isBusinessMember(businessId);
 
-          allow create: if request.resource.data.type in [
+          allow create: if isSignedIn()
+            && isBusinessMember(businessId)
+            && request.resource.data.type in [
               'impression',
               'click',
               'conversion'
@@ -268,10 +269,13 @@ service cloud.firestore {
               || (
                 request.resource.data.type == 'click'
                 && request.resource.data.userId is string
+                && request.resource.data.userId == request.auth.uid
               )
               || (
                 request.resource.data.type == 'conversion'
                 && request.resource.data.value is number
+                && request.resource.data.userId is string
+                && request.resource.data.userId == request.auth.uid
               )
             );
 
@@ -281,7 +285,9 @@ service cloud.firestore {
         match /targeting_logs/{logId} {
           allow read: if isBusinessMember(businessId);
 
-          allow create: if request.resource.data.timestamp is timestamp
+          allow create: if isSignedIn()
+            && isBusinessMember(businessId)
+            && request.resource.data.timestamp is timestamp
             && request.resource.data.matched is bool;
 
           allow update, delete: if isAdmin();

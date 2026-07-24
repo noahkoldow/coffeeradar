@@ -10,12 +10,13 @@ import { enableScreens } from 'react-native-screens';
 import { AppStateProvider, useAppState } from './src/state/AppState';
 import { RootStackParamList } from './src/navigation/types';
 import { AuthScreen } from './src/screens/AuthScreen';
+import { PrivacyPolicyScreen } from './src/screens/LegalPrivacyScreen';
+import { TermsOfServiceScreen } from './src/screens/LegalTermsScreen';
 import { WelcomeScreen } from './src/screens/WelcomeScreen';
 import { CalendarPermissionScreen } from './src/screens/CalendarPermissionScreen';
 import { CalendarSelectScreen } from './src/screens/CalendarSelectScreen';
 import { LocationPermissionScreen } from './src/screens/LocationPermissionScreen';
 import { PreferencesScreen } from './src/screens/PreferencesScreen';
-import { OnboardingCompleteScreen } from './src/screens/OnboardingCompleteScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { CommunityIdeaFormScreen } from './src/screens/CommunityIdeaFormScreen';
 import { CommunityIdeaSuccessScreen } from './src/screens/CommunityIdeaSuccessScreen';
@@ -44,7 +45,8 @@ import { ThemeProvider, useTheme } from './src/theme/ThemeProvider';
 import { lightTheme } from './src/theme';
 import { logEvent } from './src/services/analytics';
 import { firebaseEnabled } from './src/services/firebase';
-import { initializeAds } from './src/services/ads/mobileAds';
+import { initializeAdsCompliance } from './src/services/ads/consent';
+import { I18nProvider } from './src/i18n/I18nProvider';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -62,7 +64,7 @@ const AppNavigator = () => {
   }, [state.loading]);
 
   useEffect(() => {
-    void initializeAds();
+    void initializeAdsCompliance();
   }, []);
 
   if (state.loading || !state.authChecked) {
@@ -78,6 +80,8 @@ const AppNavigator = () => {
       <NavigationContainer>
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="Auth" component={AuthScreen} />
+          <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+          <Stack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
         </Stack.Navigator>
       </NavigationContainer>
     );
@@ -125,11 +129,12 @@ const AppNavigator = () => {
           screenOptions={{ headerShown: false, cardStyle: { backgroundColor: appBackground } }}
         >
           <Stack.Screen name="Welcome" component={WelcomeScreen} options={{ gestureEnabled: false }} />
+          <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+          <Stack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
           <Stack.Screen name="CalendarPermission" component={CalendarPermissionScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="CalendarSelect" component={CalendarSelectScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="LocationPermission" component={LocationPermissionScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="Preferences" component={PreferencesScreen} options={{ gestureEnabled: false }} />
-          <Stack.Screen name="OnboardingComplete" component={OnboardingCompleteScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="Home" component={HomeScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="CommunityIdeaForm" component={CommunityIdeaFormScreen} />
           <Stack.Screen name="CommunityIdeaSuccess" component={CommunityIdeaSuccessScreen} />
@@ -179,9 +184,11 @@ export default function App() {
     <GestureHandlerRootView style={styles.root}>
       <SafeAreaProvider>
         <AppStateProvider>
-          <ThemeProvider>
-            <ThemedAppShell />
-          </ThemeProvider>
+          <I18nProvider>
+            <ThemeProvider>
+              <ThemedAppShell />
+            </ThemeProvider>
+          </I18nProvider>
         </AppStateProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>

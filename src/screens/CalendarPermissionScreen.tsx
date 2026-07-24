@@ -10,6 +10,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
 import { requestCalendarPermission } from '../services/calendar';
 import { logEvent } from '../services/analytics';
+import { useI18n } from '../i18n/I18nProvider';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
@@ -19,9 +20,11 @@ type Props = StackScreenProps<RootStackParamList, 'CalendarPermission'>;
 export const CalendarPermissionScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
   const [loading, setLoading] = useState(false);
+  const isGerman = language === 'de';
 
   const onRequest = async () => {
     setLoading(true);
@@ -46,18 +49,20 @@ export const CalendarPermissionScreen: React.FC<Props> = ({ navigation }) => {
     >
       <View style={styles.content}>
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-        <Text style={styles.title}>Connect your calendar 📅</Text>
+        <Text style={styles.title}>{isGerman ? 'Kalender verbinden 📅' : 'Connect your calendar 📅'}</Text>
         <Text style={styles.subtitle}>
-          CoffeeRadar reads your schedule to spot real free time and suggest things that fit your day. Your calendar stays yours — used only to personalize your ideas, never sold or shown to other people.
+          {isGerman
+            ? 'CoffeeRadar liest deinen Kalender, um echte freie Zeit zu finden und passende Vorschlage fur deinen Tag zu machen. Dein Kalender bleibt privat und wird nur fur Personalisierung genutzt.'
+            : 'CoffeeRadar reads your schedule to spot real free time and suggest things that fit your day. Your calendar stays yours — used only to personalize your ideas, never sold or shown to other people.'}
         </Text>
       </View>
       <PrimaryButton
-        label={loading ? 'Requesting...' : 'Allow calendar'}
+        label={loading ? '...' : (isGerman ? 'Kalender erlauben' : 'Allow calendar')}
         onPress={onRequest}
         style={styles.button}
       />
       <Text style={styles.skip} onPress={() => navigation.navigate('LocationPermission')}>
-        Not now
+        {isGerman ? 'Jetzt nicht' : 'Not now'}
       </Text>
     </LinearGradient>
   );

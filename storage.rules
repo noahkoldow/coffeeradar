@@ -8,14 +8,11 @@ service firebase.storage {
 
     function isAdmin() {
       return isSignedIn()
-        && request.auth.token.email != null
-        && request.auth.token.email.lower() in [
-          'bitsapp.admin@gmail.com'
-        ];
+        && request.auth.token.admin == true;
     }
 
     match /community_ideas/{userId}/{ideaId}/{fileName} {
-      allow read: if true;
+      allow read: if isAdmin() || (isSignedIn() && request.auth.uid == userId);
       allow create: if isSignedIn()
         && request.auth.uid == userId
         && request.resource.contentType.matches('image/.*');

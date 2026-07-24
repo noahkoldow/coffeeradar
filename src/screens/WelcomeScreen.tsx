@@ -1,5 +1,5 @@
-import React, { useEffect, useMemo, useRef } from 'react';
-import { Animated, Dimensions, Easing, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Animated, Dimensions, Easing, Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackScreenProps } from '@react-navigation/stack';
@@ -7,6 +7,7 @@ import { PrimaryButton } from '../components/PrimaryButton';
 import { BrandCollabLockup } from '../components/BrandCollabLockup';
 import { useTheme } from '../theme/ThemeProvider';
 import { RootStackParamList } from '../navigation/types';
+import { useI18n } from '../i18n/I18nProvider';
 
 const LOGO_HEIGHT = 30;
 const LOGO_WIDTH = LOGO_HEIGHT * 3;
@@ -188,8 +189,10 @@ const PreviewCard: React.FC<{
 export const WelcomeScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
+  const [legalVisible, setLegalVisible] = useState(false);
 
   return (
     <LinearGradient
@@ -198,8 +201,8 @@ export const WelcomeScreen: React.FC<Props> = ({ navigation }) => {
     >
       <View style={styles.content}>
         <BrandCollabLockup height={LOGO_HEIGHT} bitsWidth={LOGO_WIDTH} style={styles.logo} />
-        <Text style={styles.title}>Bored? Stuck? Let’s fix that.</Text>
-        <Text style={styles.subtitle}>Discover bite-sized ideas you can act on right now. No planning required.</Text>
+        <Text style={styles.title}>{t('welcome_title')}</Text>
+        <Text style={styles.subtitle}>{t('welcome_subtitle')}</Text>
       </View>
       <View style={[styles.previewStage, { width }]}> 
         {PREVIEW_CARDS.map((spec, index) => (
@@ -207,10 +210,35 @@ export const WelcomeScreen: React.FC<Props> = ({ navigation }) => {
         ))}
       </View>
       <PrimaryButton
-        label="Find my first bit"
-        onPress={() => navigation.navigate('CalendarPermission')}
+        label={t('welcome_cta')}
+        onPress={() => setLegalVisible(true)}
         style={styles.button}
       />
+
+      <Modal visible={legalVisible} transparent animationType="fade" onRequestClose={() => setLegalVisible(false)}>
+        <Pressable style={styles.legalBackdrop} onPress={() => setLegalVisible(false)}>
+          <Pressable style={styles.legalCard} onPress={() => undefined}>
+            <Text style={styles.legalTitle}>{t('welcome_before_start')}</Text>
+            <Text style={styles.legalBody}>{t('welcome_legal_text')}</Text>
+            <View style={styles.legalLinksRow}>
+              <Pressable onPress={() => navigation.navigate('TermsOfService')}>
+                <Text style={styles.legalLink}>{t('welcome_terms')}</Text>
+              </Pressable>
+              <Text style={styles.legalDivider}>•</Text>
+              <Pressable onPress={() => navigation.navigate('PrivacyPolicy')}>
+                <Text style={styles.legalLink}>{t('welcome_privacy')}</Text>
+              </Pressable>
+            </View>
+            <PrimaryButton
+              label={t('common_continue')}
+              onPress={() => {
+                setLegalVisible(false);
+                navigation.navigate('CalendarPermission');
+              }}
+            />
+          </Pressable>
+        </Pressable>
+      </Modal>
     </LinearGradient>
   );
 };
@@ -309,5 +337,43 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   button: {
     marginBottom: theme.spacing.xl,
+  },
+  legalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(8, 11, 18, 0.5)',
+    justifyContent: 'center',
+    padding: theme.spacing.lg,
+  },
+  legalCard: {
+    backgroundColor: theme.colors.card,
+    borderRadius: theme.radius.lg,
+    borderWidth: 1,
+    borderColor: theme.colors.border,
+    padding: theme.spacing.lg,
+    gap: theme.spacing.md,
+  },
+  legalTitle: {
+    fontFamily: theme.fonts.heading,
+    fontSize: 22,
+    color: theme.colors.text,
+  },
+  legalBody: {
+    fontFamily: theme.fonts.body,
+    fontSize: 14,
+    color: theme.colors.textMuted,
+    lineHeight: 21,
+  },
+  legalLinksRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: theme.spacing.sm,
+  },
+  legalLink: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accent,
+  },
+  legalDivider: {
+    fontFamily: theme.fonts.body,
+    color: theme.colors.textMuted,
   },
 });

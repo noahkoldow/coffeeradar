@@ -13,6 +13,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { formatClockMinutes } from '../utils/time';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -26,6 +27,8 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
 }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
 
   const [loading, setLoading] = useState(true);
@@ -57,42 +60,42 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
         {/* Header */}
         <View style={styles.header}>
           <Pressable onPress={() => navigation.goBack()}>
-            <Text style={styles.back}>Back</Text>
+            <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
           </Pressable>
-          <Text style={styles.title}>Audience Insights</Text>
+          <Text style={styles.title}>{isGerman ? 'Zielgruppen-Insights' : 'Audience Insights'}</Text>
           <View style={styles.spacer} />
         </View>
 
         {/* Overview Cards */}
         <View style={styles.cardsGrid}>
           <View style={styles.card}>
-            <Text style={styles.cardLabel}>Unique Users</Text>
+            <Text style={styles.cardLabel}>{isGerman ? 'Eindeutige Nutzer' : 'Unique Users'}</Text>
             <Text style={styles.cardValue}>2,340</Text>
-            <Text style={styles.cardChange}>+12% from last week</Text>
+            <Text style={styles.cardChange}>{isGerman ? '+12% zur Vorwoche' : '+12% from last week'}</Text>
           </View>
           <View style={styles.card}>
-            <Text style={styles.cardLabel}>Avg. Engagement</Text>
+            <Text style={styles.cardLabel}>{isGerman ? 'Durchschn. Engagement' : 'Avg. Engagement'}</Text>
             <Text style={styles.cardValue}>4.2%</Text>
-            <Text style={styles.cardChange}>+0.5% from last week</Text>
+            <Text style={styles.cardChange}>{isGerman ? '+0.5% zur Vorwoche' : '+0.5% from last week'}</Text>
           </View>
           <View style={styles.card}>
-            <Text style={styles.cardLabel}>Top Interest</Text>
-            <Text style={styles.cardValue}>Fitness</Text>
-            <Text style={styles.cardChange}>42% of audience</Text>
+            <Text style={styles.cardLabel}>{isGerman ? 'Top-Interesse' : 'Top Interest'}</Text>
+            <Text style={styles.cardValue}>{isGerman ? 'Fitness' : 'Fitness'}</Text>
+            <Text style={styles.cardChange}>{isGerman ? '42% der Zielgruppe' : '42% of audience'}</Text>
           </View>
           <View style={styles.card}>
-            <Text style={styles.cardLabel}>Peak Activity</Text>
+            <Text style={styles.cardLabel}>{isGerman ? 'Spitzenzeit' : 'Peak Activity'}</Text>
             <Text style={styles.cardValue}>{formatClockMinutes(10 * 60)}</Text>
-            <Text style={styles.cardChange}>Weekday mornings</Text>
+            <Text style={styles.cardChange}>{isGerman ? 'Wochentags morgens' : 'Weekday mornings'}</Text>
           </View>
         </View>
 
         {/* Demographics */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Demographics</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Demografie' : 'Demographics'}</Text>
 
           <View style={styles.demographicItem}>
-            <Text style={styles.demographicLabel}>Age Groups</Text>
+            <Text style={styles.demographicLabel}>{isGerman ? 'Altersgruppen' : 'Age Groups'}</Text>
             <View style={styles.barChart}>
               <View style={styles.barWrapper}>
                 <View style={[styles.bar, { width: '35%', backgroundColor: theme.colors.accent }]} />
@@ -114,27 +117,27 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
           </View>
 
           <View style={styles.demographicItem}>
-            <Text style={styles.demographicLabel}>Top Interests</Text>
+            <Text style={styles.demographicLabel}>{isGerman ? 'Top-Interessen' : 'Top Interests'}</Text>
             <View style={styles.interestsList}>
               <View style={styles.interestItem}>
                 <Text style={styles.interestName}>🏋️ Fitness</Text>
-                <Text style={styles.interestCount}>980 users</Text>
+                <Text style={styles.interestCount}>{isGerman ? '980 Nutzer' : '980 users'}</Text>
               </View>
               <View style={styles.interestItem}>
                 <Text style={styles.interestName}>☕ Coffee</Text>
-                <Text style={styles.interestCount}>742 users</Text>
+                <Text style={styles.interestCount}>{isGerman ? '742 Nutzer' : '742 users'}</Text>
               </View>
               <View style={styles.interestItem}>
                 <Text style={styles.interestName}>🧘 Wellness</Text>
-                <Text style={styles.interestCount}>654 users</Text>
+                <Text style={styles.interestCount}>{isGerman ? '654 Nutzer' : '654 users'}</Text>
               </View>
               <View style={styles.interestItem}>
                 <Text style={styles.interestName}>🎨 Arts & Culture</Text>
-                <Text style={styles.interestCount}>531 users</Text>
+                <Text style={styles.interestCount}>{isGerman ? '531 Nutzer' : '531 users'}</Text>
               </View>
               <View style={styles.interestItem}>
                 <Text style={styles.interestName}>🍽️ Food</Text>
-                <Text style={styles.interestCount}>428 users</Text>
+                <Text style={styles.interestCount}>{isGerman ? '428 Nutzer' : '428 users'}</Text>
               </View>
             </View>
           </View>
@@ -142,7 +145,7 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
 
         {/* Engagement by Time */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Engagement by Time of Day</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Engagement nach Tageszeit' : 'Engagement by Time of Day'}</Text>
           <View style={styles.timelineChart}>
             {['12am', '6am', '10am', '2pm', '6pm', '10pm'].map((time, idx) => (
               <View key={time} style={styles.timelineItem}>
@@ -160,13 +163,13 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
 
         {/* Mood Breakdown */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>User Moods</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Nutzer-Stimmungen' : 'User Moods'}</Text>
           <View style={styles.moodGrid}>
             {[
-              { emoji: '😊', label: 'Relaxed', pct: 32 },
-              { emoji: '⚡', label: 'Energetic', pct: 28 },
-              { emoji: '🤝', label: 'Social', pct: 22 },
-              { emoji: '🎯', label: 'Focused', pct: 18 },
+              { emoji: '😊', label: isGerman ? 'Entspannt' : 'Relaxed', pct: 32 },
+              { emoji: '⚡', label: isGerman ? 'Energiegeladen' : 'Energetic', pct: 28 },
+              { emoji: '🤝', label: isGerman ? 'Sozial' : 'Social', pct: 22 },
+              { emoji: '🎯', label: isGerman ? 'Fokussiert' : 'Focused', pct: 18 },
             ].map((mood) => (
               <View key={mood.label} style={styles.moodItem}>
                 <Text style={styles.moodEmoji}>{mood.emoji}</Text>
@@ -179,19 +182,19 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
 
         {/* Location Breakdown */}
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Top Locations</Text>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Top-Standorte' : 'Top Locations'}</Text>
           <View style={styles.locationList}>
             {[
               { city: 'Berlin', count: 412, pct: 18 },
               { city: 'Munich', count: 287, pct: 12 },
               { city: 'Hamburg', count: 203, pct: 9 },
               { city: 'Frankfurt', count: 156, pct: 7 },
-              { city: 'Other', count: 1282, pct: 54 },
+              { city: isGerman ? 'Sonstige' : 'Other', count: 1282, pct: 54 },
             ].map((loc) => (
               <View key={loc.city} style={styles.locationRow}>
                 <View style={styles.locationInfo}>
                   <Text style={styles.locationCity}>{loc.city}</Text>
-                  <Text style={styles.locationCount}>{loc.count} users</Text>
+                  <Text style={styles.locationCount}>{loc.count} {isGerman ? 'Nutzer' : 'users'}</Text>
                 </View>
                 <Text style={styles.locationPercent}>{loc.pct}%</Text>
               </View>
@@ -201,11 +204,11 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
 
         {/* Tips */}
         <View style={styles.tipsSection}>
-          <Text style={styles.tipsTitle}>💡 Insights & Recommendations</Text>
-          <Text style={styles.tip}>• Your peak engagement is 10-11 AM on weekdays</Text>
-          <Text style={styles.tip}>• Fitness enthusiasts make up your core audience</Text>
-          <Text style={styles.tip}>• Relaxed mood users engage 2.3x more</Text>
-          <Text style={styles.tip}>• Consider targeting early birds (6-8 AM)</Text>
+          <Text style={styles.tipsTitle}>💡 {isGerman ? 'Insights & Empfehlungen' : 'Insights & Recommendations'}</Text>
+          <Text style={styles.tip}>{isGerman ? '• Dein Peak-Engagement liegt werktags zwischen 10 und 11 Uhr' : '• Your peak engagement is 10-11 AM on weekdays'}</Text>
+          <Text style={styles.tip}>{isGerman ? '• Fitness-Interessierte bilden deine Kernzielgruppe' : '• Fitness enthusiasts make up your core audience'}</Text>
+          <Text style={styles.tip}>{isGerman ? '• Nutzer mit entspannter Stimmung interagieren 2.3x mehr' : '• Relaxed mood users engage 2.3x more'}</Text>
+          <Text style={styles.tip}>{isGerman ? '• Zielgruppe fruher Vogel (6-8 Uhr) kann sich lohnen' : '• Consider targeting early birds (6-8 AM)'}</Text>
         </View>
       </ScrollView>
     </LinearGradient>

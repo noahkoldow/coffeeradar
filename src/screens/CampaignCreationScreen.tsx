@@ -23,15 +23,15 @@ import { Campaign, BusinessCategory } from '../types/business';
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
 const BUSINESS_CATEGORIES: BusinessCategory[] = [
+  'restaurant',
+  'cafe',
+  'gym',
   'wellness',
-  'food',
   'entertainment',
-  'sports',
-  'education',
-  'tech',
   'retail',
   'services',
-  'travel',
+  'events',
+  'tourism',
   'other',
 ];
 
@@ -57,7 +57,7 @@ export const CampaignCreationScreen: React.FC<Props> = ({ navigation }) => {
   const [hook, setHook] = useState('');
   const [description, setDescription] = useState('');
   const [ctaText, setCtaText] = useState('Learn More');
-  const [ctaAction, setCtaAction] = useState<'link' | 'call' | 'map'>('link');
+  const [ctaAction, setCtaAction] = useState<'url' | 'phone' | 'location'>('url');
   const [ctaValue, setCtaValue] = useState('');
   const [category, setCategory] = useState<BusinessCategory>('wellness');
 
@@ -135,7 +135,7 @@ export const CampaignCreationScreen: React.FC<Props> = ({ navigation }) => {
           interests: [], // TODO: Add interest selection
           moods: selectedMoods,
           locations: [], // TODO: Add location selection
-          weather: selectedWeather,
+          weatherConditions: selectedWeather,
           timeWindows: [], // TODO: Add time window selection
         },
         dateRange: {
@@ -253,10 +253,10 @@ export const CampaignCreationScreen: React.FC<Props> = ({ navigation }) => {
           <View style={styles.formGroup}>
             <Text style={styles.label}>CTA Type</Text>
             <View style={styles.chipsWrap}>
-              {(['link', 'call', 'map'] as const).map((type) => (
+              {(['url', 'phone', 'location'] as const).map((type) => (
                 <Chip
                   key={type}
-                  label={type}
+                  label={type === 'url' ? 'link' : type === 'phone' ? 'call' : 'map'}
                   selected={ctaAction === type}
                   onPress={() => setCtaAction(type)}
                 />
@@ -266,18 +266,18 @@ export const CampaignCreationScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.formGroup}>
             <Text style={styles.label}>
-              {ctaAction === 'link'
+              {ctaAction === 'url'
                 ? 'URL'
-                : ctaAction === 'call'
+                : ctaAction === 'phone'
                   ? 'Phone number'
                   : 'Address'}
             </Text>
             <TextInput
               style={styles.input}
               placeholder={
-                ctaAction === 'link'
+                ctaAction === 'url'
                   ? 'https://example.com'
-                  : ctaAction === 'call'
+                  : ctaAction === 'phone'
                     ? '+1234567890'
                     : '123 Main St'
               }

@@ -13,13 +13,15 @@ import { firebaseEnabled } from '../services/firebase';
 import { isBusinessAdmin } from '../services/user';
 import { getAvatarInitial } from '../utils/social';
 import { loadProfileAvatarUri, saveProfileAvatarUri } from '../utils/storage';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Profile'>;
 
 export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { state } = useAppState();
+  const { state, actions } = useAppState();
+  const { t } = useI18n();
   const insets = useSafeAreaInsets();
   const [profileAvatarUri, setProfileAvatarUri] = useState<string | null>(null);
   const [avatarLoading, setAvatarLoading] = useState(false);
@@ -41,13 +43,50 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
     await signOutUser();
   };
 
+  const handleRetakeOnboarding = () => {
+    if (!isAdmin) return;
+    Alert.alert(
+      t('profile_retake_title'),
+      t('profile_retake_body'),
+      [
+        { text: t('common_cancel'), style: 'cancel' },
+        {
+          text: t('profile_retake_confirm'),
+          style: 'destructive',
+          onPress: () => {
+            actions.resetOnboarding();
+            navigation.reset({ index: 0, routes: [{ name: 'Welcome' }] });
+          },
+        },
+      ],
+    );
+  };
+
+  const handleTogglePremium = () => {
+    if (!isAdmin) return;
+    const nextPremium = !state.isPremium;
+    Alert.alert(
+      nextPremium ? t('profile_enable_premium_title') : t('profile_disable_premium_title'),
+      nextPremium
+        ? t('profile_enable_premium_body')
+        : t('profile_disable_premium_body'),
+      [
+        { text: t('common_cancel'), style: 'cancel' },
+        {
+          text: nextPremium ? t('common_enable') : t('common_disable'),
+          onPress: () => actions.setPremiumActive(nextPremium),
+        },
+      ],
+    );
+  };
+
   const pickProfilePhoto = async () => {
     if (avatarLoading) return;
     setAvatarLoading(true);
     try {
       const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (!permission.granted) {
-        Alert.alert('Permission needed', 'Allow photo access to add a profile picture.');
+        Alert.alert(t('profile_permission_title'), t('profile_permission_body'));
         return;
       }
 
@@ -65,7 +104,7 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
       await saveProfileAvatarUri(uri, state.userId);
     } catch (error) {
       console.warn('[ProfileScreen] avatar pick failed', error);
-      Alert.alert('Could not update photo', 'Please try again.');
+      Alert.alert(t('profile_update_photo_title'), t('profile_update_photo_body'));
     } finally {
       setAvatarLoading(false);
     }
@@ -79,7 +118,7 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
+          <Text style={styles.back}>{t('common_back')}</Text>
         </Pressable>
 
         <View style={styles.headerRow}>
@@ -97,50 +136,59 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
 
           <View style={styles.headerCopy}>
             <Text style={[styles.title, isAdmin && styles.adminTitle]}>
-              {isAdmin ? 'ADMIN ACCOUNT' : 'Profile'}
+              {isAdmin ? t('profile_admin_title') : t('profile_title')}
             </Text>
             <Text style={styles.subtitle}>
-              Signed in as {signedInLabel}
+              {t('profile_signed_in_as', { value: signedInLabel })}
             </Text>
             <Pressable onPress={pickProfilePhoto} disabled={!canEditAvatar || avatarLoading}>
               <Text style={styles.avatarActionText}>
-                {profileAvatarUri ? 'Change profile picture' : 'Add profile picture'}
+                {profileAvatarUri ? t('profile_change_picture') : t('profile_add_picture')}
               </Text>
             </Pressable>
           </View>
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Account</Text>
-          <PrimaryButton label="Log out" onPress={handleSignOut} />
+          <Text style={styles.sectionTitle}>{t('profile_account')}</Text>
+          <PrimaryButton label={t('profile_logout')} onPress={handleSignOut} />
           {!firebaseEnabled && (
             <Text style={styles.rowText}>Firebase config missing. Add it to enable accounts.</Text>
           )}
         </View>
 
         <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Profile setup</Text>
+          <Text style={styles.sectionTitle}>{t('profile_setup')}</Text>
           <PrimaryButton
-            label="Edit preferences"
+            label={t('profile_edit_preferences')}
             onPress={() => navigation.navigate('Settings')}
           />
           <PrimaryButton
-            label="My activities"
+            label={t('profile_my_activities')}
             onPress={() => navigation.navigate('MyActivities')}
           />
           <PrimaryButton
-            label="Submit a business ad"
+            label={t('profile_submit_business_ad')}
             onPress={() => navigation.navigate('BusinessHub')}
           />
         </View>
 
         {isAdmin && (
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Admin</Text>
-            <Text style={styles.rowText}>Pending business ads and community submissions need review here.</Text>
+            <Text style={styles.sectionTitle}>{t('profile_admin_section')}</Text>
+            <Text style={styles.rowText}>{t('profile_admin_hint')}</Text>
+            <Text style={styles.rowText}>{t('profile_premium_status', { value: state.isPremium ? t('profile_enabled') : t('profile_disabled') })}</Text>
             <PrimaryButton
-              label="Review pending approvals"
+              label={t('profile_review_approvals')}
               onPress={() => navigation.navigate('ApprovalQueue')}
+            />
+            <PrimaryButton
+              label={state.isPremium ? t('profile_disable_premium') : t('profile_enable_premium')}
+              onPress={handleTogglePremium}
+            />
+            <PrimaryButton
+              label={t('profile_retake_onboarding')}
+              onPress={handleRetakeOnboarding}
             />
           </View>
         )}

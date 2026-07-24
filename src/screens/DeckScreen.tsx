@@ -22,11 +22,13 @@ import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../s
 import { logEvent } from '../services/analytics';
 import { syncBusinessMetric } from '../services/user';
 import { AD_RULES, buildAdKeywords } from '../services/ads/adConfig';
-import { isAdsAvailable } from '../services/ads/mobileAds';
+import { isAdPlaceholderMode, isAdsAvailable } from '../services/ads/mobileAds';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
+import { useAdsCompliance } from '../services/ads/consent';
 import { VideoAdModal } from '../components/ads/VideoAdModal';
 import { selectChallengeCandidates } from '../utils/challengeMode';
 import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -39,7 +41,9 @@ const ADMIN_EMAILS: string[] = (process.env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS ??
 export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { t } = useI18n();
   const { state, actions } = useAppState();
+  const adsCompliance = useAdsCompliance();
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
   const isAdmin = ADMIN_EMAILS.length > 0 && ADMIN_EMAILS.includes(state.userEmail ?? '');
@@ -580,7 +584,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   /* ── Ads (free users only) ─────────────────────────────────
    * Native ad slides are injected into every 2nd deck at a random slot 2–5.
    * A full-screen video ad plays on every 2nd "new set" request. */
-  const adsFreeUser = !state.isPremium && !isAdmin && isAdsAvailable && planDate !== 'tomorrow';
+  const adsFreeUser = !state.isPremium
+    && !isAdmin
+    && planDate !== 'tomorrow'
+    && ((isAdsAvailable && adsCompliance.initialized && adsCompliance.canRequestAds) || isAdPlaceholderMode);
   const adKeywords = useMemo(
     () => buildAdKeywords(state.prefs, state.location, activityMode),
     [state.prefs, state.location, activityMode],
@@ -921,18 +928,18 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const openGridCard = useCallback((card: DeckSuggestion) => {
     if (gridUsed) {
-      Alert.alert('Already used', 'You can only pick one of these until credits refresh.');
+      Alert.alert(t('deck_already_used_title'), t('deck_already_used_body'));
       return;
     }
     if (declinedGridCardIds.has(card.id)) {
       return;
     }
     setInspectedGridCard(card);
-  }, [declinedGridCardIds, gridUsed]);
+  }, [declinedGridCardIds, gridUsed, t]);
 
   const acceptInspectedCard = useCallback((card: DeckSuggestion) => {
     if (gridUsed) {
-      Alert.alert('Already used', 'You can only pick one of these until credits refresh.');
+      Alert.alert(t('deck_already_used_title'), t('deck_already_used_body'));
       return;
     }
 
@@ -955,7 +962,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     } else {
       navigation.replace('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
     }
-  }, [activityMode, gridUsed, navigation, planDate]);
+  }, [activityMode, gridUsed, navigation, planDate, t]);
 
   const declineInspectedCard = useCallback(() => {
     if (inspectedGridCard) {
@@ -1025,7 +1032,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // consume swipe from bank (unless Plan Ahead mode or admin)
     if (planDate !== 'tomorrow' && !isAdmin && !actions.spendSwipe()) {
       swipeLockRef.current = false;
-      Alert.alert('No swipes left', 'You have no swipes remaining. Pick an option from the home screen or earn more by completing activities.');
+      Alert.alert(t('deck_no_swipes_title'), t('deck_no_swipes_body'));
       return;
     }
 
@@ -1113,7 +1120,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // consume swipe from bank (skipped for admin)
     if (!isAdmin && !actions.spendSwipe()) {
       swipeLockRef.current = false;
-      Alert.alert('No swipes left', 'You have no swipes remaining. Pick an option from the home screen or earn more by completing activities.');
+      Alert.alert(t('deck_no_swipes_title'), t('deck_no_swipes_body'));
       return;
     }
     setConfettiEmojis(picked.emojis && picked.emojis.length ? picked.emojis : ['✨', '🎉', '⭐']);
@@ -1122,7 +1129,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     commitWatchdogRef.current = setTimeout(() => {
       setConfirming(false);
       swipeLockRef.current = false;
-      Alert.alert('Taking longer than expected', 'Please try again.');
+      Alert.alert(t('deck_slow_title'), t('deck_slow_body'));
     }, 8000);
     triggerRipple();
     try {
@@ -1300,7 +1307,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       setConfirming(false);
       setSchedulePreview(null);
       swipeLockRef.current = false;
-      Alert.alert('Could not open plan', 'Please try again.');
+      Alert.alert(t('deck_could_not_open_plan_title'), t('deck_could_not_open_plan_body'));
     }
   };
 
@@ -1316,7 +1323,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       const computed = findBestTomorrowFit(current.durationMin);
       const slot = computed?.slotStart ?? (suggested && !Number.isNaN(suggested.getTime()) ? suggested : null);
       if (!slot) {
-        Alert.alert('Tomorrow is full', 'No slot fits this activity in your tomorrow plan window. Swipe for a shorter option.');
+        Alert.alert(t('deck_tomorrow_full_title'), t('deck_tomorrow_full_body'));
         return;
       }
       await commitSuggestion('later', slot);
@@ -1428,7 +1435,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           {showLoadingBackButton && (
             <View style={styles.loadingBackButtonWrap}>
               <PrimaryButton
-                label="Back to Home"
+                label={t('deck_back_home')}
                 onPress={() => {
                   setLoading(false);
                   setShowLoadingBackButton(false);
@@ -1488,21 +1495,21 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     return (
       <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
         <Pressable style={styles.emptyState} onPress={handleNewSet}>
-          <Text style={styles.title}>Nothing clicked.</Text>
+          <Text style={styles.title}>{t('smart_nothing_clicked')}</Text>
           <Text style={styles.subtitle}>
             {ranOutEarly
               ? 'We ran out of matching activities. Try expanding your interests for more variety!'
-              : 'Want a new set?'}
+              : t('smart_want_new_set')}
           </Text>
           <View style={styles.actions}>
-            <PrimaryButton label={nextNewSetPlaysAd ? 'New set  (▶)' : 'New set'} onPress={handleNewSet} />
+            <PrimaryButton label={nextNewSetPlaysAd ? `${t('smart_new_set')}  (▶)` : t('smart_new_set')} onPress={handleNewSet} />
             <Pressable onPress={() => navigation.navigate('Settings', { fromRefine: true })}>
               <Text style={styles.refineLink}>
                 {ranOutEarly ? '⚙️  Expand your interests' : 'Refine what to do'}
               </Text>
             </Pressable>
             <Pressable onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Home' }] })}>
-              <Text style={styles.backLink}>Home</Text>
+              <Text style={styles.backLink}>{t('deck_back_home')}</Text>
             </Pressable>
           </View>
         </Pressable>
@@ -1530,14 +1537,14 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         <View style={styles.headerLeft}>
           <Pressable
             onPress={() => {
-              Alert.alert('Exit without choosing?', 'You can keep swiping or exit now.', [
-                { text: 'Continue', style: 'cancel' },
-                { text: 'Exit', style: 'destructive', onPress: goBack },
+              Alert.alert(t('deck_exit_title'), t('deck_exit_body'), [
+                { text: t('common_continue'), style: 'cancel' },
+                { text: t('deck_exit'), style: 'destructive', onPress: goBack },
               ]);
             }}
             hitSlop={8}
           >
-            <Text style={styles.back}>Back</Text>
+            <Text style={styles.back}>{t('common_back')}</Text>
           </Pressable>
         </View>
 
@@ -1545,14 +1552,14 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           <View style={[styles.headerTypeTag, { backgroundColor: deckColors.bg }]}>
             <Text style={[styles.headerTypeTagText, { color: deckColors.text }]}>
               {planDate === 'tomorrow'
-                ? 'PLAN AHEAD'
+                ? t('home_action_plan_ahead')
                 : route.params?.filter === 'productive'
-                  ? 'BE PRODUCTIVE'
+                  ? t('home_action_productive')
                   : route.params?.filter === 'challenge_me'
-                    ? 'CHALLENGE ME'
+                    ? t('home_action_challenge')
                     : route.params?.filter === 'at_home'
-                      ? 'HOMEBODY IT'
-                      : 'DO SOMETHING NOW'}
+                      ? t('home_action_homebody')
+                      : t('home_action_now')}
             </Text>
           </View>
           {isPastBedTime && (
@@ -1858,7 +1865,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                     <Text style={[styles.previewBlockSub, styles.previewBlockLabelAccent]} numberOfLines={1}>{`${formatTime(schedulePreview.slotStart)} - ${formatTime(schedulePreview.slotEnd)}`}</Text>
                   </Animated.View>
                   <View style={[styles.previewBlock, styles.previewBlockMuted]}>
-                    <Text style={styles.previewBlockLabel} numberOfLines={1}>{schedulePreview.afterTitle ?? 'After'}</Text>
+                    <Text style={styles.previewBlockLabel} numberOfLines={1}>{schedulePreview.afterTitle ?? t('deck_after')}</Text>
                   </View>
                 </View>
               </View>
@@ -1875,8 +1882,8 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       >
         <Pressable style={styles.modalBackdrop} onPress={() => { setLaterVisible(false); setClashInfo(null); }}>
           <Pressable style={styles.modalCard} onPress={() => undefined}>
-            <Text style={styles.modalTitle}>Save for later</Text>
-            <Text style={styles.modalSubtitle}>Pick a time to schedule it, or just save it to your library.</Text>
+            <Text style={styles.modalTitle}>{t('deck_save_later_title')}</Text>
+            <Text style={styles.modalSubtitle}>{t('deck_save_later_subtitle')}</Text>
             <Pressable
               style={[styles.modalOption, { marginTop: 6, backgroundColor: theme.colors.accent }]}
               onPress={() => {
@@ -1885,7 +1892,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                 setClashInfo(null);
               }}
             >
-              <Text style={[styles.modalOptionText, { color: theme.colors.accentText }]}>Just save ❤️</Text>
+              <Text style={[styles.modalOptionText, { color: theme.colors.accentText }]}>{t('deck_just_save')}</Text>
             </Pressable>
             <View style={styles.modalOptions}>
               {laterOptions.map((option) => (
@@ -1898,7 +1905,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                 </Pressable>
               ))}
             </View>
-            <Text style={[styles.modalSubtitle, { marginTop: 12 }]}>Or pick a custom time:</Text>
+              <Text style={[styles.modalSubtitle, { marginTop: 12 }]}>Or pick a custom time:</Text>
             <View style={styles.timePickerRow}>
               <TextInput
                 style={styles.timeInput}
@@ -1924,18 +1931,18 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                 onPress={() => {
                   const d = resolveCustomTime();
                   if (!d) {
-                    Alert.alert('Invalid time', 'Enter a valid time (HH:MM, 24h format).');
+                    Alert.alert(t('deck_invalid_time_title'), t('deck_invalid_time_body'));
                     return;
                   }
                   checkClashAndSchedule(d);
                 }}
               >
-                <Text style={styles.modalOptionText}>Set</Text>
+                <Text style={styles.modalOptionText}>{t('deck_set')}</Text>
               </Pressable>
             </View>
             {clashInfo && (
               <View style={styles.clashCard}>
-                <Text style={styles.clashTitle}>⚠️ Schedule clash</Text>
+                <Text style={styles.clashTitle}>{`⚠️ ${t('deck_schedule_clash')}`}</Text>
                 <Text style={styles.clashText}>
                   This overlaps with "{clashInfo.title}" ({clashInfo.start} – {clashInfo.end}).
                 </Text>
@@ -1944,7 +1951,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                     style={styles.modalOption}
                     onPress={() => { setClashInfo(null); setPendingScheduleStart(null); }}
                   >
-                    <Text style={styles.modalOptionText}>Reschedule</Text>
+                    <Text style={styles.modalOptionText}>{t('deck_reschedule')}</Text>
                   </Pressable>
                   <Pressable
                     style={[styles.modalOption, { backgroundColor: theme.colors.accent }]}
@@ -1952,13 +1959,13 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                       if (pendingScheduleStart) doScheduleLater(pendingScheduleStart);
                     }}
                   >
-                    <Text style={[styles.modalOptionText, { color: theme.colors.accentText }]}>Schedule anyway</Text>
+                    <Text style={[styles.modalOptionText, { color: theme.colors.accentText }]}>{t('deck_schedule_anyway')}</Text>
                   </Pressable>
                 </View>
               </View>
             )}
             <Pressable onPress={() => { setLaterVisible(false); setClashInfo(null); }}>
-              <Text style={styles.modalCancel}>Cancel</Text>
+              <Text style={styles.modalCancel}>{t('deck_cancel')}</Text>
             </Pressable>
           </Pressable>
         </Pressable>

@@ -49,6 +49,7 @@ type BuildGapOptions = {
   dayStartMin?: number;
   dayEndMin?: number;
   timeZone?: string | null;
+  language?: 'en' | 'de';
   generationSpeedFactor?: number;
   aiTargetCount?: number;
   totalSuggestions?: number;
@@ -58,6 +59,9 @@ const MIN_GAP_MINUTES = 20;
 export const DAY_START_HOUR = 7;
 export const DAY_END_HOUR = 22;
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
+const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
+const allowDirectModelCalls = isDevBuild
+  || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 const GEMINI_KEY = env.EXPO_PUBLIC_GEMINI_API_KEY as string | undefined;
 const GEMINI_MODEL = (env.EXPO_PUBLIC_GEMINI_MODEL as string | undefined) || 'gemini-2.5-flash-lite';
 const TRANSIT_RISK_MULTIPLIER = 1.2;
@@ -341,6 +345,9 @@ const buildGapPrompt = (
   todos: SmartTodoItem[],
   options?: BuildGapOptions,
 ): string => {
+  const languageInstruction = options?.language === 'de'
+    ? 'Output language: German (de-DE) for all user-facing fields (title/reason).'
+    : 'Output language: English (en-US) for all user-facing fields (title/reason).';
   const pendingTodos = todos
     .filter((todo) => !todo.done)
     .slice(0, 10)
@@ -377,6 +384,7 @@ const buildGapPrompt = (
 
   return [
     'Return ONLY valid JSON.',
+    languageInstruction,
     'Schema: {"suggestions":[{"title":string,"reason":string,"durationMin":number,"source":"todo"|"habit"|"smart"}]}',
     'Goal: propose activities and to-dos that are appropriate for this specific free-time gap.',
     ...buildCommonModeConstraintLines(),
@@ -407,6 +415,7 @@ const requestGeminiGapSuggestions = async (
   todos: SmartTodoItem[],
   options?: BuildGapOptions,
 ): Promise<SmartCalendarSuggestion[]> => {
+  if (!allowDirectModelCalls) return [];
   if (!GEMINI_KEY) return [];
 
   const speedFactor = Math.max(0.5, Math.min(1, options?.generationSpeedFactor ?? 1));
@@ -1060,7 +1069,7 @@ export const planWeekWithGemini = async (
   days: WeekPlanDayInput[],
   context: WeekPlanContext,
 ): Promise<WeekPlanResult> => {
-  if (!GEMINI_KEY) {
+  if (!allowDirectModelCalls || !GEMINI_KEY) {
     const heuristicItems = buildHeuristicWeekPlan(days, context);
     return { items: addAnimatorSmartTopUps(days, context, heuristicItems), usedAi: false };
   }

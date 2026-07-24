@@ -7,7 +7,9 @@
 	"main": "lib/index.js",
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
-		"watch": "tsc -w -p tsconfig.json"
+		"watch": "tsc -w -p tsconfig.json",
+		"admin:set": "node scripts/manageAdminClaim.js set",
+		"admin:unset": "node scripts/manageAdminClaim.js unset"
 	},
 	"dependencies": {
 		"firebase-admin": "^11.10.0",

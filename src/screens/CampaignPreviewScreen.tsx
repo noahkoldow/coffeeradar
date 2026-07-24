@@ -298,27 +298,27 @@ export const CampaignPreviewScreen: React.FC<PreviewScreenProps> = ({
         {/* Targeting Info */}
         <View style={styles.detailsSection}>
           <Text style={styles.sectionTitle}>Who will see this?</Text>
-          {campaign.targeting.moods.length > 0 && (
+          {(campaign.targeting.moods?.length ?? 0) > 0 && (
             <View style={styles.targetItem}>
               <Text style={styles.targetLabel}>😊 Moods:</Text>
               <Text style={styles.targetValue}>
-                {campaign.targeting.moods.join(', ')}
+                {campaign.targeting.moods?.join(', ')}
               </Text>
             </View>
           )}
-          {campaign.targeting.weather.length > 0 && (
+          {(campaign.targeting.weatherConditions?.length ?? 0) > 0 && (
             <View style={styles.targetItem}>
               <Text style={styles.targetLabel}>⛅ Weather:</Text>
               <Text style={styles.targetValue}>
-                {campaign.targeting.weather.join(', ')}
+                {campaign.targeting.weatherConditions?.join(', ')}
               </Text>
             </View>
           )}
-          {campaign.targeting.interests.length > 0 && (
+          {(campaign.targeting.interests?.length ?? 0) > 0 && (
             <View style={styles.targetItem}>
               <Text style={styles.targetLabel}>🎯 Interests:</Text>
               <Text style={styles.targetValue}>
-                {campaign.targeting.interests.join(', ')}
+                {campaign.targeting.interests?.join(', ')}
               </Text>
             </View>
           )}
@@ -452,6 +452,14 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       letterSpacing: 0.4,
     },
     cardLogo: {
+      width: 28,
+      height: 28,
+      borderRadius: 14,
+      backgroundColor: 'rgba(255,255,255,0.92)',
+      borderWidth: 1,
+      borderColor: 'rgba(255,255,255,0.9)',
+    },
+    storyLogo: {
       width: 28,
       height: 28,
       borderRadius: 14,

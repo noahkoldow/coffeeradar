@@ -65,7 +65,7 @@ export const BusinessSettingsScreen: React.FC<Props> = ({
     }
 
     const sender = state.userEmail?.trim() || email.trim() || 'unknown sender';
-    const businessLabel = businessName.trim() || business.businessName;
+    const businessLabel = businessName.trim() || business?.businessName || 'Business';
     const subject = encodeURIComponent(`Support request - ${businessLabel}`);
     const body = encodeURIComponent(
       `Business: ${businessLabel}\nSender: ${sender}\n\nPlease describe your issue:`,
@@ -501,6 +501,19 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       fontSize: 11,
       color: theme.colors.textMuted,
       marginTop: theme.spacing.xs,
+    },
+    mediaButton: {
+      paddingHorizontal: theme.spacing.md,
+      paddingVertical: theme.spacing.sm,
+      borderRadius: theme.radius.sm,
+      borderWidth: 1,
+      borderColor: theme.colors.border,
+      backgroundColor: theme.colors.backgroundAlt,
+    },
+    mediaButtonText: {
+      fontFamily: theme.fonts.semibold,
+      color: theme.colors.text,
+      fontSize: 13,
     },
     row: {
       flexDirection: 'row',

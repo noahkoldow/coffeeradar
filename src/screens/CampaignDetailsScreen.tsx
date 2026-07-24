@@ -28,6 +28,7 @@ const STATUS_COLORS: Record<CampaignStatus, string> = {
   paused: '#8b5cf6',
   ended: '#6b7280',
   rejected: '#ef4444',
+  archived: '#4b5563',
 };
 
 interface DetailScreenProps extends StackScreenProps<RootStackParamList, 'Deck'> {
@@ -301,27 +302,27 @@ export const CampaignDetailsScreen: React.FC<DetailScreenProps> = ({
         {/* Targeting Info */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Targeting</Text>
-          {campaign.targeting.interests.length > 0 && (
+          {(campaign.targeting.interests?.length ?? 0) > 0 && (
             <View style={styles.targetingItem}>
               <Text style={styles.targetingLabel}>Interests</Text>
               <Text style={styles.targetingValue}>
-                {campaign.targeting.interests.join(', ')}
+                {campaign.targeting.interests?.join(', ')}
               </Text>
             </View>
           )}
-          {campaign.targeting.moods.length > 0 && (
+          {(campaign.targeting.moods?.length ?? 0) > 0 && (
             <View style={styles.targetingItem}>
               <Text style={styles.targetingLabel}>Moods</Text>
               <Text style={styles.targetingValue}>
-                {campaign.targeting.moods.join(', ')}
+                {campaign.targeting.moods?.join(', ')}
               </Text>
             </View>
           )}
-          {campaign.targeting.weather.length > 0 && (
+          {(campaign.targeting.weatherConditions?.length ?? 0) > 0 && (
             <View style={styles.targetingItem}>
               <Text style={styles.targetingLabel}>Weather</Text>
               <Text style={styles.targetingValue}>
-                {campaign.targeting.weather.join(', ')}
+                {campaign.targeting.weatherConditions?.join(', ')}
               </Text>
             </View>
           )}

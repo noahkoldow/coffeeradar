@@ -1,5 +1,6 @@
 import { AD_UNIT_IDS } from './adConfig';
-import { adsSdk, isAdsAvailable } from './mobileAds';
+import { adsSdk, isAdPlaceholderMode, isAdsAvailable } from './mobileAds';
+import { buildAdRequestOptions } from './consent';
 
 /**
  * "Video" ad manager.
@@ -13,18 +14,35 @@ import { adsSdk, isAdsAvailable } from './mobileAds';
 let videoNativeAd: any = null;
 let loading = false;
 
+const createPlaceholderVideoAd = (): any => ({
+  __placeholder: true,
+  headline: 'Sponsored preview',
+  advertiser: 'AdMob unavailable in Expo Go',
+  body: 'This build shows the fallback ad surface instead of loading a native Google ad.',
+  callToAction: 'Continue',
+});
+
 /** Preload the next full-screen video (native) ad. Safe to call repeatedly. */
 export const preloadVideoAd = (keywords: string[] = []): void => {
+  if (isAdPlaceholderMode) {
+    if (!videoNativeAd) {
+      videoNativeAd = createPlaceholderVideoAd();
+    }
+    return;
+  }
+
   if (!isAdsAvailable) return;
   if (videoNativeAd || loading) return;
+
+  const requestOptions = buildAdRequestOptions(keywords);
+  if (!requestOptions) return;
 
   const { NativeAd, NativeMediaAspectRatio } = adsSdk;
   loading = true;
 
   try {
     NativeAd.createForAdRequest(AD_UNIT_IDS.video, {
-      keywords,
-      requestNonPersonalizedAdsOnly: false,
+      ...requestOptions,
       // Prefer landscape/large video creatives for the full-screen slot.
       aspectRatio: NativeMediaAspectRatio?.LANDSCAPE,
     })
@@ -42,8 +60,8 @@ export const preloadVideoAd = (keywords: string[] = []): void => {
   }
 };
 
-/** True when a video ad is loaded and ready to be shown immediately. */
-export const isVideoAdReady = (): boolean => isAdsAvailable && !!videoNativeAd;
+/** True when a video ad or fallback placeholder is loaded and ready to be shown immediately. */
+export const isVideoAdReady = (): boolean => !!videoNativeAd;
 
 /**
  * Hand the loaded native ad to the caller (the modal) and clear it so a fresh
@@ -59,6 +77,7 @@ export const consumeVideoAd = (keywords: string[] = []): any | null => {
 
 /** Destroy a native ad instance once the modal is done with it. */
 export const destroyVideoAd = (ad: any): void => {
+  if (ad?.__placeholder) return;
   try {
     ad?.destroy?.();
   } catch {

@@ -8,22 +8,26 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { httpsCallable } from 'firebase/functions';
 import { SwipeDeck, SwipeDeckHandle } from '../components/SwipeDeck';
 import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
 import { createPlanEvent, deletePlanEvent, getUpcomingEvents } from '../services/calendar';
-import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, WeekPlanContext, WeekPlanDayInput, WeekPlanItem, buildGapSuggestions, findCalendarGaps, planWeekWithGemini } from '../services/smartCalendar';
+import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, WeekPlanContext, WeekPlanDayInput, WeekPlanItem, buildGapSuggestions, computeTravelBufferMin, findCalendarGaps, planWeekWithGemini } from '../services/smartCalendar';
 import { importTodosFromPhoto } from '../services/todoPhotoImport';
+import { functionsClient } from '../services/firebase';
 import { buildAdKeywords } from '../services/ads/adConfig';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
-import { isAdsAvailable } from '../services/ads/mobileAds';
+import { isAdPlaceholderMode, isAdsAvailable } from '../services/ads/mobileAds';
+import { useAdsCompliance } from '../services/ads/consent';
 import { isBusinessAdmin } from '../services/user';
 import { VideoAdModal } from '../components/ads/VideoAdModal';
 import { Commitment, DeckSuggestion, ScheduledActivity, SmartTodoItem } from '../types';
 import { formatClockMinutes, formatTime } from '../utils/time';
 import { getLocalDateKey, getTodoDeadlineAt, getTodoDueDate, isTodoEligibleForWindow, isTodoOverdue } from '../utils/todos';
 import { applyTodoChunkCompletion, evaluateTodoWindowFit, estimateTodoDurationMin, getTodoAtomizedProgress, parseTodoExplicitDurationMin } from '../utils/todoAtomization';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'SmartCalendar'>;
 
@@ -73,8 +77,6 @@ const PREMIUM_GENERATION_SPEED_FACTOR = 0.9;
 const SMART_CALENDAR_DECK_COLORS = { bg: '#B5EAD7', text: '#1A4A3A' };
 const SMART_TODO_DEFAULT_DURATION_MIN = 30;
 const SMART_TODO_MAX_CANDIDATE_SLOTS = 24;
-const SMART_TODO_GEMINI_MODEL = 'gemini-2.5-flash-lite';
-const SMART_TODO_GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY as string | undefined;
 
 const normalizeTodoTitleKey = (value: string): string => value
   .toLowerCase()
@@ -117,6 +119,7 @@ type TodoCandidateSlot = {
   durationMin: number;
   beforeTitle?: string;
   afterTitle?: string;
+  transitBufferMin: number;
 };
 
 type RankedTodoSlot = {
@@ -146,6 +149,7 @@ type TodoSchedulingContext = {
 
 const SOCIAL_CALL_INTENT_RE = /\b(call|phone|facetime|video\s*call|ring|chat|catch\s*up|talk)\b/i;
 const PERSONAL_RELATION_RE = /\b(mum|mom|mother|dad|father|parent|brother|sister|grandma|grandpa|friend|family)\b/i;
+const REMOTE_TODO_RE = /\b(call|phone|facetime|video\s*call|zoom|meet|online|remote|email)\b/i;
 
 const overlapMinutes = (aStart: number, aEnd: number, bStart: number, bEnd: number): number => {
   return Math.max(0, Math.min(aEnd, bEnd) - Math.max(aStart, bStart));
@@ -346,10 +350,35 @@ const isSameDay = (a: Date, b: Date): boolean => (
 );
 
 const parseGapIdentity = (gap: CalendarGap): { dayId: string; idx: number } => {
-  const match = /^gap_(\d{4}-\d{2}-\d{2})_(\d+)$/.exec(gap.id);
+  const match = /^gap_(\d{4}-\d{2}-\d{2})_(\d+)(?:_cont_\d+)?$/.exec(gap.id);
   return {
     dayId: match?.[1] ?? gap.startAt.toISOString().slice(0, 10),
     idx: Number(match?.[2] ?? 0),
+  };
+};
+
+const normalizeSuggestionTitleKey = (value: string): string => value
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .replace(/\s+/g, ' ')
+  .trim();
+
+const buildTodoLocationHint = (
+  todo: SmartTodoItem,
+  defaultLocation: { lat?: number; lng?: number },
+): { title?: string; lat?: number; lng?: number } => {
+  const merged = `${todo.title ?? ''} ${todo.notes ?? ''}`.toLowerCase();
+  if (REMOTE_TODO_RE.test(merged)) {
+    return {
+      title: 'home',
+      lat: defaultLocation.lat,
+      lng: defaultLocation.lng,
+    };
+  }
+  return {
+    title: todo.title,
+    lat: defaultLocation.lat,
+    lng: defaultLocation.lng,
   };
 };
 
@@ -706,22 +735,43 @@ const buildTodoCandidateSlots = (
   now: Date,
   timeZone: string | null | undefined,
   minDurationMin: number,
+  defaultLocation: { lat?: number; lng?: number },
 ): TodoCandidateSlot[] => {
   const slots: TodoCandidateSlot[] = [];
+  const suggestionLocation = buildTodoLocationHint(todo, defaultLocation);
   for (const column of columns) {
     for (const gap of column.gaps) {
       if (gap.endAt.getTime() <= now.getTime()) continue;
-      if (gap.durationMin < minDurationMin) continue;
+      const transitBufferMin = computeTravelBufferMin(
+        {
+          title: gap.before?.title,
+          lat: gap.before?.lat,
+          lng: gap.before?.lng,
+        },
+        suggestionLocation,
+        {
+          title: gap.after?.title,
+          lat: gap.after?.lat,
+          lng: gap.after?.lng,
+        },
+      );
+      const reserveBeforeMin = Math.ceil(transitBufferMin / 2);
+      const reserveAfterMin = Math.floor(transitBufferMin / 2);
+      const usableStartAt = new Date(gap.startAt.getTime() + reserveBeforeMin * 60000);
+      const usableEndAt = new Date(gap.endAt.getTime() - reserveAfterMin * 60000);
+      const usableDurationMin = Math.max(0, Math.round((usableEndAt.getTime() - usableStartAt.getTime()) / 60000));
+      if (usableDurationMin < minDurationMin) continue;
       if (!isTodoEligibleForWindow(todo, gap.startAt, gap.endAt, timeZone)) continue;
       slots.push({
         id: gap.id,
         dayId: column.id,
         dayLabel: column.label,
-        startAt: gap.startAt,
-        endAt: gap.endAt,
-        durationMin: gap.durationMin,
+        startAt: usableStartAt,
+        endAt: usableEndAt,
+        durationMin: usableDurationMin,
         beforeTitle: gap.before?.title,
         afterTitle: gap.after?.title,
+        transitBufferMin,
       });
       if (slots.length >= SMART_TODO_MAX_CANDIDATE_SLOTS) return slots;
     }
@@ -801,9 +851,12 @@ const formatScheduleActivityLines = (columns: DayColumn[]): string => {
 export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { t, language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
   const { width: viewportWidth, height: viewportHeight } = useWindowDimensions();
   const { state, actions } = useAppState();
+  const adsCompliance = useAdsCompliance();
 
   const [columns, setColumns] = useState<DayColumn[]>([]);
   const [loading, setLoading] = useState(true);
@@ -895,7 +948,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const isAdminUser = useMemo(() => isBusinessAdmin(state.userEmail), [state.userEmail]);
   const hasSwipesRemaining = (state.swipeBank?.current ?? 0) > 0;
   // Non-premium users see a short video ad while the week planner works.
-  const adsFreeUser = !premiumEnabled && isAdsAvailable;
+  const adsFreeUser = !premiumEnabled
+    && ((isAdsAvailable && adsCompliance.initialized && adsCompliance.canRequestAds) || isAdPlaceholderMode);
   const adKeywords = useMemo(
     () => buildAdKeywords(state.prefs, state.location, 'all'),
     [state.prefs, state.location],
@@ -1259,22 +1313,26 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
   const showPremiumInfo = () => {
     Alert.alert(
-      'Bits Premium required',
-      'You need to be a Bits Premium user to use Smart Calendar auto-planning. Purchase it now to unlock gap suggestions and plan queueing.',
+      isGerman ? 'Bits Premium erforderlich' : 'Bits Premium required',
+      isGerman
+        ? 'Du brauchst Bits Premium, um Smart Calendar Auto-Planung zu nutzen. Kaufe es jetzt, um Luckenvorschlage und Plan-Queueing freizuschalten.'
+        : 'You need to be a Bits Premium user to use Smart Calendar auto-planning. Purchase it now to unlock gap suggestions and plan queueing.',
       [
-        { text: 'Not now', style: 'cancel' },
-        { text: 'Purchase now', onPress: () => navigation.navigate('Premium') },
+        { text: isGerman ? 'Jetzt nicht' : 'Not now', style: 'cancel' },
+        { text: isGerman ? 'Jetzt kaufen' : 'Purchase now', onPress: () => navigation.navigate('Premium') },
       ],
     );
   };
 
   const showTodoPhotoImportPremiumInfo = () => {
     Alert.alert(
-      'Premium photo import',
-      'This is a Premium feature. You are missing:\n\n• Smart extraction from handwritten/printed to-do photos\n• One-tap import of multiple tasks\n• Automatic due-date detection when visible',
+      isGerman ? 'Premium-Fotoimport' : 'Premium photo import',
+      isGerman
+        ? 'Das ist eine Premium-Funktion. Dir fehlen:\n\n• Smarte Erkennung aus handschriftlichen/gedruckten To-do-Fotos\n• Ein-Klick-Import mehrerer Aufgaben\n• Automatische Fälligkeits-Erkennung, wenn sichtbar'
+        : 'This is a Premium feature. You are missing:\n\n• Smart extraction from handwritten/printed to-do photos\n• One-tap import of multiple tasks\n• Automatic due-date detection when visible',
       [
-        { text: 'Not now', style: 'cancel' },
-        { text: 'Buy Premium', onPress: () => navigation.navigate('Premium') },
+        { text: isGerman ? 'Jetzt nicht' : 'Not now', style: 'cancel' },
+        { text: isGerman ? 'Premium kaufen' : 'Buy Premium', onPress: () => navigation.navigate('Premium') },
       ],
     );
   };
@@ -1492,9 +1550,15 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
     const cacheKey = gapBatchCacheKey(gap, batchIndex);
+    const scheduledTitleKeys = new Set(
+      state.scheduledActivities.map((item) => normalizeSuggestionTitleKey(item.title)),
+    );
     const cached = !forceRefresh ? gapSuggestionCache[cacheKey] : undefined;
     if (cached?.length) {
-      setGapSuggestions(toDeckEntries(gap, cached));
+      const filteredCached = cached.filter(
+        (item) => !scheduledTitleKeys.has(normalizeSuggestionTitleKey(item.title)),
+      );
+      setGapSuggestions(toDeckEntries(gap, filteredCached));
       setSuggestionIndex(0);
       setDeckExhausted(false);
       return;
@@ -1510,11 +1574,14 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       dayStartMin: parseHourMinute(state.prefs.wakeStartTime, DAY_START_HOUR),
       dayEndMin: parseHourMinute(state.prefs.wakeEndTime, DAY_END_HOUR),
       timeZone,
+      language,
       generationSpeedFactor: premiumEnabled ? PREMIUM_GENERATION_SPEED_FACTOR : 1,
       aiTargetCount: aiSuggestionCount,
     })
       .then((result) => {
-        const nextSuggestions = result.slice(0, 3);
+        const nextSuggestions = result
+          .filter((item) => !scheduledTitleKeys.has(normalizeSuggestionTitleKey(item.title)))
+          .slice(0, 3);
         setGapSuggestions(toDeckEntries(gap, nextSuggestions));
         setSuggestionIndex(0);
         setDeckExhausted(false);
@@ -1547,7 +1614,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const key = gapCacheKey(selectedGap);
     const batchIndex = gapBatchIndexByKey[key] ?? 0;
     fetchGapSuggestions(selectedGap, batchIndex);
-  }, [selectedGap, premiumEnabled, gapBatchIndexByKey, gapSuggestionCache, state.habits, state.location.lat, state.location.lng, state.prefs.wakeEndTime, state.prefs.wakeStartTime, state.smartTodos]);
+  }, [selectedGap, premiumEnabled, gapBatchIndexByKey, gapSuggestionCache, state.habits, state.location.lat, state.location.lng, state.prefs.wakeEndTime, state.prefs.wakeStartTime, state.smartTodos, state.scheduledActivities]);
 
   useEffect(() => {
     const now = Date.now();
@@ -1562,11 +1629,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     if (!pending) return;
 
     Alert.alert(
-      'To-do follow-up',
-      `Did you complete "${pending.title}"?`,
+      isGerman ? 'To-do Nachverfolgung' : 'To-do follow-up',
+      isGerman ? `Hast du "${pending.title}" erledigt?` : `Did you complete "${pending.title}"?`,
       [
         {
-          text: 'No',
+          text: isGerman ? 'Nein' : 'No',
           style: 'cancel',
           onPress: () => {
             actions.updateSmartTodo({
@@ -1576,7 +1643,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           },
         },
         {
-          text: 'Yes, done',
+          text: isGerman ? 'Ja, erledigt' : 'Yes, done',
           onPress: () => {
             const linkedActivity = pending.linkedScheduledActivityId
               ? scheduledActivityById.get(pending.linkedScheduledActivityId)
@@ -1589,10 +1656,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             if (completion.usedAtomizedProgress && completion.totalMin != null) {
               const progressCopy = `${completion.progressMin}/${completion.totalMin} min`;
               Alert.alert(
-                completion.becameDone ? 'To-do completed' : 'Chunk completed',
+                completion.becameDone ? (isGerman ? 'To-do erledigt' : 'To-do completed') : (isGerman ? 'Teil erledigt' : 'Chunk completed'),
                 completion.becameDone
-                  ? `Great work. "${pending.title}" is now fully complete (${progressCopy}).`
-                  : `Progress saved for "${pending.title}": ${progressCopy}.`,
+                  ? (isGerman ? `Stark. "${pending.title}" ist jetzt vollstandig erledigt (${progressCopy}).` : `Great work. "${pending.title}" is now fully complete (${progressCopy}).`)
+                  : (isGerman ? `Fortschritt fur "${pending.title}" gespeichert: ${progressCopy}.` : `Progress saved for "${pending.title}": ${progressCopy}.`),
               );
             }
           },
@@ -1651,7 +1718,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
   const openTodoTimePicker = () => {
     if (!todoDeadlineAt) {
-      Alert.alert('Pick a date first', 'Choose a date before selecting a time.');
+      Alert.alert(isGerman ? 'Zuerst Datum auswahlen' : 'Pick a date first', isGerman ? 'Wahle ein Datum, bevor du eine Uhrzeit auswahlen kannst.' : 'Choose a date before selecting a time.');
       return;
     }
 
@@ -1675,10 +1742,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const formatTodoDeadlineSummary = (value: Date | null): string => {
-    if (!value) return 'No due date or deadline set';
+    if (!value) return isGerman ? 'Kein Falligkeitsdatum oder keine Deadline gesetzt' : 'No due date or deadline set';
     const datePart = value.toLocaleDateString();
-    if (!todoHasExplicitTime) return `Due date ${datePart}`;
-    return `Deadline ${datePart} ${formatCalendarTime(value)}`;
+    if (!todoHasExplicitTime) return isGerman ? `Fallig am ${datePart}` : `Due date ${datePart}`;
+    return isGerman ? `Deadline ${datePart} ${formatCalendarTime(value)}` : `Deadline ${datePart} ${formatCalendarTime(value)}`;
   };
 
   const resolveTodoFromSuggestion = (suggestion: SmartCalendarSuggestion): SmartTodoItem | null => {
@@ -1708,7 +1775,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const addTodo = () => {
     const title = todoTitle.trim();
     if (!title) {
-      Alert.alert('Missing title', 'Please enter a to-do title.');
+      Alert.alert(isGerman ? 'Titel fehlt' : 'Missing title', isGerman ? 'Bitte gib einen To-do-Titel ein.' : 'Please enter a to-do title.');
       return;
     }
 
@@ -1753,7 +1820,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (!permission.granted) {
-      Alert.alert('Permission required', 'Allow photo access to import your to-do list from an image.');
+      Alert.alert(isGerman ? 'Berechtigung erforderlich' : 'Permission required', isGerman ? 'Erlaube Fotozugriff, um deine To-do-Liste aus einem Bild zu importieren.' : 'Allow photo access to import your to-do list from an image.');
       return;
     }
 
@@ -1768,7 +1835,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     if (result.canceled) return;
     const asset = result.assets?.[0];
     if (!asset?.base64) {
-      Alert.alert('Import failed', 'Could not read the selected image. Please try another photo.');
+      Alert.alert(isGerman ? 'Import fehlgeschlagen' : 'Import failed', isGerman ? 'Das ausgewahlte Bild konnte nicht gelesen werden. Bitte versuche ein anderes Foto.' : 'Could not read the selected image. Please try another photo.');
       return;
     }
 
@@ -1776,7 +1843,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     try {
       const extracted = await importTodosFromPhoto(asset.base64, asset.mimeType ?? 'image/jpeg');
       if (!extracted.length) {
-        Alert.alert('No tasks found', 'No clear to-do items were detected in this image.');
+        Alert.alert(isGerman ? 'Keine Aufgaben gefunden' : 'No tasks found', isGerman ? 'In diesem Bild wurden keine klaren To-do-Aufgaben erkannt.' : 'No clear to-do items were detected in this image.');
         return;
       }
 
@@ -1870,7 +1937,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       }
 
       if (!addedCount && !mergedCount) {
-        Alert.alert('No new tasks', 'All detected tasks already exist in your to-do list.');
+        Alert.alert(isGerman ? 'Keine neuen Aufgaben' : 'No new tasks', isGerman ? 'Alle erkannten Aufgaben existieren bereits in deiner To-do-Liste.' : 'All detected tasks already exist in your to-do list.');
         return;
       }
 
@@ -1879,10 +1946,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       if (mergedCount > 0) summaryParts.push(`${mergedCount} updated`);
       if (skippedCount > 0) summaryParts.push(`${skippedCount} duplicate${skippedCount === 1 ? '' : 's'} skipped`);
 
-      Alert.alert('Imported', summaryParts.join(' • '));
+      Alert.alert(isGerman ? 'Importiert' : 'Imported', summaryParts.join(' • '));
     } catch (error) {
       console.warn('[TodoPhotoImport] Failed to import todos', error);
-      Alert.alert('Import failed', 'The AI extraction did not complete. Please try again with a clearer photo.');
+      Alert.alert(isGerman ? 'Import fehlgeschlagen' : 'Import failed', isGerman ? 'Die KI-Extraktion wurde nicht abgeschlossen. Bitte versuche es mit einem klareren Foto erneut.' : 'The AI extraction did not complete. Please try again with a clearer photo.');
     } finally {
       setTodoPhotoImporting(false);
     }
@@ -1923,7 +1990,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     void scheduleTodoAt(todo, startAt, 'manual', durationMin)
       .then(() => {
         clearTodoSchedulingMode();
-        Alert.alert('Scheduled', `"${todo.title}" scheduled at ${formatCalendarTime(startAt)}.`);
+        Alert.alert(t('smart_scheduled_title'), isGerman ? `"${todo.title}" um ${formatCalendarTime(startAt)} geplant.` : `"${todo.title}" scheduled at ${formatCalendarTime(startAt)}.`);
       })
       .finally(() => {
         manualScheduleInFlightRef.current = false;
@@ -1968,14 +2035,49 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       const deadlineAt = getTodoDeadlineAt(todo);
       const dueDate = getTodoDueDate(todo, timeZone);
       Alert.alert(
-        'Invalid scheduling time',
+        isGerman ? 'UnguItige Planungszeit' : 'Invalid scheduling time',
         deadlineAt
-          ? `This to-do must finish before ${new Date(deadlineAt).toLocaleString()}.`
+          ? (isGerman ? `Dieses To-do muss vor ${new Date(deadlineAt).toLocaleString()} fertig sein.` : `This to-do must finish before ${new Date(deadlineAt).toLocaleString()}.`)
           : dueDate
-            ? `This due-date to-do can only be scheduled on or after ${dueDate}.`
-            : 'This to-do cannot be scheduled in that slot.',
+            ? (isGerman ? `Dieses To-do mit Falligkeitsdatum kann nur am oder nach dem ${dueDate} geplant werden.` : `This due-date to-do can only be scheduled on or after ${dueDate}.`)
+            : (isGerman ? 'Dieses To-do kann in diesem Slot nicht geplant werden.' : 'This to-do cannot be scheduled in that slot.'),
       );
       return;
+    }
+
+    if (sourceMode === 'smart') {
+      const dayId = startAt.toISOString().slice(0, 10);
+      const column = columns.find((item) => item.id === dayId);
+      const containingGap = column?.gaps.find((gap) => {
+        const gapStart = gap.startAt.getTime();
+        const gapEnd = gap.endAt.getTime();
+        return startAt.getTime() >= gapStart && endAt.getTime() <= gapEnd;
+      });
+      if (!containingGap) {
+        Alert.alert(isGerman ? 'Slot geandert' : 'Slot changed', isGerman ? 'Dieser Slot ist nicht mehr frei. Bitte wahlen einen anderen.' : 'This slot is no longer free. Please pick another one.');
+        return;
+      }
+
+      const transitBufferMin = computeTravelBufferMin(
+        {
+          title: containingGap.before?.title,
+          lat: containingGap.before?.lat,
+          lng: containingGap.before?.lng,
+        },
+        buildTodoLocationHint(todo, {
+          lat: state.location.lat ?? undefined,
+          lng: state.location.lng ?? undefined,
+        }),
+        {
+          title: containingGap.after?.title,
+          lat: containingGap.after?.lat,
+          lng: containingGap.after?.lng,
+        },
+      );
+      if (durationMin + transitBufferMin > containingGap.durationMin) {
+        Alert.alert(isGerman ? 'Zu wenig Wechselzeit' : 'Not enough transit room', isGerman ? 'Dieser Slot lasst nicht genug Zeit fur Wege/Ubergange. Wahlen einen anderen Smart-Slot.' : 'This slot does not leave enough time for travel/transition. Pick another smart slot.');
+        return;
+      }
     }
 
     const deckSuggestion = buildTodoDeckSuggestion(todo, startAt, endAt, `todo_${sourceMode}`, timeZone);
@@ -2030,7 +2132,17 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
   const buildSmartRankedTodoSlots = async (todo: SmartTodoItem): Promise<RankedTodoSlot[]> => {
     const now = new Date();
-    const candidates = buildTodoCandidateSlots(columns, todo, now, timeZone, 20);
+    const candidates = buildTodoCandidateSlots(
+      columns,
+      todo,
+      now,
+      timeZone,
+      20,
+      {
+        lat: state.location.lat ?? undefined,
+        lng: state.location.lng ?? undefined,
+      },
+    );
     if (!candidates.length) return [];
     const schedulingContext = resolveTodoSchedulingContext(todo);
     const prioritizedCandidates = prioritizeTodoCandidateSlots(candidates, schedulingContext, now)
@@ -2051,7 +2163,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       const maxOffset = Math.max(0, slot.durationMin - durationMin);
       const before = slot.beforeTitle ? ` | before: ${slot.beforeTitle}` : '';
       const after = slot.afterTitle ? ` | after: ${slot.afterTitle}` : '';
-      return `${idx}. ${slot.dayLabel} ${formatCalendarTime(slot.startAt)}-${formatCalendarTime(slot.endAt)} (${slot.durationMin} min) | todoDuration=${durationMin} | fitMode=full_task | maxStartOffset=${maxOffset}${before}${after}`;
+      return `${idx}. ${slot.dayLabel} ${formatCalendarTime(slot.startAt)}-${formatCalendarTime(slot.endAt)} (${slot.durationMin} min usable) | transitReserve=${slot.transitBufferMin} | todoDuration=${durationMin} | fitMode=full_task | maxStartOffset=${maxOffset}${before}${after}`;
     }).join('\n');
 
     const fallback = candidateFits.slice(0, 3).map(({ slot, durationMin }, idx) => {
@@ -2068,7 +2180,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       };
     });
 
-    if (!SMART_TODO_GEMINI_KEY) return fallback;
+    if (!functionsClient) return fallback;
 
     const prompt = [
       'You are an assistant that picks the best calendar slots for one todo.',
@@ -2097,26 +2209,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       slotLines,
     ].join('\n');
 
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(SMART_TODO_GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(SMART_TODO_GEMINI_KEY)}`;
-
     try {
-      const response = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ role: 'user', parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2,
-            responseMimeType: 'application/json',
-            maxOutputTokens: 500,
-          },
-        }),
-      });
-      if (!response.ok) return fallback;
-      const payload = await response.json();
-      const text = payload?.candidates?.[0]?.content?.parts
-        ?.map((part: { text?: string }) => part?.text ?? '')
-        .join('') ?? '';
+      const callable = httpsCallable(functionsClient, 'rankTodoSlots');
+      const response = await callable({ prompt });
+      const data = response?.data as { payload?: any } | undefined;
+      const text = JSON.stringify(data?.payload ?? {});
       const parsed = parseSmartSlotJson(text);
       const picks = (parsed?.picks ?? [])
         .map((pick) => ({
@@ -2188,7 +2285,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       }
       setTodoModalOpen(false);
       void scheduleTodoAt(todo, fixedStart, 'fixed', SMART_TODO_DEFAULT_DURATION_MIN)
-        .then(() => Alert.alert('Scheduled', 'Fixed-time to-do added to your calendar.'));
+        .then(() => Alert.alert(t('smart_scheduled_title'), 'Fixed-time to-do added to your calendar.'));
       return;
     }
 
@@ -2346,7 +2443,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const deckSuggestion = entry.deck;
 
     if (!actions.spendSwipe()) {
-      Alert.alert('No swipes left', 'You have no swipes remaining. Complete activities or wait for recharge.');
+      Alert.alert(isGerman ? 'Keine Swipes mehr' : 'No swipes left', isGerman ? 'Du hast keine Swipes mehr. SchlieSSe Aktivitaten ab oder warte auf Aufladung.' : 'You have no swipes remaining. Complete activities or wait for recharge.');
       return;
     }
 
@@ -2418,6 +2515,25 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       updateTodoAfterSchedule(linkedTodo, scheduledId, startAt, endAt, 'smart');
     }
 
+    const consumedSuggestionTitleKey = normalizeSuggestionTitleKey(entry.suggestion.title);
+    setGapSuggestions((prev) => prev.filter(
+      (item) => normalizeSuggestionTitleKey(item.suggestion.title) !== consumedSuggestionTitleKey,
+    ));
+    setSuggestionIndex(0);
+    setDeckExhausted(false);
+
+    const activeBatchIndex = gapBatchIndexByKey[gapCacheKey(gap)] ?? 0;
+    const activeBatchCacheKey = gapBatchCacheKey(gap, activeBatchIndex);
+    setGapSuggestionCache((prev) => {
+      const existing = prev[activeBatchCacheKey] ?? [];
+      const filtered = existing.filter(
+        (item) => normalizeSuggestionTitleKey(item.title) !== consumedSuggestionTitleKey,
+      );
+      const next = { ...prev, [activeBatchCacheKey]: filtered };
+      persistGapCache(next);
+      return next;
+    });
+
     // A free slot can hold MORE than one activity. If usable time remains after
     // this booking, keep the modal open on the leftover sub-slot so the user can
     // stack another activity; otherwise close.
@@ -2437,16 +2553,16 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         },
       };
       setSelectedGap(continuationGap);
-      Alert.alert('Added — keep filling this slot', `${remainingMin} min still free. Pick another activity or tap Close.`);
+      Alert.alert(isGerman ? 'Hinzugefugt - fulle diesen Slot weiter' : 'Added — keep filling this slot', isGerman ? `${remainingMin} Min sind noch frei. Wahlen eine weitere Aktivitat oder tippe auf SchlieSen.` : `${remainingMin} min still free. Pick another activity or tap Close.`);
       return;
     }
 
     setSelectedGap(null);
     if (calendarWriteFailed && state.permissions.calendarGranted) {
-      Alert.alert('Added to plan', 'The suggestion was added, but syncing to your device calendar failed.');
+      Alert.alert(isGerman ? 'Zum Plan hinzugefugt' : 'Added to plan', isGerman ? 'Der Vorschlag wurde hinzugefugt, aber die Synchronisierung mit deinem Kalender ist fehlgeschlagen.' : 'The suggestion was added, but syncing to your device calendar failed.');
       return;
     }
-    Alert.alert('Added to plan', 'The suggestion was added to your scheduled activities and your device calendar.');
+    Alert.alert(isGerman ? 'Zum Plan hinzugefugt' : 'Added to plan', isGerman ? 'Der Vorschlag wurde zu deinen geplanten Aktivitaten und deinem Kalender hinzugefugt.' : 'The suggestion was added to your scheduled activities and your device calendar.');
   };
 
   const handleSuggestionSkip = () => {
@@ -2460,7 +2576,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
     if (!actions.spendSwipe()) {
-      Alert.alert('No swipes left', 'You have no swipes remaining. Complete activities or wait for recharge.');
+      Alert.alert(isGerman ? 'Keine Swipes mehr' : 'No swipes left', isGerman ? 'Du hast keine Swipes mehr. SchlieSSe Aktivitaten ab oder warte auf Aufladung.' : 'You have no swipes remaining. Complete activities or wait for recharge.');
       return;
     }
     setSuggestionIndex((prev) => Math.min(prev + 1, gapSuggestions.length - 1));
@@ -2482,7 +2598,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
     if (!hasSwipesRemaining) {
-      Alert.alert('No swipes left', 'You have no swipes remaining. Complete activities or wait for recharge.');
+      Alert.alert(isGerman ? 'Keine Swipes mehr' : 'No swipes left', isGerman ? 'Du hast keine Swipes mehr. SchlieSSe Aktivitaten ab oder warte auf Aufladung.' : 'You have no swipes remaining. Complete activities or wait for recharge.');
       return;
     }
     if (!selectedGap) return;
@@ -2633,7 +2749,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         await deletePlanEvent(linkedEventId);
       } catch (error) {
         console.warn('Failed to delete scheduled activity from calendar', error);
-        Alert.alert('Could not delete', 'Please try again from your calendar app.');
+        Alert.alert(isGerman ? 'Konnte nicht loschen' : 'Could not delete', isGerman ? 'Bitte versuche es in deiner Kalender-App erneut.' : 'Please try again from your calendar app.');
         return;
       }
     }
@@ -2643,10 +2759,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const confirmDeleteActivityById = (activity: ScheduledActivity) => {
-    Alert.alert('Delete activity?', `Remove "${activity.title}" from your schedule?`, [
-      { text: 'Cancel', style: 'cancel' },
+    Alert.alert(isGerman ? 'Aktivitat loschen?' : 'Delete activity?', isGerman ? `"${activity.title}" aus deinem Plan entfernen?` : `Remove "${activity.title}" from your schedule?`, [
+      { text: t('common_cancel'), style: 'cancel' },
       {
-        text: 'Delete',
+        text: t('common_delete'),
         style: 'destructive',
         onPress: async () => {
           const linkedEventId = activity.calendarEventId ?? activity.commitment?.calendarEventId;
@@ -3503,9 +3619,9 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                         >
                           <View style={{ flex: 1 }}>
                             <Text style={styles.gapTime}>{formatCalendarTime(segment.startAt)} - {formatCalendarTime(segment.endAt)}</Text>
-                            <Text style={styles.gapMeta}>{segment.durationMin} min free</Text>
+                            <Text style={styles.gapMeta}>{t('smart_gap_free_min', { value: segment.durationMin })}</Text>
                             {todoSchedulingMode === 'manual' && !!todoSchedulingTarget && (
-                              <Text style={styles.manualGapHint}>Tap where this to-do should start</Text>
+                              <Text style={styles.manualGapHint}>{t('smart_tap_todo_start')}</Text>
                             )}
                           </View>
                           {todoSchedulingMode === 'manual' && manualPreview?.gapId === segment.gap!.id && (
@@ -3529,7 +3645,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                                 styles.plusButtonScheduleMode,
                               ]}
                             >
-                              <Text style={styles.plusText}>+</Text>
+                              <Text style={styles.plusText}>{t('smart_plus')}</Text>
                             </View>
                           ) : (
                             <Pressable
@@ -3546,7 +3662,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                               }}
                             >
                               <Text style={[styles.plusText, !premiumEnabled && styles.plusTextLocked]}>
-                                {premiumEnabled ? '+' : '👑'}
+                                {premiumEnabled ? t('smart_plus') : '👑'}
                               </Text>
                             </Pressable>
                           )}
@@ -3563,8 +3679,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                       const top = TIMELINE_VERTICAL_INSET
                         + (minuteOfDay(item.suggestedStartAt) - globalTimelineRange.minStartMin) * pxPerMinute;
                       const segmentDurationMin = Math.max(1, Math.round((item.suggestedEndAt.getTime() - item.suggestedStartAt.getTime()) / 60000));
-                      const gapDurationMin = column.gaps.find((gap) => gap.id === item.slot.id)?.durationMin ?? segmentDurationMin;
-                      const height = Math.max(gapDurationMin * pxPerMinute, 56);
+                      const height = Math.max(item.slot.durationMin * pxPerMinute, 56);
                       const medal = item.rank === 1 ? '🥇' : item.rank === 2 ? '🥈' : '🥉';
                       return (
                         <Pressable
@@ -3575,7 +3690,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                             void scheduleTodoAt(todoSchedulingTarget, item.suggestedStartAt, 'smart', segmentDurationMin)
                               .then(() => {
                                 clearTodoSchedulingMode();
-                                Alert.alert('Scheduled', `"${todoSchedulingTarget.title}" scheduled at ${formatCalendarTime(item.suggestedStartAt)}.`);
+                                Alert.alert(t('smart_scheduled_title'), `"${todoSchedulingTarget.title}" scheduled at ${formatCalendarTime(item.suggestedStartAt)}.`);
                               });
                           }}
                         >
@@ -3587,7 +3702,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                           </View>
                           <View style={{ flex: 1 }}>
                             <Text style={styles.smartTodoGhostTitle} numberOfLines={1}>
-                              {todoSchedulingTarget?.title ?? 'To-do slot'}
+                              {todoSchedulingTarget?.title ?? t('smart_todo_slot')}
                             </Text>
                             <Text style={styles.smartTodoGhostTime}>
                               {formatCalendarTime(item.suggestedStartAt)} - {formatCalendarTime(item.suggestedEndAt)}
@@ -3615,7 +3730,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               setRankedTodoSlots([]);
             }}
           >
-            <Text style={styles.smartTodoOtherBtnText}>Other</Text>
+            <Text style={styles.smartTodoOtherBtnText}>{t('smart_other')}</Text>
           </Pressable>
         </View>
       )}
@@ -3625,22 +3740,22 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           style={styles.calendarMinimizeButton}
           onPress={() => setCalendarMinimized((prev) => !prev)}
         >
-          <Text style={styles.calendarMinimizeButtonText}>{calendarMinimized ? 'Expand' : 'Minimize'}</Text>
+          <Text style={styles.calendarMinimizeButtonText}>{calendarMinimized ? t('smart_expand') : t('smart_minimize')}</Text>
         </Pressable>
       </View>
 
       <Modal visible={!!selectedGap} transparent animationType="slide" onRequestClose={() => setSelectedGap(null)}>
         <View style={styles.modalBackdrop}>
           <View style={[styles.modalCard, { marginBottom: insets.bottom + theme.spacing.lg }]}>
-            <Text style={styles.modalTitle}>Gap Suggestions</Text>
+            <Text style={styles.modalTitle}>{t('smart_gap_suggestions')}</Text>
             {suggestionsLoading ? (
               <View style={styles.centerWrap}>
                 <ActivityIndicator size="large" color={theme.colors.accent} style={{ marginBottom: theme.spacing.md }} />
-                <Text style={styles.subtle}>Gathering suggestions…</Text>
-                <Text style={[styles.subtle, { fontSize: 12, marginTop: theme.spacing.xs, opacity: 0.6 }]}>Finding activities that fit your gap</Text>
+                <Text style={styles.subtle}>{t('smart_gathering')}</Text>
+                <Text style={[styles.subtle, { fontSize: 12, marginTop: theme.spacing.xs, opacity: 0.6 }]}>{t('smart_finding_fit')}</Text>
               </View>
             ) : gapSuggestions.length === 0 ? (
-              <Text style={styles.subtle}>No fitting option found for this gap.</Text>
+              <Text style={styles.subtle}>{t('smart_no_option')}</Text>
             ) : (
               <>
                 <View style={styles.deckTagRow}>
@@ -3683,17 +3798,17 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
                 {!hasSwipesRemaining ? (
                   <View style={styles.emptyDeckWrap}>
-                    <Text style={styles.emptyDeckTitle}>Out of swipes</Text>
+                    <Text style={styles.emptyDeckTitle}>{t('smart_out_swipes_title')}</Text>
                     <Text style={styles.emptyDeckSubtitle}>
-                      You've used all your swipes. Complete activities or wait for them to recharge to browse more suggestions. Your to-dos can still be scheduled anytime.
+                      {t('smart_out_swipes_body')}
                     </Text>
                   </View>
                 ) : deckExhausted ? (
                   <View style={styles.emptyDeckWrap}>
-                    <Text style={styles.emptyDeckTitle}>Nothing clicked.</Text>
-                    <Text style={styles.emptyDeckSubtitle}>Want a new set?</Text>
+                    <Text style={styles.emptyDeckTitle}>{t('smart_nothing_clicked')}</Text>
+                    <Text style={styles.emptyDeckSubtitle}>{t('smart_want_new_set')}</Text>
                     <Pressable style={styles.newSetBtn} onPress={queueNewSetForSelectedGap}>
-                      <Text style={styles.newSetBtnText}>New set</Text>
+                      <Text style={styles.newSetBtnText}>{t('smart_new_set')}</Text>
                     </Pressable>
                   </View>
                 ) : (

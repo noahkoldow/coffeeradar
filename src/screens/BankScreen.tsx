@@ -113,7 +113,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     flexGrow: 1,
   },
   header: {
-    margisBottom: theme.spacing.xl,
+    marginBottom: theme.spacing.xl,
   },
   title: {
     fontFamily: theme.fonts.semibold,

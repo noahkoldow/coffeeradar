@@ -11,6 +11,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { Habit, HabitFrequency, HabitTimeOfDay, HabitType } from '../types';
 import { useAppState } from '../state/AppState';
 import { normalizeClockTime } from '../utils/time';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'HabitForm'>;
 
@@ -63,6 +64,28 @@ const tagOptions = [
 export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
+  const typeLabel = (id: HabitType): string => (isGerman ? (id === 'AT_HOME' ? 'Zu Hause' : 'DrauBen') : (id === 'AT_HOME' ? 'At home' : 'Go out'));
+  const frequencyLabel = (id: HabitFrequency): string => {
+    if (!isGerman) return frequencyOptions.find((item) => item.id === id)?.label ?? id;
+    if (id === 'daily') return 'Jeden Tag';
+    if (id === 'weekly') return 'Wochentlich';
+    if (id === 'fortnightly') return 'Alle zwei Wochen';
+    return 'Monatlich';
+  };
+  const timeOfDayLabel = (id: HabitTimeOfDay): string => {
+    if (!isGerman) return timeOptions.find((item) => item.id === id)?.label ?? id;
+    if (id === 'any') return 'Jederzeit';
+    if (id === 'morning') return 'Morgens';
+    if (id === 'afternoon') return 'Nachmittags';
+    return 'Abends';
+  };
+  const weekdayLabel = (short: string): string => {
+    if (!isGerman) return short;
+    const map: Record<string, string> = { Mon: 'Mo', Tue: 'Di', Wed: 'Mi', Thu: 'Do', Fri: 'Fr', Sat: 'Sa', Sun: 'So' };
+    return map[short] ?? short;
+  };
   const { actions } = useAppState();
   const insets = useSafeAreaInsets();
   const existing = route.params?.habit;
@@ -106,7 +129,7 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
   const onSave = () => {
     const length = Number(lengthMin);
     if (!name.trim() || !description.trim() || Number.isNaN(length) || length <= 0) {
-      Alert.alert('Missing details', 'Add a name, length, and what to do.');
+      Alert.alert(isGerman ? 'Details fehlen' : 'Missing details', isGerman ? 'Bitte Name, Dauer und Beschreibung angeben.' : 'Add a name, length, and what to do.');
       return;
     }
     if (isEditing && existing) {
@@ -149,16 +172,16 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
     <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
       <ScrollView contentContainerStyle={[styles.scroll, { paddingTop: insets.top + theme.spacing.sm }]}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
+          <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
         </Pressable>
-        <Text style={styles.title}>{isEditing ? 'Edit habit' : 'New habit'}</Text>
-        <Text style={styles.subtitle}>{isEditing ? 'Update your habit details.' : 'Create a repeatable activity you want to keep up.'}</Text>
+        <Text style={styles.title}>{isEditing ? (isGerman ? 'Gewohnheit bearbeiten' : 'Edit habit') : (isGerman ? 'Neue Gewohnheit' : 'New habit')}</Text>
+        <Text style={styles.subtitle}>{isEditing ? (isGerman ? 'Aktualisiere die Details deiner Gewohnheit.' : 'Update your habit details.') : (isGerman ? 'Erstelle eine wiederholbare Aktivitat, die du beibehalten willst.' : 'Create a repeatable activity you want to keep up.')}</Text>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Name</Text>
+          <Text style={styles.label}>{isGerman ? 'Name' : 'Name'}</Text>
           <TextInput
             style={styles.input}
-            placeholder="e.g. 20-min stretch"
+            placeholder={isGerman ? 'z. B. 20 Min Dehnen' : 'e.g. 20-min stretch'}
             placeholderTextColor={theme.colors.textMuted}
             value={name}
             onChangeText={setName}
@@ -166,12 +189,12 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Type</Text>
+          <Text style={styles.label}>{isGerman ? 'Typ' : 'Type'}</Text>
           <View style={styles.row}>
             {typeOptions.map((option) => (
               <Chip
                 key={option.id}
-                label={option.label}
+                label={typeLabel(option.id)}
                 selected={habitType === option.id}
                 onPress={() => setHabitType(option.id)}
               />
@@ -180,7 +203,7 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Length (minutes)</Text>
+          <Text style={styles.label}>{isGerman ? 'Dauer (Minuten)' : 'Length (minutes)'}</Text>
           <TextInput
             style={styles.input}
             placeholder="20"
@@ -192,10 +215,10 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>What to do</Text>
+          <Text style={styles.label}>{isGerman ? 'Was tun' : 'What to do'}</Text>
           <TextInput
             style={[styles.input, styles.textArea]}
-            placeholder="Describe the steps or outcome."
+            placeholder={isGerman ? 'Beschreibe Schritte oder Ergebnis.' : 'Describe the steps or outcome.'}
             placeholderTextColor={theme.colors.textMuted}
             value={description}
             onChangeText={setDescription}
@@ -204,12 +227,12 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>How often</Text>
+          <Text style={styles.label}>{isGerman ? 'Wie oft' : 'How often'}</Text>
           <View style={styles.rowWrap}>
             {frequencyOptions.map((option) => (
               <Chip
                 key={option.id}
-                label={option.label}
+                label={frequencyLabel(option.id)}
                 selected={frequency === option.id}
                 onPress={() => setFrequency(option.id)}
               />
@@ -218,12 +241,12 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Time of day</Text>
+          <Text style={styles.label}>{isGerman ? 'Tageszeit' : 'Time of day'}</Text>
           <View style={styles.rowWrap}>
             {timeOptions.map((option) => (
               <Chip
                 key={option.id}
-                label={option.label}
+                label={timeOfDayLabel(option.id)}
                 selected={timeOfDay === option.id}
                 onPress={() => setTimeOfDay(option.id)}
               />
@@ -232,13 +255,13 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Weekdays (optional)</Text>
-          <Text style={styles.hint}>If selected, this habit is only due on those days.</Text>
+          <Text style={styles.label}>{isGerman ? 'Wochentage (optional)' : 'Weekdays (optional)'}</Text>
+          <Text style={styles.hint}>{isGerman ? 'Wenn ausgewahlt, ist diese Gewohnheit nur an diesen Tagen fallig.' : 'If selected, this habit is only due on those days.'}</Text>
           <View style={styles.rowWrap}>
             {weekdayOptions.map((day) => (
               <Chip
                 key={day.id}
-                label={day.label}
+                label={weekdayLabel(day.label)}
                 selected={scheduledWeekdays.includes(day.id)}
                 onPress={() => toggleWeekday(day.id)}
               />
@@ -247,16 +270,16 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Exact time (optional)</Text>
-          <Text style={styles.hint}>Use the picker instead of typing time manually.</Text>
+          <Text style={styles.label}>{isGerman ? 'Genaue Uhrzeit (optional)' : 'Exact time (optional)'}</Text>
+          <Text style={styles.hint}>{isGerman ? 'Nutze den Picker statt die Uhrzeit manuell einzugeben.' : 'Use the picker instead of typing time manually.'}</Text>
           <View style={styles.rowWrap}>
             <Chip
-              label="No exact time"
+              label={isGerman ? 'Keine genaue Uhrzeit' : 'No exact time'}
               selected={!usePreferredTime}
               onPress={() => setUsePreferredTime(false)}
             />
             <Chip
-              label="Set exact time"
+              label={isGerman ? 'Genaue Uhrzeit setzen' : 'Set exact time'}
               selected={usePreferredTime}
               onPress={() => setUsePreferredTime(true)}
             />
@@ -267,8 +290,8 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
         </View>
 
         <View style={styles.field}>
-          <Text style={styles.label}>Tags</Text>
-          <Text style={styles.hint}>Pick tags so this habit fits your interests and gets scored better.</Text>
+          <Text style={styles.label}>{isGerman ? 'Tags' : 'Tags'}</Text>
+          <Text style={styles.hint}>{isGerman ? 'Wahle Tags, damit die Gewohnheit besser zu deinen Interessen passt.' : 'Pick tags so this habit fits your interests and gets scored better.'}</Text>
           <View style={styles.rowWrap}>
             {tagOptions.map((tag) => (
               <Chip
@@ -281,7 +304,7 @@ export const HabitFormScreen: React.FC<Props> = ({ navigation, route }) => {
           </View>
         </View>
       </ScrollView>
-      <PrimaryButton label={isEditing ? 'Update habit' : 'Save habit'} onPress={onSave} style={styles.button} />
+      <PrimaryButton label={isEditing ? (isGerman ? 'Gewohnheit aktualisieren' : 'Update habit') : (isGerman ? 'Gewohnheit speichern' : 'Save habit')} onPress={onSave} style={styles.button} />
     </LinearGradient>
   );
 };

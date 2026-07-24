@@ -36,7 +36,7 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.markActivityVerified = exports.vendorRedeem = exports.redeemVoucher = exports.generateVoucher = exports.findOrGenerateActivity = exports.dbLookup = void 0;
+exports.rankTodoSlots = exports.markActivityVerified = exports.vendorRedeem = exports.redeemVoucher = exports.generateVoucher = exports.findOrGenerateActivity = exports.dbLookup = void 0;
 const functions = __importStar(require("firebase-functions"));
 const admin = __importStar(require("firebase-admin"));
 const node_fetch_1 = __importDefault(require("node-fetch"));
@@ -47,23 +47,66 @@ const db = admin.firestore();
 const ACTIVITIES = 'activities';
 const VOUCHERS = 'vouchers';
 const CONVERSIONS = 'conversions';
-const VOUCHER_SECRET = functions.config().app?.voucher_secret || process.env.VOUCHER_SECRET || 'dev_voucher_secret';
+const VOUCHER_SECRET = functions.config().app?.voucher_secret || process.env.VOUCHER_SECRET;
+if (!VOUCHER_SECRET) {
+    throw new Error('Missing voucher signing secret. Configure app.voucher_secret or VOUCHER_SECRET.');
+}
+const ENFORCE_APP_CHECK = String(functions.config().app?.enforce_app_check
+    ?? process.env.ENFORCE_APP_CHECK
+    ?? 'true').toLowerCase() === 'true';
+function requireAuth(ctx) {
+    if (!ctx.auth) {
+        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+    }
+}
+function requireAppCheck(ctx) {
+    if (ENFORCE_APP_CHECK && !ctx.app) {
+        throw new functions.https.HttpsError('failed-precondition', 'App Check token required');
+    }
+}
+function normalizeScope(value) {
+    return String(value || 'global').trim().toLowerCase() || 'global';
+}
+function makeRequestKey(wantedAttrs, timeHints, latLonBucket) {
+    const attrs = normalizeAttributes(wantedAttrs);
+    const times = normalizeAttributes(timeHints);
+    const geo = normalizeScope(latLonBucket);
+    return [attrs.join('|') || 'any', times.join('|') || 'any', geo].join('::');
+}
 async function searchActivities(wantedAttrs, timeHints, latLonBucket, minScore = 3, onlyVerified = false) {
-    const chunk = wantedAttrs.slice(0, 10);
-    let candidatesSnap;
-    if (chunk.length) {
-        candidatesSnap = await db.collection(ACTIVITIES).where('attributes', 'array-contains-any', chunk).limit(50).get();
+    const requestKey = makeRequestKey(wantedAttrs, timeHints, latLonBucket);
+    const exactSnap = await db.collection(ACTIVITIES).where('request_key', '==', requestKey).limit(1).get();
+    if (!exactSnap.empty) {
+        const exactDoc = exactSnap.docs[0];
+        const exact = exactDoc.data();
+        if (!exact.ttl_expires_at || exact.ttl_expires_at.toDate() > new Date()) {
+            if (onlyVerified && !exact.verified)
+                return null;
+            return { item: { id: exactDoc.id, ...exact, source: 'DB' }, score: 100 };
+        }
     }
-    else {
-        const inList = latLonBucket ? ['global', latLonBucket] : ['global'];
-        candidatesSnap = await db.collection(ACTIVITIES).where('geo_scope', 'in', inList).limit(30).get();
+    const queryCandidates = [];
+    if (wantedAttrs.length) {
+        queryCandidates.push(db.collection(ACTIVITIES).where('attributes', 'array-contains-any', wantedAttrs.slice(0, 10)).limit(50).get());
     }
-    const candidates = candidatesSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+    if (timeHints.length) {
+        queryCandidates.push(db.collection(ACTIVITIES).where('time_tags', 'array-contains-any', timeHints.slice(0, 10)).limit(50).get());
+    }
+    if (latLonBucket) {
+        queryCandidates.push(db.collection(ACTIVITIES).where('geo_scope', 'in', ['global', normalizeScope(latLonBucket)]).limit(30).get());
+    }
+    queryCandidates.push(db.collection(ACTIVITIES).orderBy('usage_count', 'desc').limit(25).get());
+    const candidateSnaps = await Promise.all(queryCandidates);
+    const candidates = candidateSnaps.flatMap(snap => snap.docs.map((d) => ({ id: d.id, ...d.data() })));
     let best = null;
     let bestScore = -1;
+    const seen = new Set();
     for (const c of candidates) {
+        if (seen.has(c.id))
+            continue;
+        seen.add(c.id);
         const s = scoreMatch(c, wantedAttrs, timeHints, latLonBucket || '');
-        if (s > bestScore) {
+        if (s > bestScore || (s === bestScore && (c.usage_count || 0) > (best?.usage_count || 0))) {
             bestScore = s;
             best = c;
         }
@@ -79,6 +122,13 @@ async function searchActivities(wantedAttrs, timeHints, latLonBucket, minScore =
 }
 function fingerprint(obj) {
     return crypto_1.default.createHash('sha256').update(JSON.stringify(obj)).digest('hex');
+}
+function timingSafeKeyMatch(candidate, expected) {
+    const a = Buffer.from(String(candidate));
+    const b = Buffer.from(String(expected));
+    if (a.length !== b.length)
+        return false;
+    return crypto_1.default.timingSafeEqual(a, b);
 }
 function sanitizeString(s) {
     if (!s)
@@ -97,6 +147,9 @@ function determineTTLSeconds(generated, attrs) {
     const promotions = attrs.some(a => /promo|coupon|offer|discount/.test(a));
     if (promotions)
         return 24 * 3600;
+    const timeCritical = attrs.some(a => /event|tonight|today|now|soon|deadline|concert|show|screening|dinner|lunch|breakfast|meetup/.test(a));
+    if (timeCritical)
+        return 6 * 3600;
     const timeSensitive = attrs.some(a => /tonight|dinner|breakfast|lunch|weekend/.test(a));
     if (timeSensitive)
         return 12 * 3600;
@@ -137,8 +190,11 @@ function scoreMatch(item, wantedAttrs, timeTags, geoScope) {
             score += 1;
     if (item.geo_scope === 'global')
         score += 1;
-    else if (geoScope && item.geo_scope === geoScope)
+    else if (geoScope && item.geo_scope === normalizeScope(geoScope))
         score += 3;
+    if (item.verified)
+        score += 0.5;
+    score += Math.min(1.5, Math.log2((item.usage_count || 0) + 1) / 2);
     return score;
 }
 /**
@@ -147,8 +203,8 @@ function scoreMatch(item, wantedAttrs, timeTags, geoScope) {
  * returns: { hit: boolean, activity?: {...}, score?: number }
  */
 exports.dbLookup = functions.https.onCall(async (payload, ctx) => {
-    if (!ctx.auth)
-        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+    requireAuth(ctx);
+    requireAppCheck(ctx);
     const { attributes = [], latLonBucket, timeHints = [], minScore = 3 } = payload || {};
     const wantedAttrs = normalizeAttributes(attributes);
     // simple attribute query: use array-contains-any on the first up to 10 attrs
@@ -182,7 +238,7 @@ exports.dbLookup = functions.https.onCall(async (payload, ctx) => {
         if (!best.ttl_expires_at || best.ttl_expires_at.toDate() > new Date()) {
             // increment usage_count for metrics
             try {
-                await db.collection(ACTIVITIES).doc(best.id).update({ usage_count: admin.firestore.FieldValue.increment(1), last_used_at: admin.firestore.Timestamp.now() });
+                await db.collection(ACTIVITIES).doc(best.id).update({ usage_count: admin.firestore.FieldValue.increment(1), deck_fit_count: admin.firestore.FieldValue.increment(1), last_used_at: admin.firestore.Timestamp.now() });
             }
             catch (e) { /* best-effort */ }
             // mark source so client knows
@@ -194,15 +250,15 @@ exports.dbLookup = functions.https.onCall(async (payload, ctx) => {
 });
 // Full endpoint: DB-first lookup, then Gemini fallback, persist generated activity
 exports.findOrGenerateActivity = functions.https.onCall(async (payload, ctx) => {
-    if (!ctx.auth)
-        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+    requireAuth(ctx);
+    requireAppCheck(ctx);
     const { attributes = [], latLonBucket, timeHints = [], minScore = 3, intentText = '', onlyVerified = false } = payload || {};
     const wantedAttrs = normalizeAttributes(attributes || []);
     // 1) try DB
     const found = await searchActivities(wantedAttrs, timeHints, latLonBucket, minScore, onlyVerified);
     if (found) {
         try {
-            await db.collection(ACTIVITIES).doc(found.item.id).update({ usage_count: admin.firestore.FieldValue.increment(1), last_used_at: admin.firestore.Timestamp.now() });
+            await db.collection(ACTIVITIES).doc(found.item.id).update({ usage_count: admin.firestore.FieldValue.increment(1), deck_fit_count: admin.firestore.FieldValue.increment(1), last_used_at: admin.firestore.Timestamp.now() });
         }
         catch (e) { }
         found.item.source = 'DB';
@@ -235,19 +291,21 @@ exports.findOrGenerateActivity = functions.https.onCall(async (payload, ctx) => 
         attributes: wantedAttrs,
         time_tags: timeHints,
         geo_scope: latLonBucket || 'global',
+        request_key: makeRequestKey(wantedAttrs, timeHints, latLonBucket),
         created_at: now,
         updated_at: now,
         source_info: { origin: 'AI', model_version: process.env.MODEL_VERSION || 'v1' },
         response_fingerprint: fingerprint(generated),
         usage_count: 1,
         verified: false,
+        last_used_at: now,
         ttl_expires_at: expiresAt
     };
     // dedupe
     const dupQs = await db.collection(ACTIVITIES).where('response_fingerprint', '==', doc.response_fingerprint).limit(1).get();
     if (!dupQs.empty) {
         const existing = dupQs.docs[0];
-        await existing.ref.update({ usage_count: admin.firestore.FieldValue.increment(1), last_used_at: now });
+        await existing.ref.update({ usage_count: admin.firestore.FieldValue.increment(1), deck_fit_count: admin.firestore.FieldValue.increment(1), last_used_at: now });
         const exData = (await existing.ref.get()).data();
         exData.id = existing.id;
         exData.source = 'DB';
@@ -262,13 +320,16 @@ exports.findOrGenerateActivity = functions.https.onCall(async (payload, ctx) => 
 });
 // Voucher generation
 exports.generateVoucher = functions.https.onCall(async (data, ctx) => {
-    if (!ctx.auth)
-        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
-    const { affiliateId, expiresInSecs = 3600, userId } = data || {};
+    requireAuth(ctx);
+    requireAppCheck(ctx);
+    const { affiliateId, expiresInSecs = 3600 } = data || {};
     if (!affiliateId)
         throw new functions.https.HttpsError('invalid-argument', 'affiliateId required');
+    if (!Number.isFinite(expiresInSecs) || expiresInSecs < 60 || expiresInSecs > 24 * 3600) {
+        throw new functions.https.HttpsError('invalid-argument', 'expiresInSecs must be between 60 and 86400');
+    }
     const voucherId = crypto_1.default.randomUUID();
-    const payload = { voucherId, affiliateId, userId: userId || ctx.auth.uid, iat: Math.floor(Date.now() / 1000) };
+    const payload = { voucherId, affiliateId, userId: ctx.auth.uid, iat: Math.floor(Date.now() / 1000) };
     const token = jsonwebtoken_1.default.sign(payload, VOUCHER_SECRET, { expiresIn: expiresInSecs });
     const now = admin.firestore.Timestamp.now();
     const doc = {
@@ -277,13 +338,15 @@ exports.generateVoucher = functions.https.onCall(async (data, ctx) => {
         expires_at: admin.firestore.Timestamp.fromMillis(Date.now() + expiresInSecs * 1000),
         redeemed: false,
         token_sig: crypto_1.default.createHash('sha256').update(token).digest('hex'),
-        userId: userId || ctx.auth.uid
+        userId: ctx.auth.uid
     };
     await db.collection(VOUCHERS).doc(voucherId).set(doc);
     return { voucherToken: token, voucherId };
 });
 // Redeem voucher (callable)
 exports.redeemVoucher = functions.https.onCall(async (data, ctx) => {
+    requireAuth(ctx);
+    requireAppCheck(ctx);
     const { voucherToken, proof } = data || {};
     if (!voucherToken)
         throw new functions.https.HttpsError('invalid-argument', 'voucherToken required');
@@ -293,6 +356,9 @@ exports.redeemVoucher = functions.https.onCall(async (data, ctx) => {
     }
     catch (e) {
         throw new functions.https.HttpsError('invalid-argument', 'Invalid token');
+    }
+    if (!decoded?.userId || decoded.userId !== ctx.auth.uid) {
+        throw new functions.https.HttpsError('permission-denied', 'Voucher does not belong to caller');
     }
     const voucherId = decoded.voucherId;
     const tokenHash = crypto_1.default.createHash('sha256').update(voucherToken).digest('hex');
@@ -330,7 +396,7 @@ exports.vendorRedeem = functions.https.onRequest(async (req, res) => {
         const vendorKeyHeader = (req.headers['x-vendor-key'] || req.headers['X-Vendor-Key'] || '');
         const vendorKeysRaw = functions.config().vendors?.api_keys || process.env.VENDOR_KEYS || '';
         const vendorKeys = String(vendorKeysRaw).split(',').map(s => s.trim()).filter(Boolean);
-        if (!vendorKeys.includes(vendorKeyHeader)) {
+        if (!vendorKeys.some((key) => timingSafeKeyMatch(vendorKeyHeader, key))) {
             res.status(401).send('Unauthorized');
             return;
         }
@@ -376,8 +442,8 @@ exports.vendorRedeem = functions.https.onRequest(async (req, res) => {
     }
 });
 exports.markActivityVerified = functions.https.onCall(async (data, ctx) => {
-    if (!ctx.auth)
-        throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+    requireAuth(ctx);
+    requireAppCheck(ctx);
     const adminEmailsRaw = functions.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
     const adminEmails = String(adminEmailsRaw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
     const userEmail = (ctx.auth.token.email || '').toLowerCase();
@@ -388,6 +454,31 @@ exports.markActivityVerified = functions.https.onCall(async (data, ctx) => {
         throw new functions.https.HttpsError('invalid-argument', 'activityId required');
     await db.collection(ACTIVITIES).doc(activityId).update({ verified: !!verified, updated_at: admin.firestore.Timestamp.now() });
     return { success: true };
+});
+exports.rankTodoSlots = functions.https.onCall(async (data, ctx) => {
+    requireAuth(ctx);
+    requireAppCheck(ctx);
+    const prompt = String(data?.prompt || '').trim();
+    if (!prompt) {
+        throw new functions.https.HttpsError('invalid-argument', 'prompt is required');
+    }
+    if (prompt.length > 12000) {
+        throw new functions.https.HttpsError('invalid-argument', 'prompt is too large');
+    }
+    try {
+        const resp = await callGemini(prompt);
+        let text = '';
+        if (typeof resp?.text === 'string')
+            text = resp.text;
+        else
+            text = JSON.stringify(resp);
+        const parsed = tryParseModelText(text) || {};
+        return { payload: parsed };
+    }
+    catch (e) {
+        console.error('rankTodoSlots failed', e);
+        throw new functions.https.HttpsError('internal', 'Unable to rank todo slots right now');
+    }
 });
 function tryParseModelText(txt) {
     if (!txt)

@@ -6,7 +6,8 @@
     "start": "expo start",
     "android": "expo start --android",
     "ios": "expo start --ios",
-    "web": "expo start --web"
+    "web": "expo start --web",
+    "security:preflight": "powershell -ExecutionPolicy Bypass -File ./scripts/security-preflight.ps1"
   },
   "dependencies": {
     "@expo-google-fonts/space-grotesk": "^0.4.1",
