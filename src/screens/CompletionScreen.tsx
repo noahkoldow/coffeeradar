@@ -15,6 +15,13 @@ import { buildBadgeProgress, BadgeProgress } from '../utils/badges';
 import { streakEmoji } from '../utils/habits';
 import { logEvent } from '../services/analytics';
 import { useI18n } from '../i18n/I18nProvider';
+import { analyzeHabitPattern } from '../services/activityPatternService';
+import {
+  getHabitPromptKey,
+  markHabitConversionPromptShown,
+  shouldShowHabitConversionPrompt,
+  shouldSuggestHabitConversion,
+} from '../services/activityRepetitionService';
 
 type Props = StackScreenProps<RootStackParamList, 'Completion'>;
 
@@ -56,6 +63,7 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
   const [motivationalLine] = useState(() => pickRandom(MOTIVATIONAL_LINES));
   const [addedAsHabit, setAddedAsHabit] = useState(false);
   const [rememberedSessionIntent, setRememberedSessionIntent] = useState(false);
+  const habitPromptMarkedRef = useRef(false);
 
   // Find habit data for streak display
   const habit = useMemo(() => {
@@ -94,6 +102,49 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
       minutes: recent.reduce((sum, e) => sum + e.durationMin, 0),
     };
   }, [state.activityLog]);
+
+  const habitPromptKey = useMemo(
+    () => getHabitPromptKey(suggestionId, title),
+    [suggestionId, title],
+  );
+
+  const completionCount = useMemo(
+    () => (suggestionId ? (state.history.completedActivityIds?.[suggestionId] ?? 0) : 0),
+    [state.history.completedActivityIds, suggestionId],
+  );
+
+  const patternStats = useMemo(
+    () => analyzeHabitPattern(state.activityLog, {
+      suggestionId,
+      title,
+      tags: tags ?? [],
+    }, state.location.timeZone),
+    [state.activityLog, state.location.timeZone, suggestionId, tags, title],
+  );
+
+  const isHabitConversionReady = useMemo(
+    () => shouldSuggestHabitConversion(habitPromptKey, Math.max(completionCount, patternStats.completionCount)),
+    [completionCount, habitPromptKey, patternStats.completionCount],
+  );
+
+  const showHabitPrompt = useMemo(() => {
+    if (habitId || addedAsHabit || !habitPromptKey) return false;
+    if (!isHabitConversionReady && !patternStats.isHabitWorthy) return false;
+    return shouldShowHabitConversionPrompt(state.history, habitPromptKey, new Date());
+  }, [addedAsHabit, habitId, habitPromptKey, isHabitConversionReady, patternStats.isHabitWorthy, state.history]);
+
+  useEffect(() => {
+    if (!showHabitPrompt || habitPromptMarkedRef.current) return;
+    const updated = markHabitConversionPromptShown(state.history, habitPromptKey, new Date());
+    habitPromptMarkedRef.current = true;
+    actions.setHistory(updated);
+    logEvent('habit_conversion_prompt_shown', {
+      suggestion_id: suggestionId ?? null,
+      title,
+      completion_count: Math.max(completionCount, patternStats.completionCount),
+      pattern_ready: patternStats.isHabitWorthy,
+    });
+  }, [actions, completionCount, habitPromptKey, patternStats.completionCount, patternStats.isHabitWorthy, showHabitPrompt, state.history, suggestionId, title]);
 
   useEffect(() => {
     logEvent('completion_screen_shown', { title, durationMin, type: suggestionType });
@@ -314,11 +365,15 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
         </Animated.View>
       )}
 
-      {/* Add as habit CTA (only if not already a habit) */}
-      {!habitId && !addedAsHabit && (
+      {/* Add as habit CTA (only when repeated behavior suggests habit potential) */}
+      {showHabitPrompt && (
         <Animated.View style={[styles.habitCta, { opacity: contentOpacity }]}>
           <Text style={styles.habitCtaTitle}>{isGerman ? 'Als Gewohnheit speichern? 🌱' : 'Make this a habit? 🌱'}</Text>
-          <Text style={styles.habitCtaSubtitle}>{isGerman ? `Fuge "${title}" zu deinem Daily-Deck hinzu und baue eine Serie auf.` : `Add "${title}" to your daily deck and build a streak.`}</Text>
+          <Text style={styles.habitCtaSubtitle}>
+            {isGerman
+              ? `Du hast das schon ${Math.max(completionCount, patternStats.completionCount)}x gemacht. Fuge "${title}" als Gewohnheit hinzu und halte den Rhythmus.`
+              : `You have done this ${Math.max(completionCount, patternStats.completionCount)} times. Add "${title}" as a habit and keep the rhythm.`}
+          </Text>
           <Pressable
             style={({ pressed }) => [styles.habitCtaBtn, pressed && { opacity: 0.7, transform: [{ scale: 0.97 }] }]}
             onPress={handleAddAsHabit}

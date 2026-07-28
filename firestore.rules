@@ -425,6 +425,76 @@ service cloud.firestore {
       allow update, delete: if isAdmin();
     }
 
+    match /activity_chats/{threadId} {
+      allow read: if isSignedIn();
+
+      allow create: if isSignedIn()
+        && request.resource.data.id == threadId
+        && request.resource.data.suggestionId is string
+        && request.resource.data.suggestionId.size() > 0
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.expiresAt is timestamp
+        && request.resource.data.participantCount is number
+        && request.resource.data.participantCount >= 0
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && (
+          request.resource.data.regionLabel is string
+          || request.resource.data.regionLabel == null
+        );
+
+      allow update: if isSignedIn()
+        && request.resource.data.diff(resource.data).affectedKeys()
+          .hasOnly(['title', 'regionLabel', 'participantCount', 'updatedAt'])
+        && request.resource.data.title is string
+        && request.resource.data.title.size() > 0
+        && request.resource.data.participantCount is number
+        && request.resource.data.participantCount >= 0
+        && request.resource.data.updatedAt is timestamp
+        && (
+          request.resource.data.regionLabel is string
+          || request.resource.data.regionLabel == null
+        );
+
+      allow delete: if false;
+
+      match /participants/{participantId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+          && participantId == request.auth.uid
+          && request.resource.data.userId == request.auth.uid
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 32
+          && request.resource.data.joinedAt is timestamp
+          && request.resource.data.updatedAt is timestamp;
+        allow update: if isSignedIn()
+          && participantId == request.auth.uid
+          && request.resource.data.userId == resource.data.userId
+          && request.resource.data.joinedAt == resource.data.joinedAt
+          && request.resource.data.displayName is string
+          && request.resource.data.displayName.size() > 0
+          && request.resource.data.displayName.size() <= 32
+          && request.resource.data.updatedAt is timestamp;
+        allow delete: if false;
+      }
+
+      match /messages/{messageId} {
+        allow read: if isSignedIn();
+        allow create: if isSignedIn()
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() > 0
+          && request.resource.data.authorName.size() <= 32
+          && request.resource.data.body is string
+          && request.resource.data.body.size() > 0
+          && request.resource.data.body.size() <= 1000
+          && request.resource.data.createdAt is timestamp;
+        allow update, delete: if false;
+      }
+    }
+
     // ========================================================================
     // Affiliates catalog (public read, admin-managed)
     // ========================================================================

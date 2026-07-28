@@ -17,6 +17,7 @@ import { getDocs, collection, query, where, Timestamp } from 'firebase/firestore
 import { auth as sharedAuth, db as sharedDb } from '../services/firebase';
 import { approveCampaign, rejectCampaign, getCampaign } from '../services/campaigns_prod';
 import { Campaign } from '../types/business';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
@@ -29,6 +30,8 @@ interface ApprovalItem {
 export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
   const auth = sharedAuth;
   const db = sharedDb as any;
@@ -82,28 +85,30 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         setApprovals(approvalItems);
       } catch (error) {
         console.error('Error loading approval queue:', error);
-        Alert.alert('Error', 'Failed to load campaigns for review');
+        Alert.alert(isGerman ? 'Fehler' : 'Error', isGerman ? 'Kampagnen fur die Prufung konnten nicht geladen werden' : 'Failed to load campaigns for review');
       } finally {
         setLoading(false);
       }
     };
 
     loadCampaigns();
-  }, []);
+  }, [db, isGerman]);
 
   const handleApprove = useCallback(
     async (item: ApprovalItem) => {
       Alert.alert(
-        'Approve campaign?',
-        `"${item.campaign.title}" from ${item.businessName}\n\nThis campaign will be activated immediately.`,
+        isGerman ? 'Kampagne freigeben?' : 'Approve campaign?',
+        isGerman
+          ? `"${item.campaign.title}" von ${item.businessName}\n\nDiese Kampagne wird sofort aktiviert.`
+          : `"${item.campaign.title}" from ${item.businessName}\n\nThis campaign will be activated immediately.`,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: isGerman ? 'Abbrechen' : 'Cancel', style: 'cancel' },
           {
-            text: 'Approve',
+            text: isGerman ? 'Freigeben' : 'Approve',
             onPress: async () => {
               const reviewerUid = auth?.currentUser?.uid;
               if (!reviewerUid) {
-                Alert.alert('Error', 'You must be logged in');
+                Alert.alert(isGerman ? 'Fehler' : 'Error', isGerman ? 'Du musst angemeldet sein' : 'You must be logged in');
                 return;
               }
 
@@ -117,12 +122,12 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                 setApprovals((prev) =>
                   prev.filter((a) => a.campaign.id !== item.campaign.id)
                 );
-                Alert.alert('Success', 'Campaign has been approved and activated');
+                Alert.alert(isGerman ? 'Erfolg' : 'Success', isGerman ? 'Kampagne wurde freigegeben und aktiviert' : 'Campaign has been approved and activated');
               } catch (error) {
                 console.error('Error approving campaign:', error);
                 Alert.alert(
-                  'Error',
-                  error instanceof Error ? error.message : 'Failed to approve campaign'
+                  isGerman ? 'Fehler' : 'Error',
+                  error instanceof Error ? error.message : (isGerman ? 'Kampagne konnte nicht freigegeben werden' : 'Failed to approve campaign')
                 );
               } finally {
                 setReviewing(null);
@@ -132,27 +137,27 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         ]
       );
     },
-    [auth]
+    [auth, isGerman]
   );
 
   const handleReject = useCallback(
     async (item: ApprovalItem) => {
       Alert.prompt(
-        'Reject campaign',
-        `Why should "${item.campaign.title}" be rejected?`,
+        isGerman ? 'Kampagne ablehnen' : 'Reject campaign',
+        isGerman ? `Warum sollte "${item.campaign.title}" abgelehnt werden?` : `Why should "${item.campaign.title}" be rejected?`,
         [
-          { text: 'Cancel', style: 'cancel' },
+          { text: isGerman ? 'Abbrechen' : 'Cancel', style: 'cancel' },
           {
-            text: 'Reject',
+            text: isGerman ? 'Ablehnen' : 'Reject',
             onPress: async (reason?: string) => {
               if (!reason?.trim()) {
-                Alert.alert('Error', 'Please provide a reason for rejection');
+                Alert.alert(isGerman ? 'Fehler' : 'Error', isGerman ? 'Bitte gib einen Ablehnungsgrund an' : 'Please provide a reason for rejection');
                 return;
               }
 
               const reviewerUid = auth?.currentUser?.uid;
               if (!reviewerUid) {
-                Alert.alert('Error', 'You must be logged in');
+                Alert.alert(isGerman ? 'Fehler' : 'Error', isGerman ? 'Du musst angemeldet sein' : 'You must be logged in');
                 return;
               }
 
@@ -167,12 +172,12 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
                 setApprovals((prev) =>
                   prev.filter((a) => a.campaign.id !== item.campaign.id)
                 );
-                Alert.alert('Success', 'Campaign has been rejected');
+                Alert.alert(isGerman ? 'Erfolg' : 'Success', isGerman ? 'Kampagne wurde abgelehnt' : 'Campaign has been rejected');
               } catch (error) {
                 console.error('Error rejecting campaign:', error);
                 Alert.alert(
-                  'Error',
-                  error instanceof Error ? error.message : 'Failed to reject campaign'
+                  isGerman ? 'Fehler' : 'Error',
+                  error instanceof Error ? error.message : (isGerman ? 'Kampagne konnte nicht abgelehnt werden' : 'Failed to reject campaign')
                 );
               } finally {
                 setReviewing(null);
@@ -184,7 +189,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         'plain-text'
       );
     },
-    [auth]
+    [auth, isGerman]
   );
 
   const renderApprovalItem = ({ item }: { item: ApprovalItem }) => {
@@ -202,12 +207,12 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.businessName}>{item.businessName}</Text>
           </View>
           <Text style={styles.submittedTime}>
-            {minutesAgo < 1 ? 'now' : `${minutesAgo}m ago`}
+            {minutesAgo < 1 ? (isGerman ? 'jetzt' : 'now') : (isGerman ? `vor ${minutesAgo} Min` : `${minutesAgo}m ago`)}
           </Text>
         </View>
 
         <View style={styles.previewSection}>
-          <Text style={styles.previewLabel}>Campaign Content</Text>
+          <Text style={styles.previewLabel}>{isGerman ? 'Kampagneninhalt' : 'Campaign Content'}</Text>
           <View style={styles.previewBox}>
             {item.campaign.mediaUrl && (
               <View style={styles.previewImage}>
@@ -255,7 +260,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
             {reviewing === item.campaign.id ? (
               <ActivityIndicator size="small" color={theme.colors.error} />
             ) : (
-              <Text style={styles.rejectButtonText}>Reject</Text>
+              <Text style={styles.rejectButtonText}>{isGerman ? 'Ablehnen' : 'Reject'}</Text>
             )}
           </Pressable>
           <Pressable
@@ -266,7 +271,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
             {reviewing === item.campaign.id ? (
               <ActivityIndicator size="small" color={theme.colors.accent} />
             ) : (
-              <Text style={styles.approveButtonText}>Approve</Text>
+              <Text style={styles.approveButtonText}>{isGerman ? 'Freigeben' : 'Approve'}</Text>
             )}
           </Pressable>
         </View>
@@ -295,20 +300,20 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
       {/* Header */}
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.back}>Back</Text>
+          <Text style={styles.back}>{isGerman ? 'Zuruck' : 'Back'}</Text>
         </Pressable>
       </View>
 
       {approvals.length === 0 ? (
         <View style={styles.emptyState}>
           <Text style={styles.emptyIcon}>✅</Text>
-          <Text style={styles.emptyTitle}>All caught up!</Text>
-          <Text style={styles.emptyText}>No campaigns pending approval</Text>
+          <Text style={styles.emptyTitle}>{isGerman ? 'Alles erledigt!' : 'All caught up!'}</Text>
+          <Text style={styles.emptyText}>{isGerman ? 'Keine Kampagnen warten auf Freigabe' : 'No campaigns pending approval'}</Text>
         </View>
       ) : (
         <>
           <View style={styles.headline}>
-            <Text style={styles.title}>Campaign queue</Text>
+            <Text style={styles.title}>{isGerman ? 'Kampagnen-Queue' : 'Campaign queue'}</Text>
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{approvals.length}</Text>
             </View>

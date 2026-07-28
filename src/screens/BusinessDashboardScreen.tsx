@@ -17,6 +17,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { Campaign, CampaignStatus } from '../types/business';
 import { BusinessHeader } from '../components/BusinessHeader';
+import { useI18n } from '../i18n/I18nProvider';
 
 interface BusinessDashboardProps extends StackScreenProps<RootStackParamList, 'BusinessHub'> {
   businessName?: string;
@@ -51,6 +52,8 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
 }) => {
   const theme = useTheme();
   const { state } = useAppState();
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const styles = useMemo(() => createStyles(theme), [theme]);
   const businessProfile = state.businessProfile;
   const resolvedCampaigns = recentCampaigns ?? [];
@@ -113,15 +116,15 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
 
   const handleOpenBusinessSettings = () => {
     if (!navigateInParentChain('BusinessSettings')) {
-      Alert.alert('Navigation error', 'Business settings are currently unavailable.');
+      Alert.alert(isGerman ? 'Navigationsfehler' : 'Navigation error', isGerman ? 'Business-Einstellungen sind aktuell nicht verfugbar.' : 'Business settings are currently unavailable.');
     }
   };
 
   const kpiData = [
-    { ...KPI_CARDS[0], value: resolvedActiveCampaigns.toString() },
-    { ...KPI_CARDS[1], value: resolvedImpressions.toLocaleString() },
-    { ...KPI_CARDS[2], value: resolvedClicks.toLocaleString() },
-    { ...KPI_CARDS[3], value: resolvedConversions.toLocaleString() },
+    { ...KPI_CARDS[0], label: isGerman ? 'Aktive Kampagnen' : KPI_CARDS[0].label, value: resolvedActiveCampaigns.toString() },
+    { ...KPI_CARDS[1], label: isGerman ? 'Impressionen gesamt' : KPI_CARDS[1].label, value: resolvedImpressions.toLocaleString() },
+    { ...KPI_CARDS[2], label: isGerman ? 'Klicks gesamt' : KPI_CARDS[2].label, value: resolvedClicks.toLocaleString() },
+    { ...KPI_CARDS[3], label: isGerman ? 'Conversions gesamt' : KPI_CARDS[3].label, value: resolvedConversions.toLocaleString() },
   ];
 
   const getStatusColor = (status: CampaignStatus) => {
@@ -140,14 +143,14 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
 
   const getStatusLabel = (status: CampaignStatus) => {
     const labels: Record<CampaignStatus, string> = {
-      draft: 'Draft',
-      pending_approval: 'Pending',
-      approved: 'Approved',
-      active: 'Active',
-      paused: 'Paused',
-      ended: 'Ended',
-      rejected: 'Rejected',
-      archived: 'Archived',
+      draft: isGerman ? 'Entwurf' : 'Draft',
+      pending_approval: isGerman ? 'Ausstehend' : 'Pending',
+      approved: isGerman ? 'Freigegeben' : 'Approved',
+      active: isGerman ? 'Aktiv' : 'Active',
+      paused: isGerman ? 'Pausiert' : 'Paused',
+      ended: isGerman ? 'Beendet' : 'Ended',
+      rejected: isGerman ? 'Abgelehnt' : 'Rejected',
+      archived: isGerman ? 'Archiviert' : 'Archived',
     };
     return labels[status] || status;
   };
@@ -186,11 +189,11 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
       {item.metrics && (
         <View style={styles.campaignMetrics}>
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Impressions</Text>
+            <Text style={styles.metricLabel}>{isGerman ? 'Impressionen' : 'Impressions'}</Text>
             <Text style={styles.metricValue}>{item.metrics.impressions.toLocaleString()}</Text>
           </View>
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Clicks</Text>
+            <Text style={styles.metricLabel}>{isGerman ? 'Klicks' : 'Clicks'}</Text>
             <Text style={styles.metricValue}>{item.metrics.clicks.toLocaleString()}</Text>
           </View>
           <View style={styles.metricItem}>
@@ -198,7 +201,7 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
             <Text style={styles.metricValue}>{(item.metrics.ctr * 100).toFixed(1)}%</Text>
           </View>
           <View style={styles.metricItem}>
-            <Text style={styles.metricLabel}>Conversions</Text>
+            <Text style={styles.metricLabel}>{isGerman ? 'Conversions' : 'Conversions'}</Text>
             <Text style={styles.metricValue}>{item.metrics.conversions.toLocaleString()}</Text>
           </View>
         </View>
@@ -216,17 +219,17 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
       <ScrollView style={styles.scroll} contentContainerStyle={styles.contentContainer}>
       {/* Welcome Header */}
       <View style={styles.headerSection}>
-        <Text style={styles.greeting}>Welcome back,</Text>
+        <Text style={styles.greeting}>{isGerman ? 'Willkommen zuruck,' : 'Welcome back,'}</Text>
         <Text style={styles.businessName}>{resolvedBusinessName}</Text>
-        <Text style={styles.headerSubtitle}>Your campaigns are reaching engaged users</Text>
+        <Text style={styles.headerSubtitle}>{isGerman ? 'Deine Kampagnen erreichen engagierte Nutzer' : 'Your campaigns are reaching engaged users'}</Text>
       </View>
 
       {/* Primary CTA */}
       <Pressable onPress={handleCreateCampaign} style={styles.primaryCta}>
         <Text style={styles.primaryCtaIcon}>✨</Text>
         <View style={styles.primaryCtaContent}>
-          <Text style={styles.primaryCtaTitle}>Create New Campaign</Text>
-          <Text style={styles.primaryCtaSubtitle}>Launch ads to engaged users</Text>
+          <Text style={styles.primaryCtaTitle}>{isGerman ? 'Neue Kampagne erstellen' : 'Create New Campaign'}</Text>
+          <Text style={styles.primaryCtaSubtitle}>{isGerman ? 'Starte Anzeigen fur engagierte Nutzer' : 'Launch ads to engaged users'}</Text>
         </View>
         <Text style={styles.primaryCtaArrow}>→</Text>
       </Pressable>
@@ -246,27 +249,27 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
 
       {/* Quick Actions */}
       <View style={styles.quickActionsSection}>
-        <Text style={styles.sectionTitle}>Quick Actions</Text>
+        <Text style={styles.sectionTitle}>{isGerman ? 'Schnellaktionen' : 'Quick Actions'}</Text>
         <View style={styles.quickActionsGrid}>
           <Pressable onPress={handleViewCampaigns} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>📋</Text>
-            <Text style={styles.quickActionText}>Manage Campaigns</Text>
+            <Text style={styles.quickActionText}>{isGerman ? 'Kampagnen verwalten' : 'Manage Campaigns'}</Text>
           </Pressable>
           <Pressable onPress={handleViewAnalytics} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>📊</Text>
-            <Text style={styles.quickActionText}>Analytics</Text>
+            <Text style={styles.quickActionText}>{isGerman ? 'Analysen' : 'Analytics'}</Text>
           </Pressable>
           <Pressable onPress={() => navigation.navigate('BusinessAudience', undefined)} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>🎯</Text>
-            <Text style={styles.quickActionText}>Audience</Text>
+            <Text style={styles.quickActionText}>{isGerman ? 'Zielgruppe' : 'Audience'}</Text>
           </Pressable>
           <Pressable onPress={handleReviewIdeas} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>✍️</Text>
-            <Text style={styles.quickActionText}>Review Ideas</Text>
+            <Text style={styles.quickActionText}>{isGerman ? 'Ideen prufen' : 'Review Ideas'}</Text>
           </Pressable>
           <Pressable onPress={handleOpenBusinessSettings} style={styles.quickAction}>
             <Text style={styles.quickActionIcon}>⚙️</Text>
-            <Text style={styles.quickActionText}>Settings</Text>
+            <Text style={styles.quickActionText}>{isGerman ? 'Einstellungen' : 'Settings'}</Text>
           </Pressable>
         </View>
       </View>
@@ -275,9 +278,9 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
       {resolvedCampaigns.length > 0 && (
         <View style={styles.recentCampaignsSection}>
           <View style={styles.sectionHeader}>
-            <Text style={styles.sectionTitle}>Recent Campaigns</Text>
+            <Text style={styles.sectionTitle}>{isGerman ? 'Letzte Kampagnen' : 'Recent Campaigns'}</Text>
             <Pressable onPress={handleViewCampaigns}>
-              <Text style={styles.viewAllLink}>View All →</Text>
+              <Text style={styles.viewAllLink}>{isGerman ? 'Alle anzeigen →' : 'View All →'}</Text>
             </Pressable>
           </View>
           <FlatList
@@ -295,12 +298,14 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
           <View style={styles.emptyStateIcon}>
             <Text style={styles.emptyStateIconText}>🚀</Text>
           </View>
-          <Text style={styles.emptyStateTitle}>Ready to Launch Your First Campaign?</Text>
+          <Text style={styles.emptyStateTitle}>{isGerman ? 'Bereit fur deine erste Kampagne?' : 'Ready to Launch Your First Campaign?'}</Text>
           <Text style={styles.emptyStateText}>
-            Create targeted ads that reach engaged users discovering activities
+            {isGerman
+              ? 'Erstelle zielgerichtete Anzeigen, die engagierte Nutzer bei der Aktivitatsentdeckung erreichen'
+              : 'Create targeted ads that reach engaged users discovering activities'}
           </Text>
           <Pressable onPress={handleCreateCampaign} style={styles.emptyStateButton}>
-            <Text style={styles.emptyStateButtonText}>Create Campaign</Text>
+            <Text style={styles.emptyStateButtonText}>{isGerman ? 'Kampagne erstellen' : 'Create Campaign'}</Text>
           </Pressable>
         </View>
       )}
@@ -309,9 +314,11 @@ export const BusinessDashboardScreen: React.FC<BusinessDashboardProps> = ({
       <View style={styles.infoBanner}>
         <Text style={styles.infoBannerIcon}>💡</Text>
         <View style={styles.infoBannerContent}>
-          <Text style={styles.infoBannerTitle}>Pro Tip</Text>
+          <Text style={styles.infoBannerTitle}>{isGerman ? 'Pro-Tipp' : 'Pro Tip'}</Text>
           <Text style={styles.infoBannerText}>
-            Campaigns with specific interests and locations see 3x higher engagement on average.
+            {isGerman
+              ? 'Kampagnen mit klaren Interessen und Standorten erzielen im Schnitt 3x hoheres Engagement.'
+              : 'Campaigns with specific interests and locations see 3x higher engagement on average.'}
           </Text>
         </View>
       </View>

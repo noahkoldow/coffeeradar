@@ -156,13 +156,31 @@ export const loadFirebaseLocationProfile = async (): Promise<LocationProfile | n
     const snap = await getDoc(doc(db!, 'users', uid, 'learning', 'locationProfile'));
     if (!snap.exists()) return null;
     const data = snap.data();
-    if (!data?.label || !data?.lat || !data?.lng) return null;
+    if (!data?.label || typeof data?.lat !== 'number' || typeof data?.lng !== 'number') return null;
     return {
       label: data.label,
       boosts: data.boosts ?? {},
       lat: data.lat,
       lng: data.lng,
       detectedAt: data.detectedAt ?? new Date().toISOString(),
+      homeBase: data.homeBase
+        ? {
+            lat: data.homeBase.lat,
+            lng: data.homeBase.lng,
+            establishedAt: data.homeBase.establishedAt ?? new Date().toISOString(),
+            updatedAt: data.homeBase.updatedAt ?? new Date().toISOString(),
+            sampleCount: Number(data.homeBase.sampleCount ?? 1),
+          }
+        : undefined,
+      travelContext: data.travelContext
+        ? {
+            active: !!data.travelContext.active,
+            inferredPurpose: (data.travelContext.inferredPurpose ?? 'unknown') as 'sightseeing' | 'business' | 'unknown',
+            startedAt: data.travelContext.startedAt ?? new Date().toISOString(),
+            expiresAt: data.travelContext.expiresAt ?? new Date().toISOString(),
+            distanceFromHomeKm: Number(data.travelContext.distanceFromHomeKm ?? 0),
+          }
+        : undefined,
     };
   } catch (error) {
     console.warn('Location profile load error', error);
@@ -249,6 +267,7 @@ export const syncUserProfileContext = async (prefs: UserPrefs): Promise<void> =>
         selfDescription: prefs.selfDescription ?? null,
         wakeStartTime: prefs.wakeStartTime ?? null,
         wakeEndTime: prefs.wakeEndTime ?? null,
+        chatDisplayName: prefs.chatDisplayName ?? null,
         updatedAt: serverTimestamp(),
       },
       { merge: true },
@@ -258,7 +277,7 @@ export const syncUserProfileContext = async (prefs: UserPrefs): Promise<void> =>
   }
 };
 
-export const loadFirebaseProfileContext = async (): Promise<Pick<UserPrefs, 'customInterests' | 'lifestyle' | 'selfDescription' | 'wakeStartTime' | 'wakeEndTime'> | null> => {
+export const loadFirebaseProfileContext = async (): Promise<Pick<UserPrefs, 'customInterests' | 'lifestyle' | 'selfDescription' | 'wakeStartTime' | 'wakeEndTime' | 'chatDisplayName'> | null> => {
   if (!canSync()) return null;
   try {
     const uid = await ensureAuth();
@@ -272,6 +291,7 @@ export const loadFirebaseProfileContext = async (): Promise<Pick<UserPrefs, 'cus
       selfDescription: (data?.selfDescription as string | undefined) ?? '',
       wakeStartTime: (data?.wakeStartTime as string | undefined) ?? '07:00',
       wakeEndTime: (data?.wakeEndTime as string | undefined) ?? '23:00',
+      chatDisplayName: (data?.chatDisplayName as string | undefined) ?? '',
     };
   } catch (error) {
     console.warn('Profile context load error', error);

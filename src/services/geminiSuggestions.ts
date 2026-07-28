@@ -550,19 +550,29 @@ const buildPrompt = (
       '- Stretch component must be at least one of: social exposure, unfamiliar environment, physical strain, strict focus discipline, or creative risk.',
       '- Every card MUST include measurable success criteria (numbers, reps, distance, count, or explicit pass/fail objective).',
       '- Every card MUST be realistic in the current time window including travel.',
-      '- Prefer challenges just outside the user comfort zone based on profile and history; do not stay only in comfort interests.',
+      '- Challenges should suit the user enough to feel possible, but deliberately take them outside their comfort zone and expose them to something new.',
+      '- Use their profile as a launchpad, not a cage: connect some missions to known interests, and make some missions adjacent or unfamiliar so they experience completely new stuff.',
       '- Do not produce generic lifestyle suggestions (coffee, walk, tidy up, read) unless they are transformed into explicit challenge missions with measurable targets and stretch.',
       '- If a suggestion does not feel clearly like a challenge mission, do not include it.',
       '- No fabricated events, no fake ticket links, no impossible travel times.',
       '',
       'DIVERSITY REQUIREMENTS',
       '- Return 5 to 8 challenge missions.',
-      '- Include mixed intensity: at least 1 easy, at least 3 medium, at least 1 hard challenge.',
+      '- The deck/slides must visibly feel mixed, not like one repeated challenge type.',
+      '- Include mixed intensity across the returned cards: at least 1 easy, at least 2 medium, and at least 1 hard challenge.',
+      '- Include at least 1 sports/fitness challenge. This can be solo training, a sport skill drill, a race against a timer, or joining a public/open sports context when realistic.',
+      '- Include at least 1 social challenge that requires talking to, inviting, asking, complimenting, interviewing, or collaborating with another person.',
+      '- Include at least 1 short-term challenge that can be completed entirely today inside the available window.',
+      '- Include at least 1 long-term seed challenge: the action still finishes inside the current window, but it starts a 3-14 day streak, project, skill ladder, or accountability commitment.',
+      '- Include at least 1 novelty challenge outside their obvious interests, while still safe, legal, respectful, and plausible for the context.',
       '- Avoid duplicates in action type or venue type.',
       '',
       'TAG REQUIREMENTS (MANDATORY)',
       '- Each suggestion tags must include at least one of: challenge, mission, quest, sprint.',
-      '- Each suggestion tags must include at least one stretch-domain tag from: social, explore, fitness, learning, creative, public.',
+      '- Each suggestion tags must include at least one stretch-domain tag from: social, explore, fitness, sport, learning, creative, public.',
+      '- Each suggestion tags must include exactly one difficulty tag: easy, medium, or hard.',
+      '- Each suggestion tags must include exactly one horizon tag: short_term or long_term.',
+      '- Use sports tags for sports/fitness cards and social tags for social cards so the slide deck visibly represents the mix.',
       '',
       'OUTPUT FIELDS (STRICT JSON ONLY)',
       '{',
@@ -575,7 +585,7 @@ const buildPrompt = (
       '      "description": "1-2 sentences; why this challenge fits this user now",',
       '      "whyNow": "1 sentence grounded in their today-schedule context",',
       '      "durationMin": 25,',
-      '      "tags": ["challenge", "social"],',
+      '      "tags": ["challenge", "social", "medium", "short_term"],',
       '      "emojis": ["🎯", "🔥"],',
       '      "instructions": ["step 1", "step 2", "step 3"],',
       '      "confidence": 0.8,',
@@ -623,11 +633,11 @@ const buildPrompt = (
     durationConstraint = 'Flexible duration: 20–180 minutes. Mix quick wins with longer immersive activities.';
     styleGuide = 'Make activities feel cozy, nurturing, and creative. Celebrate staying in. Avoid anything that requires leaving home.';
   } else if (learning?.filter === 'challenge_me') {
-    filterContext = 'The user explicitly asked for CHALLENGES — not regular activities with a new label. Every idea must feel like a real mission.';
+    filterContext = 'The user explicitly asked for CHALLENGES — not regular activities with a new label. Every idea must feel like a real mission, and the deck should mix sports, social, short-term, long-term, easy, medium, and hard challenges.';
     typeConstraint = 'Use AT_HOME and GO_OUT depending on fit. EVENT is allowed only if truly plausible and immediately relevant. Never invent ticketed events.';
-    tagConstraint = 'Every challenge must include challenge-specific tags (challenge/mission/quest/sprint) plus one stretch domain tag (social/explore/fitness/learning/creative/public).';
-    durationConstraint = 'Each challenge must be tightly time-bounded and finish inside the current window. Include clear measurable constraints (numbers, reps, countdowns, or objective criteria).';
-    styleGuide = 'Write like a coach setting concrete missions that push the user slightly outside comfort based on their profile: specific, measurable, motivating, safe, and doable now.';
+    tagConstraint = 'Every challenge must include challenge-specific tags (challenge/mission/quest/sprint), one stretch domain tag (social/explore/fitness/sport/learning/creative/public), exactly one difficulty tag (easy/medium/hard), and exactly one horizon tag (short_term/long_term).';
+    durationConstraint = 'Each challenge must be time-bounded and finish inside the current window. Long-term challenges are allowed only as seed actions that start a 3-14 day streak, project, skill ladder, or accountability commitment today. Include clear measurable constraints (numbers, reps, countdowns, or objective criteria).';
+    styleGuide = 'Write like a coach setting concrete missions that fit the user but pull them outside their comfort zone into new experiences: specific, measurable, motivating, safe, and doable now.';
   }
 
   return [

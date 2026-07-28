@@ -16,17 +16,19 @@ import { haversineKm } from '../services/travel';
 import { getConfirmedSocialProofCount } from '../utils/social';
 import { buildPlanSessionKey } from '../utils/planSession';
 import { useI18n } from '../i18n/I18nProvider';
+import { getActivityChatRegionLabel, makeActivityChatThreadId } from '../services/activityChat';
 
 const sameTime = (a: Date, b: Date): boolean => a.getTime() === b.getTime();
 
 export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { t } = useI18n();
+  const { t, language } = useI18n();
   const { commitment, suggestion } = route.params;
   const fromDoSomethingNow = route.params?.fromDoSomethingNow === true;
   const activityMode = route.params?.activityMode ?? (suggestion.type === 'AT_HOME' ? 'at_home' : 'all');
   const isChallengeMode = activityMode === 'challenge_me';
+  const isGerman = language === 'de';
   const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
 
@@ -57,7 +59,11 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return (commitment.type === 'GO_OUT' || commitment.type === 'EVENT') && hasFixedPlace && hasFixedTime;
   }, [commitment.startAt, commitment.type, suggestion.event?.startAt, suggestion.event?.venue, suggestion.meta?.planStartAt, suggestion.place?.name]);
   const socialProofCount = getConfirmedSocialProofCount(suggestion);
-
+  const socialChatRegion = getActivityChatRegionLabel(state.location.areaLabel);
+  const socialChatThreadId = useMemo(
+    () => makeActivityChatThreadId(suggestion.id, socialChatRegion),
+    [socialChatRegion, suggestion.id],
+  );
   useEffect(() => {
     const interval = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(interval);
@@ -91,6 +97,11 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       day: 'numeric',
     });
     return `${dateLabel} at ${formatTime(scheduledStartAt)}`;
+  }, [scheduledStartAt]);
+
+  const socialChatExpiresAt = useMemo(() => {
+    const base = scheduledStartAt ?? new Date();
+    return new Date(Math.max(Date.now(), base.getTime()) + 24 * 60 * 60 * 1000).toISOString();
   }, [scheduledStartAt]);
 
   const activityLocation = useMemo(() => {
@@ -349,6 +360,16 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     void startActivityNow();
   }, [manualStartAt, scheduledForLabel, scheduledStartAt, startActivityNow]);
 
+  const openActivityChat = useCallback(() => {
+    navigation.navigate('ActivityChat', {
+      threadId: socialChatThreadId,
+      title: suggestion.title,
+      expiresAt: socialChatExpiresAt,
+      suggestionId: suggestion.id,
+      regionLabel: socialChatRegion,
+    });
+  }, [navigation, socialChatExpiresAt, socialChatRegion, socialChatThreadId, suggestion.id, suggestion.title]);
+
   const activeGuideIndex = useMemo(() => {
     if (!manualStartAt) return -1;
     return guideChecks.findIndex((checked) => !checked);
@@ -554,6 +575,26 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
                 )}
               </View>
             )}
+
+            {isSocialActivity && (
+              <View style={styles.connectPanel}>
+                <View style={styles.connectCopy}>
+                  <Text style={styles.connectTitle}>
+                    {socialProofCount > 0
+                      ? (isGerman ? `${socialProofCount} gehen auch hin` : `${socialProofCount} going too`)
+                      : (isGerman ? 'Soziale Aktivität' : 'Social activity')}
+                  </Text>
+                  <Text style={styles.connectText}>
+                    {isGerman
+                      ? `Chatte mit Leuten${socialChatRegion ? ` in ${socialChatRegion}` : ''}, die diese Aktivität planen.`
+                      : `Chat with people${socialChatRegion ? ` in ${socialChatRegion}` : ''} planning this activity.`}
+                  </Text>
+                </View>
+                <Pressable style={({ pressed }) => [styles.connectButton, pressed && { opacity: 0.86 }]} onPress={openActivityChat}>
+                  <Text style={styles.connectButtonText}>{isGerman ? 'Chat öffnen' : 'Open chat'}</Text>
+                </Pressable>
+              </View>
+            )}
           </View>
 
           <View style={styles.guideBlock}>
@@ -662,6 +703,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   timerValue: { fontFamily: theme.fonts.heading, color: theme.colors.text, fontSize: 28, textAlign: 'center' },
   timerValueFailed: { color: theme.colors.danger },
   timerFailedText: { fontFamily: theme.fonts.body, color: theme.colors.danger, fontSize: 12, textAlign: 'center', marginTop: 4 },
+  connectPanel: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', gap: theme.spacing.md, backgroundColor: theme.colors.card, borderRadius: theme.radius.md, padding: theme.spacing.md, borderWidth: 1, borderColor: theme.colors.border },
+  connectCopy: { flex: 1, gap: 3 },
+  connectTitle: { fontFamily: theme.fonts.semibold, color: theme.colors.text, fontSize: 14 },
+  connectText: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, fontSize: 12, lineHeight: 17 },
+  connectButton: { backgroundColor: theme.colors.info, borderRadius: theme.radius.sm, paddingHorizontal: 12, paddingVertical: 10 },
+  connectButtonText: { fontFamily: theme.fonts.semibold, color: theme.colors.infoText, fontSize: 12 },
   locationRowCard: { flexDirection: 'row', alignItems: 'center', gap: 6, alignSelf: 'flex-start', maxWidth: '100%', backgroundColor: theme.colors.backgroundAlt, borderWidth: 1, borderColor: theme.colors.border, borderRadius: 999, paddingHorizontal: 10, paddingVertical: 6 },
   locationRowPressed: { opacity: 0.85 },
   locationPin: { fontSize: 14 },

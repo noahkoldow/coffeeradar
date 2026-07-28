@@ -265,6 +265,21 @@ const isChallengeSuggestion = (suggestion: DeckSuggestion): boolean => {
   return /challenge|quest|mission|race|sprint|try this/.test(haystack);
 };
 
+type ChallengeDifficulty = 'easy' | 'medium' | 'hard';
+
+const getChallengeDifficulty = (suggestion: DeckSuggestion): ChallengeDifficulty | null => {
+  const tags = (suggestion.tags ?? []).map((tag) => tag.toLowerCase().trim());
+  if (tags.includes('easy')) return 'easy';
+  if (tags.includes('medium')) return 'medium';
+  if (tags.includes('hard')) return 'hard';
+
+  const haystack = [suggestion.title, suggestion.cta, suggestion.hook, suggestion.description, ...tags].join(' ').toLowerCase();
+  if (/\b(easy|light|starter|gentle)\b/.test(haystack)) return 'easy';
+  if (/\b(hard|intense|bold|brutal|advanced)\b/.test(haystack)) return 'hard';
+  if (/\b(medium|moderate)\b/.test(haystack)) return 'medium';
+  return null;
+};
+
 const isSocialActivitySuggestion = (suggestion: DeckSuggestion): boolean => {
   if (suggestion.type !== 'GO_OUT' && suggestion.type !== 'EVENT') return false;
   const hasFixedPlace = suggestion.type === 'EVENT'
@@ -490,6 +505,10 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
   const eta = formatEta(suggestion);
   const isGoOut = suggestion.type === 'GO_OUT' || suggestion.type === 'EVENT';
   const isChallenge = isChallengeSuggestion(suggestion);
+  const challengeDifficulty = useMemo(
+    () => (isChallenge ? getChallengeDifficulty(suggestion) : null),
+    [isChallenge, suggestion],
+  );
   const isSocialActivity = useMemo(() => isSocialActivitySuggestion(suggestion), [suggestion]);
   const socialProofCount = useMemo(() => getConfirmedSocialProofCount(suggestion), [suggestion]);
   const now = new Date(nowMs);
@@ -624,20 +643,42 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
             )}
           </View>
 
-          {socialAvatarLabels.length > 0 && (
-            <View style={styles.socialStack}>
-              {socialAvatarLabels.map((label, index) => (
-                <View
-                  key={`${label}_${index}`}
-                  style={[
-                    styles.socialAvatar,
-                    index > 0 && styles.socialAvatarOverlap,
-                    index === socialAvatarLabels.length - 1 && socialProofCount > 3 && styles.socialAvatarCount,
-                  ]}
-                >
-                  <Text style={styles.socialAvatarText}>{label}</Text>
+          {(challengeDifficulty || socialAvatarLabels.length > 0) && (
+            <View style={styles.topRightCluster}>
+              {challengeDifficulty && (
+                <View style={[
+                  styles.badgePill,
+                  styles.difficultyBadge,
+                  challengeDifficulty === 'easy' && styles.easyDifficultyBadge,
+                  challengeDifficulty === 'medium' && styles.mediumDifficultyBadge,
+                  challengeDifficulty === 'hard' && styles.hardDifficultyBadge,
+                ]}>
+                  <Text style={[
+                    styles.difficultyBadgeText,
+                    challengeDifficulty === 'easy' && styles.easyDifficultyBadgeText,
+                    challengeDifficulty === 'medium' && styles.mediumDifficultyBadgeText,
+                    challengeDifficulty === 'hard' && styles.hardDifficultyBadgeText,
+                  ]}>
+                    {challengeDifficulty}
+                  </Text>
                 </View>
-              ))}
+              )}
+              {socialAvatarLabels.length > 0 && (
+                <View style={styles.socialStack}>
+                  {socialAvatarLabels.map((label, index) => (
+                    <View
+                      key={`${label}_${index}`}
+                      style={[
+                        styles.socialAvatar,
+                        index > 0 && styles.socialAvatarOverlap,
+                        index === socialAvatarLabels.length - 1 && socialProofCount > 3 && styles.socialAvatarCount,
+                      ]}
+                    >
+                      <Text style={styles.socialAvatarText}>{label}</Text>
+                    </View>
+                  ))}
+                </View>
+              )}
             </View>
           )}
         </View>
@@ -1265,6 +1306,41 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors: { bg: stri
     color: '#B33C50',
     textTransform: 'uppercase',
     letterSpacing: 0.7,
+  },
+  topRightCluster: {
+    alignItems: 'flex-end',
+    gap: 8,
+  },
+  difficultyBadge: {
+    minWidth: 64,
+    alignItems: 'center',
+  },
+  difficultyBadgeText: {
+    fontFamily: theme.fonts.semibold,
+    fontSize: 10,
+    textTransform: 'uppercase',
+    letterSpacing: 0.7,
+  },
+  easyDifficultyBadge: {
+    backgroundColor: 'rgba(46, 160, 92, 0.16)',
+    borderColor: 'rgba(46, 160, 92, 0.38)',
+  },
+  easyDifficultyBadgeText: {
+    color: '#207A43',
+  },
+  mediumDifficultyBadge: {
+    backgroundColor: 'rgba(245, 180, 64, 0.2)',
+    borderColor: 'rgba(245, 180, 64, 0.42)',
+  },
+  mediumDifficultyBadgeText: {
+    color: '#94620D',
+  },
+  hardDifficultyBadge: {
+    backgroundColor: 'rgba(218, 68, 83, 0.16)',
+    borderColor: 'rgba(218, 68, 83, 0.38)',
+  },
+  hardDifficultyBadgeText: {
+    color: '#A6323F',
   },
   socialStack: {
     flexDirection: 'row',

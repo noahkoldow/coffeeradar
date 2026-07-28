@@ -49,12 +49,18 @@ const STRETCH_TAGS = new Set([
   'social',
   'explore',
   'fitness',
+  'sport',
   'learning',
   'creative',
   'outdoor',
   'public',
   'networking',
   'leadership',
+  'short_term',
+  'long_term',
+  'easy',
+  'medium',
+  'hard',
 ]);
 
 const tokenize = (value: string): string[] =>
@@ -100,7 +106,8 @@ const hasChallengeSignal = (candidate: ChallengeCandidate): boolean => {
 
 const hasMeasurableConstraint = (candidate: ChallengeCandidate): boolean => {
   const text = getTextBlob(candidate);
-  return /\b\d+\s?(min|mins|minute|minutes|rep|reps|set|sets|round|rounds|step|steps|km|question|questions|call|calls|floor|floors)\b/i.test(text)
+  return /\b\d+\s?(min|mins|minute|minutes|rep|reps|set|sets|round|rounds|step|steps|km|question|questions|call|calls|floor|floors|day|days|week|weeks)\b/i.test(text)
+    || /\b(streak|project|skill ladder|accountability|commitment)\b/i.test(text)
     || /\b(without|no\s+phone|cold|approach|introduce|speak\s+to|ask\s+for)\b/i.test(text);
 };
 

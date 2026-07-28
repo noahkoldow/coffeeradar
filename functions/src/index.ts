@@ -1,4 +1,6 @@
-import * as functions from 'firebase-functions';
+import * as functionsV1 from 'firebase-functions'; // Renamed to avoid conflict
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { defineSecret } from 'firebase-functions/params';
 import * as admin from 'firebase-admin';
 import fetch from 'node-fetch';
 import jwt from 'jsonwebtoken';
@@ -11,28 +13,35 @@ const ACTIVITIES = 'activities';
 const VOUCHERS = 'vouchers';
 const CONVERSIONS = 'conversions';
 
-const VOUCHER_SECRET = functions.config().app?.voucher_secret || process.env.VOUCHER_SECRET;
+const VOUCHER_SECRET = functionsV1.config().app?.voucher_secret || process.env.VOUCHER_SECRET;
 if (!VOUCHER_SECRET) {
 	throw new Error('Missing voucher signing secret. Configure app.voucher_secret or VOUCHER_SECRET.');
 }
 
 const ENFORCE_APP_CHECK = String(
-	functions.config().app?.enforce_app_check
+	functionsV1.config().app?.enforce_app_check
 		?? process.env.ENFORCE_APP_CHECK
 		?? 'true'
 ).toLowerCase() === 'true';
 
+// Secret definitions for V2 functions
+const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY');
+const TICKETMASTER_API_KEY = defineSecret('TICKETMASTER_API_KEY');
+const SEATGEEK_CLIENT_ID = defineSecret('SEATGEEK_CLIENT_ID');
+const SEATGEEK_CLIENT_SECRET = defineSecret('SEATGEEK_CLIENT_SECRET');
+const GOOGLE_PLACES_API_KEY = defineSecret('GOOGLE_PLACES_API_KEY');
+
 function requireAuth(
-	ctx: functions.https.CallableContext
-): asserts ctx is functions.https.CallableContext & { auth: NonNullable<functions.https.CallableContext['auth']> } {
+	ctx: functionsV1.https.CallableContext
+): asserts ctx is functionsV1.https.CallableContext & { auth: NonNullable<functionsV1.https.CallableContext['auth']> } {
 	if (!ctx.auth) {
-		throw new functions.https.HttpsError('unauthenticated', 'Authentication required');
+		throw new functionsV1.https.HttpsError('unauthenticated', 'Authentication required');
 	}
 }
 
-function requireAppCheck(ctx: functions.https.CallableContext) {
+function requireAppCheck(ctx: functionsV1.https.CallableContext) {
 	if (ENFORCE_APP_CHECK && !ctx.app) {
-		throw new functions.https.HttpsError('failed-precondition', 'App Check token required');
+		throw new functionsV1.https.HttpsError('failed-precondition', 'App Check token required');
 	}
 }
 
@@ -125,14 +134,14 @@ function determineTTLSeconds(generated: any, attrs: string[]) {
 }
 
 async function callGemini(prompt: string) {
-	const apiUrl = functions.config().models?.api_url || process.env.MODEL_API_URL;
-	const apiKey = functions.config().models?.api_key || process.env.MODEL_API_KEY;
-	if (!apiUrl || !apiKey) throw new Error('models.api_url and models.api_key must be configured');
+	const apiUrl = functionsV1.config().models?.api_url || process.env.MODEL_API_URL;
+	const apiKey = GEMINI_API_KEY.value();
+	if (!apiUrl || !apiKey) throw new HttpsError('internal', 'Gemini API URL or Key not configured.');
 	const headers: any = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
 	const resp = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ prompt }) });
 	if (!resp.ok) {
 		const txt = await resp.text();
-		throw new Error(`Model API error ${resp.status}: ${txt}`);
+		throw new HttpsError('internal', `Gemini API error ${resp.status}: ${txt}`);
 	}
 	const text = await resp.text();
 	try { return JSON.parse(text); } catch { return { text }; }
@@ -160,7 +169,7 @@ function scoreMatch(item: any, wantedAttrs: string[], timeTags: string[], geoSco
  * input: { attributes: string[], latLonBucket?: string, timeHints?: string[], minScore?: number }
  * returns: { hit: boolean, activity?: {...}, score?: number }
  */
-export const dbLookup = functions.https.onCall(async (payload, ctx) => {
+export const dbLookup = functionsV1.https.onCall(async (payload, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 	const { attributes = [], latLonBucket, timeHints = [], minScore = 3 } = payload || {};
@@ -205,7 +214,7 @@ export const dbLookup = functions.https.onCall(async (payload, ctx) => {
 });
 
 // Full endpoint: DB-first lookup, then Gemini fallback, persist generated activity
-export const findOrGenerateActivity = functions.https.onCall(async (payload, ctx) => {
+export const findOrGenerateActivity = functionsV1.https.onCall(async (payload, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 	const { attributes = [], latLonBucket, timeHints = [], minScore = 3, intentText = '', onlyVerified = false } = payload || {};
@@ -220,7 +229,8 @@ export const findOrGenerateActivity = functions.https.onCall(async (payload, ctx
 	}
 
 	// 2) call Gemini
-	const prompt = `Produce a JSON object with keys \"title\" and \"description\" for an activity.\nAttributes: ${wantedAttrs.join(', ')}. Time: ${timeHints.join(', ')}. Intent: ${intentText}`;
+	const prompt = `Produce a JSON object with keys "title" and "description" for an activity.
+Attributes: ${wantedAttrs.join(', ')}. Time: ${timeHints.join(', ')}. Intent: ${intentText}`;
 	let generated: any;
 	try {
 		const resp = await callGemini(prompt);
@@ -231,7 +241,7 @@ export const findOrGenerateActivity = functions.https.onCall(async (payload, ctx
 		} else generated = { title: wantedAttrs.slice(0,3).join(', '), description: JSON.stringify(resp).slice(0,1000) };
 	} catch (e: any) {
 		console.error('Gemini call failed', e);
-		throw new functions.https.HttpsError('internal', 'Model call failed');
+		throw new functionsV1.https.HttpsError('internal', 'Model call failed');
 	}
 
 	const now = admin.firestore.Timestamp.now();
@@ -274,13 +284,13 @@ export const findOrGenerateActivity = functions.https.onCall(async (payload, ctx
 });
 
 // Voucher generation
-export const generateVoucher = functions.https.onCall(async (data, ctx) => {
+export const generateVoucher = functionsV1.https.onCall(async (data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 	const { affiliateId, expiresInSecs = 3600 } = data || {};
-	if (!affiliateId) throw new functions.https.HttpsError('invalid-argument', 'affiliateId required');
+	if (!affiliateId) throw new functionsV1.https.HttpsError('invalid-argument', 'affiliateId required');
 	if (!Number.isFinite(expiresInSecs) || expiresInSecs < 60 || expiresInSecs > 24 * 3600) {
-		throw new functions.https.HttpsError('invalid-argument', 'expiresInSecs must be between 60 and 86400');
+		throw new functionsV1.https.HttpsError('invalid-argument', 'expiresInSecs must be between 60 and 86400');
 	}
 	const voucherId = crypto.randomUUID();
 	const payload = { voucherId, affiliateId, userId: ctx.auth.uid, iat: Math.floor(Date.now()/1000) };
@@ -299,15 +309,15 @@ export const generateVoucher = functions.https.onCall(async (data, ctx) => {
 });
 
 // Redeem voucher (callable)
-export const redeemVoucher = functions.https.onCall(async (data, ctx) => {
+export const redeemVoucher = functionsV1.https.onCall(async (data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 	const { voucherToken, proof } = data || {};
-	if (!voucherToken) throw new functions.https.HttpsError('invalid-argument', 'voucherToken required');
+	if (!voucherToken) throw new functionsV1.https.HttpsError('invalid-argument', 'voucherToken required');
 	let decoded: any;
-	try { decoded = jwt.verify(voucherToken, VOUCHER_SECRET) as any; } catch (e) { throw new functions.https.HttpsError('invalid-argument', 'Invalid token'); }
+	try { decoded = jwt.verify(voucherToken, VOUCHER_SECRET) as any; } catch (e) { throw new functionsV1.https.HttpsError('invalid-argument', 'Invalid token'); }
 	if (!decoded?.userId || decoded.userId !== ctx.auth.uid) {
-		throw new functions.https.HttpsError('permission-denied', 'Voucher does not belong to caller');
+		throw new functionsV1.https.HttpsError('permission-denied', 'Voucher does not belong to caller');
 	}
 	const voucherId = decoded.voucherId;
 	const tokenHash = crypto.createHash('sha256').update(voucherToken).digest('hex');
@@ -315,27 +325,27 @@ export const redeemVoucher = functions.https.onCall(async (data, ctx) => {
 	try {
 		await db.runTransaction(async (tx) => {
 			const snap = await tx.get(voucherRef);
-			if (!snap.exists) throw new functions.https.HttpsError('not-found', 'Voucher not found');
+			if (!snap.exists) throw new functionsV1.https.HttpsError('not-found', 'Voucher not found');
 			const v = snap.data()!;
-			if (v.token_sig !== tokenHash) throw new functions.https.HttpsError('failed-precondition', 'Token mismatch');
-			if (v.redeemed) throw new functions.https.HttpsError('failed-precondition', 'Already redeemed');
-			if (v.expires_at && v.expires_at.toMillis() < Date.now()) throw new functions.https.HttpsError('failed-precondition', 'Expired');
+			if (v.token_sig !== tokenHash) throw new functionsV1.https.HttpsError('failed-precondition', 'Token mismatch');
+			if (v.redeemed) throw new functionsV1.https.HttpsError('failed-precondition', 'Already redeemed');
+			if (v.expires_at && v.expires_at.toMillis() < Date.now()) throw new functionsV1.https.HttpsError('failed-precondition', 'Expired');
 			tx.update(voucherRef, { redeemed: true, redeemed_at: admin.firestore.Timestamp.now(), proof });
 			tx.set(db.collection(CONVERSIONS).doc(), { voucherId, affiliateId: decoded.affiliateId, userId: decoded.userId, created_at: admin.firestore.Timestamp.now(), proof });
 		});
-	} catch (e: any) { if (e instanceof functions.https.HttpsError) throw e; throw new functions.https.HttpsError('internal', String(e)); }
+	} catch (e: any) { if (e instanceof functionsV1.https.HttpsError) throw e; throw new functionsV1.https.HttpsError('internal', String(e)); }
 	return { success: true };
 });
 
 // Vendor webhook
-export const vendorRedeem = functions.https.onRequest(async (req, res) => {
+export const vendorRedeem = functionsV1.https.onRequest(async (req, res) => {
 	try {
 		if (req.method !== 'POST') {
 			res.status(405).send('Method not allowed');
 			return;
 		}
 		const vendorKeyHeader = (req.headers['x-vendor-key'] || req.headers['X-Vendor-Key'] || '') as string;
-		const vendorKeysRaw = functions.config().vendors?.api_keys || process.env.VENDOR_KEYS || '';
+		const vendorKeysRaw = functionsV1.config().vendors?.api_keys || process.env.VENDOR_KEYS || '';
 		const vendorKeys = String(vendorKeysRaw).split(',').map(s => s.trim()).filter(Boolean);
 		if (!vendorKeys.some((key) => timingSafeKeyMatch(vendorKeyHeader, key))) {
 			res.status(401).send('Unauthorized');
@@ -370,30 +380,30 @@ export const vendorRedeem = functions.https.onRequest(async (req, res) => {
 	} catch (e: any) { console.error('vendorRedeem error', e); res.status(500).send('internal error'); return; }
 });
 
-export const markActivityVerified = functions.https.onCall(async (data, ctx) => {
+export const markActivityVerified = functionsV1.https.onCall(async (data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
-	const adminEmailsRaw = functions.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
+	const adminEmailsRaw = functionsV1.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
 	const adminEmails = String(adminEmailsRaw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
 	const userEmail = (ctx.auth.token.email || '').toLowerCase();
-	if (!adminEmails.includes(userEmail)) throw new functions.https.HttpsError('permission-denied', 'Not an admin');
+	if (!adminEmails.includes(userEmail)) throw new functionsV1.https.HttpsError('permission-denied', 'Not an admin');
 	const { activityId, verified } = data || {};
-	if (!activityId) throw new functions.https.HttpsError('invalid-argument', 'activityId required');
+	if (!activityId) throw new functionsV1.https.HttpsError('invalid-argument', 'activityId required');
 	await db.collection(ACTIVITIES).doc(activityId).update({ verified: !!verified, updated_at: admin.firestore.Timestamp.now() });
 	return { success: true };
 });
 
-export const rankTodoSlots = functions.https.onCall(async (data, ctx) => {
+export const rankTodoSlots = functionsV1.https.onCall(async (data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 
 	const prompt = String(data?.prompt || '').trim();
 	if (!prompt) {
-		throw new functions.https.HttpsError('invalid-argument', 'prompt is required');
+		throw new functionsV1.https.HttpsError('invalid-argument', 'prompt is required');
 	}
 
 	if (prompt.length > 12000) {
-		throw new functions.https.HttpsError('invalid-argument', 'prompt is too large');
+		throw new functionsV1.https.HttpsError('invalid-argument', 'prompt is too large');
 	}
 
 	try {
@@ -405,7 +415,7 @@ export const rankTodoSlots = functions.https.onCall(async (data, ctx) => {
 		return { payload: parsed };
 	} catch (e: any) {
 		console.error('rankTodoSlots failed', e);
-		throw new functions.https.HttpsError('internal', 'Unable to rank todo slots right now');
+		throw new functionsV1.https.HttpsError('internal', 'Unable to rank todo slots right now');
 	}
 });
 
@@ -415,7 +425,107 @@ function tryParseModelText(txt: string) {
 	if (jsonMatch) {
 		try { const parsed = JSON.parse(jsonMatch[0]); if (parsed.title && parsed.description) return { title: parsed.title, description: parsed.description, expires_at: parsed.expires_at }; } catch (e) {}
 	}
-	const lines = txt.split('\n').map(s => s.trim()).filter(Boolean);
-	if (lines.length) return { title: lines[0], description: lines.slice(1).join('\n') };
+	const lines = txt.split('
+').map(s => s.trim()).filter(Boolean);
+	if (lines.length) return { title: lines[0], description: lines.slice(1).join('
+') };
 	return null;
 }
+
+/**
+ * HTTPS Callable V2 Cloud Function to act as a secure backend proxy.
+ * Fetches data from multiple external third-party APIs concurrently.
+ *
+ * @param {Object} data - The data sent from the client.
+ * @param {string} data.location - The location (city, coordinates) for event/place searches.
+ * @param {string} data.geminiPrompt - The prompt for the Gemini API.
+ * @param {string} [data.searchQuery] - An optional search query for events/places.
+ */
+export const fetchExternalData = onCall({
+    secrets: [GEMINI_API_KEY, TICKETMASTER_API_KEY, SEATGEEK_CLIENT_ID, SEATGEEK_CLIENT_SECRET, GOOGLE_PLACES_API_KEY]
+}, async (request) => {
+    // Ensure the user is authenticated
+    if (!request.auth) {
+        throw new HttpsError('unauthenticated', 'Authentication required.');
+    }
+
+    const { location, geminiPrompt, searchQuery } = request.data;
+
+    if (!location) {
+        throw new HttpsError('invalid-argument', 'Location is required.');
+    }
+
+    // Hardcoded affiliate ID for Ticketmaster as per user's request.
+    // Consider defining this as a secret if it needs to be configurable or kept private.
+    const TICKETMASTER_AFFILIATE_ID = 'bitsAFF1';
+
+    // Helper function to fetch data and handle errors gracefully
+    const fetchData = async (apiName: string, url: string, options?: RequestInit) => {
+        try {
+            const response = await fetch(url, options);
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error(`Error fetching from ${apiName}: ${response.status} - ${errorText}`);
+                return { apiName, status: 'failed', error: `API error: ${response.status}`, details: errorText };
+            }
+            const data = await response.json();
+            return { apiName, status: 'success', data };
+        } catch (error: any) {
+            console.error(`Network or parsing error for ${apiName}:`, error);
+            return { apiName, status: 'failed', error: `Network or parsing error: ${error.message}` };
+        }
+    };
+
+    // Prepare concurrent API calls using Promise.allSettled
+    const results = await Promise.allSettled([
+        // 1. Google Gemini API
+        (async () => {
+            if (!geminiPrompt) {
+                return { apiName: 'Gemini', status: 'skipped', message: 'No Gemini prompt provided.' };
+            }
+            try {
+                // The existing callGemini function is now adapted to use the secret.
+                const geminiResult = await callGemini(geminiPrompt);
+                return { apiName: 'Gemini', status: 'success', data: geminiResult };
+            } catch (error: any) {
+                console.error('Error calling Gemini API:', error);
+                return { apiName: 'Gemini', status: 'failed', error: error.message };
+            }
+        })(),
+
+        // 2. Ticketmaster API
+        fetchData(
+            'Ticketmaster',
+            `https://app.ticketmaster.com/discovery/v2/events.json?apikey=${TICKETMASTER_API_KEY.value()}&city=${encodeURIComponent(location)}&keyword=${encodeURIComponent(searchQuery || '')}&sort=relevance,desc&segmentName=Music&locale=*&includeFamily=false&affiliateId=${TICKETMASTER_AFFILIATE_ID}`
+        ),
+
+        // 3. SeatGeek API
+        fetchData(
+            'SeatGeek',
+            `https://api.seatgeek.com/2/events?client_id=${SEATGEEK_CLIENT_ID.value()}&client_secret=${SEATGEEK_CLIENT_SECRET.value()}&q=${encodeURIComponent(searchQuery || '')}&venue.city=${encodeURIComponent(location)}`
+        ),
+
+        // 4. Google Places API (Find Place from Text)
+        fetchData(
+            'Google Places',
+            `https://maps.googleapis.com/maps/api/place/findplacefromtext/json?input=${encodeURIComponent(searchQuery || location)}&inputtype=textquery&fields=place_id,name,formatted_address,geometry&key=${GOOGLE_PLACES_API_KEY.value()}`
+        ),
+    ]);
+
+    // Process results from all settled promises
+    const aggregatedResults: { [key: string]: any } = {};
+    results.forEach(result => {
+        if (result.status === 'fulfilled') {
+            const { apiName, ...data } = result.value;
+            aggregatedResults[apiName] = data;
+        } else {
+            // Log rejected promises for debugging, but don't stop the overall response
+            console.error('Promise rejected:', result.reason);
+        }
+    });
+
+    return {
+        message: 'External data fetched successfully (with some potential failures).',
+        results: aggregatedResults,
+    };
+});

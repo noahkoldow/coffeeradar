@@ -15,6 +15,10 @@ const OVERPASS_ENDPOINTS = [
 ];
 
 const REDETECT_DISTANCE_KM = 5;
+const HOME_AREA_RADIUS_KM = 30;
+const TRAVEL_START_DISTANCE_KM = 80;
+const TRAVEL_BIAS_DAYS = 3;
+type TravelPurpose = 'sightseeing' | 'business' | 'unknown';
 
 /** Haversine distance (km) — lightweight copy to avoid circular imports */
 const haversine = (lat1: number, lng1: number, lat2: number, lng2: number): number => {
@@ -173,6 +177,89 @@ const classify = (
   return { label: 'unknown', boosts: {} };
 };
 
+const mergeBoosts = (...sets: Array<Record<string, number>>): Record<string, number> => {
+  const merged: Record<string, number> = {};
+  for (const current of sets) {
+    for (const [tag, value] of Object.entries(current)) {
+      merged[tag] = (merged[tag] ?? 0) + value;
+    }
+  }
+  return merged;
+};
+
+const inferTravelPurpose = (
+  counts: { water: number; beaches: number; cafes: number; shops: number; parks: number },
+): TravelPurpose => {
+  const scenicSignal = counts.beaches * 2 + counts.parks + counts.water;
+  const businessSignal = counts.cafes + counts.shops;
+  if (scenicSignal >= 6) return 'sightseeing';
+  if (businessSignal >= 35 && scenicSignal <= 2) return 'business';
+  return 'sightseeing';
+};
+
+const travelPurposeBoosts = (
+  purpose: TravelPurpose,
+): Record<string, number> => {
+  if (purpose === 'business') {
+    return {
+      coffee: 0.12,
+      productivity: 0.12,
+      food: 0.08,
+      social: 0.06,
+    };
+  }
+  if (purpose === 'sightseeing') {
+    return {
+      explore: 0.16,
+      art: 0.12,
+      nature: 0.1,
+      food: 0.08,
+      social: 0.06,
+    };
+  }
+  return {
+    explore: 0.08,
+    food: 0.05,
+  };
+};
+
+const resolveHomeBase = (
+  cached: LocationProfile | null,
+  lat: number,
+  lng: number,
+  nowIso: string,
+) => {
+  const existing = cached?.homeBase;
+  if (!existing) {
+    return {
+      lat,
+      lng,
+      establishedAt: nowIso,
+      updatedAt: nowIso,
+      sampleCount: 1,
+    };
+  }
+
+  const distToHome = haversine(existing.lat, existing.lng, lat, lng);
+  if (distToHome > HOME_AREA_RADIUS_KM) {
+    return {
+      ...existing,
+      updatedAt: nowIso,
+    };
+  }
+
+  // Blend nearby points so the home anchor slowly adapts without jumping.
+  const nextCount = Math.min((existing.sampleCount ?? 1) + 1, 120);
+  const weight = 1 / nextCount;
+  return {
+    ...existing,
+    lat: existing.lat * (1 - weight) + lat * weight,
+    lng: existing.lng * (1 - weight) + lng * weight,
+    updatedAt: nowIso,
+    sampleCount: nextCount,
+  };
+};
+
 /**
  * Detect (or load cached) location profile for the user's current position.
  * Call this once on HomeScreen mount — it's cheap and cached.
@@ -182,6 +269,8 @@ export const detectLocationProfile = async (
   lng: number,
   userId?: string | null,
 ): Promise<LocationProfile> => {
+  const now = new Date();
+  const nowIso = now.toISOString();
   // 1. Try cache
   const cached = await loadLocationProfile(userId);
   if (cached) {
@@ -194,16 +283,46 @@ export const detectLocationProfile = async (
   // 2. Query Overpass
   try {
     const counts = await overpassCounts(lat, lng, 3000); // 3 km radius
-    const { label, boosts } = classify(counts);
+    const { label, boosts: baseBoosts } = classify(counts);
+    const homeBase = resolveHomeBase(cached, lat, lng, nowIso);
+    const distanceFromHomeKm = haversine(homeBase.lat, homeBase.lng, lat, lng);
+
+    const isAwayFromHome = distanceFromHomeKm >= TRAVEL_START_DISTANCE_KM;
+    const existingTravel = cached?.travelContext;
+    let travelContext: LocationProfile['travelContext'] | undefined;
+    let boosts = baseBoosts;
+
+    if (isAwayFromHome) {
+      const inferredPurpose = inferTravelPurpose(counts);
+      const startedAt = existingTravel?.active ? existingTravel.startedAt : nowIso;
+      const expiresAtDate = new Date(new Date(startedAt).getTime() + TRAVEL_BIAS_DAYS * 24 * 60 * 60 * 1000);
+      const expiresAt = expiresAtDate.toISOString();
+      const active = now.getTime() <= expiresAtDate.getTime();
+
+      travelContext = {
+        active,
+        inferredPurpose,
+        startedAt,
+        expiresAt,
+        distanceFromHomeKm,
+      };
+
+      if (active) {
+        boosts = mergeBoosts(baseBoosts, travelPurposeBoosts(inferredPurpose));
+      }
+    }
+
     const profile: LocationProfile = {
       label,
       boosts,
       lat,
       lng,
-      detectedAt: new Date().toISOString(),
+      detectedAt: nowIso,
+      homeBase,
+      ...(travelContext ? { travelContext } : {}),
     };
     await saveLocationProfile(profile, userId);
-    console.log('[LocationProfile] Detected:', label, boosts);
+    console.log('[LocationProfile] Detected:', label, boosts, travelContext ? { travelContext } : {});
     return profile;
   } catch (err) {
     console.warn('[LocationProfile] Detection failed, using unknown', err);
@@ -212,7 +331,8 @@ export const detectLocationProfile = async (
       boosts: {},
       lat,
       lng,
-      detectedAt: new Date().toISOString(),
+      detectedAt: nowIso,
+      homeBase: resolveHomeBase(cached, lat, lng, nowIso),
     };
     return fallback;
   }

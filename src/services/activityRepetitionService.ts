@@ -1,6 +1,12 @@
 import { HistoryState, Suggestion, HabitFrequency } from '../types';
 import { addDebugMessage } from './debug';
 
+const normalizePromptKey = (value?: string): string => (value ?? '')
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]/g, ' ')
+  .replace(/\s+/g, ' ');
+
 /**
  * Activity Repetition Service
  *
@@ -120,6 +126,41 @@ export function shouldSuggestHabitConversion(
   minCompletions = 3
 ): boolean {
   return (completedCount ?? 0) >= minCompletions;
+}
+
+export function getHabitPromptKey(activityId?: string, title?: string): string {
+  if (activityId?.trim()) return activityId.trim();
+  return normalizePromptKey(title);
+}
+
+export function shouldShowHabitConversionPrompt(
+  history: HistoryState,
+  promptKey: string,
+  now = new Date(),
+  cooldownDays = 7,
+): boolean {
+  if (!promptKey) return false;
+  const promptedAt = history.habitPromptedAtByActivityId?.[promptKey];
+  if (!promptedAt) return true;
+  const last = new Date(promptedAt).getTime();
+  if (!Number.isFinite(last)) return true;
+  const elapsedDays = (now.getTime() - last) / (1000 * 60 * 60 * 24);
+  return elapsedDays >= cooldownDays;
+}
+
+export function markHabitConversionPromptShown(
+  history: HistoryState,
+  promptKey: string,
+  now = new Date(),
+): HistoryState {
+  if (!promptKey) return history;
+  return {
+    ...history,
+    habitPromptedAtByActivityId: {
+      ...(history.habitPromptedAtByActivityId ?? {}),
+      [promptKey]: now.toISOString(),
+    },
+  };
 }
 
 /**

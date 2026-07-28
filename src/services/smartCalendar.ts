@@ -1,8 +1,9 @@
-import { Habit, SmartTodoItem } from '../types';
+import { ActivityLog, Habit, SmartTodoItem } from '../types';
 import { chooseTravelMode, estimateEtaMinutes, haversineKm } from './travel';
 import { formatTime } from '../utils/time';
 import { getTodoDeadlineAt, getTodoDueDate, getTodoUrgencyScore, isTodoEligibleForWindow, isTodoOverdue } from '../utils/todos';
 import { evaluateTodoWindowFit, estimateTodoDurationMin, isTodoAtomizable, parseTodoExplicitDurationMin } from '../utils/todoAtomization';
+import { computeGapPatternBoost } from './activityPatternService';
 
 export type LocationHint = {
   title?: string;
@@ -53,6 +54,7 @@ type BuildGapOptions = {
   generationSpeedFactor?: number;
   aiTargetCount?: number;
   totalSuggestions?: number;
+  activityLog?: ActivityLog[];
 };
 
 const MIN_GAP_MINUTES = 20;
@@ -545,6 +547,46 @@ const buildHeuristicSuggestions = (
     .slice(0, 3);
 };
 
+const withPatternBias = (
+  suggestions: SmartCalendarSuggestion[],
+  gap: CalendarGap,
+  options?: BuildGapOptions,
+): SmartCalendarSuggestion[] => {
+  const activityLog = options?.activityLog ?? [];
+  if (!activityLog.length) return suggestions;
+
+  const isGerman = options?.language === 'de';
+  return suggestions
+    .map((item) => {
+      const targetTags = [item.category.toLowerCase(), item.source];
+      const { scoreBoost, shouldNudge } = computeGapPatternBoost(
+        activityLog,
+        gap.startAt,
+        gap.endAt,
+        {
+          title: item.title,
+          tags: targetTags,
+        },
+        options?.timeZone,
+      );
+
+      if (scoreBoost <= 0.01) return item;
+
+      const nudge = shouldNudge
+        ? (isGerman
+          ? 'Das passt zu einem Muster, das bei dir zu dieser Uhrzeit schon mehrfach funktioniert hat.'
+          : 'This matches a pattern that has worked for you at a similar time on other days.')
+        : null;
+
+      return {
+        ...item,
+        score: item.score + scoreBoost,
+        reason: nudge ? `${item.reason} ${nudge}` : item.reason,
+      };
+    })
+    .sort((a, b) => b.score - a.score);
+};
+
 export const buildGapSuggestions = (
   gap: CalendarGap,
   habits: Habit[],
@@ -575,9 +617,12 @@ export const buildGapSuggestions = (
       }
     };
 
-    pushUnique(aiSuggestions, aiTarget);
-    pushUnique(dbSuggestions);
-    pushUnique(aiSuggestions);
+    const aiBiased = withPatternBias(aiSuggestions, gap, options);
+    const dbBiased = withPatternBias(dbSuggestions, gap, options);
+
+    pushUnique(aiBiased, aiTarget);
+    pushUnique(dbBiased);
+    pushUnique(aiBiased);
 
     return selected.slice(0, desiredCount);
   });

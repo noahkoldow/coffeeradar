@@ -16,12 +16,15 @@ import { useAppState } from '../state/AppState';
 import { getCampaignsByBusiness } from '../services/business';
 import { Campaign } from '../types/business';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'BusinessAnalytics'>;
 
 export const BusinessAnalyticsScreen: React.FC<Props> = ({ navigation }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
+  const { language } = useI18n();
+  const isGerman = language === 'de';
   const insets = useSafeAreaInsets();
   const { state } = useAppState();
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -133,9 +136,9 @@ export const BusinessAnalyticsScreen: React.FC<Props> = ({ navigation }) => {
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.header}>
         <Pressable onPress={() => navigation.goBack()}>
-          <Text style={styles.backButton}>Back</Text>
+          <Text style={styles.backButton}>{isGerman ? 'Zuruck' : 'Back'}</Text>
         </Pressable>
-        <Text style={styles.headerTitle}>Analytics</Text>
+        <Text style={styles.headerTitle}>{isGerman ? 'Analysen' : 'Analytics'}</Text>
       </View>
 
       {loading ? (
@@ -145,44 +148,46 @@ export const BusinessAnalyticsScreen: React.FC<Props> = ({ navigation }) => {
       ) : campaigns.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Text style={styles.emptyIcon}>📊</Text>
-          <Text style={styles.emptyTitle}>No Active Campaigns</Text>
+          <Text style={styles.emptyTitle}>{isGerman ? 'Keine aktiven Kampagnen' : 'No Active Campaigns'}</Text>
           <Text style={styles.emptyText}>
-            Create and activate a campaign to see analytics data
+            {isGerman
+              ? 'Erstelle und aktiviere eine Kampagne, um Analysedaten zu sehen'
+              : 'Create and activate a campaign to see analytics data'}
           </Text>
         </View>
       ) : (
         <ScrollView contentContainerStyle={styles.content}>
           {/* Overall Stats */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Overall Performance</Text>
+            <Text style={styles.sectionTitle}>{isGerman ? 'Gesamtleistung' : 'Overall Performance'}</Text>
             <View style={styles.metricsGrid}>
               <MetricCard
-                label="Total Impressions"
+                label={isGerman ? 'Impressionen gesamt' : 'Total Impressions'}
                 value={totalMetrics.impressions || 0}
                 icon="👁️"
               />
               <MetricCard
-                label="Total Clicks"
+                label={isGerman ? 'Klicks gesamt' : 'Total Clicks'}
                 value={totalMetrics.clicks || 0}
                 icon="👆"
               />
               <MetricCard
-                label="Avg Click Rate"
+                label={isGerman ? 'Durchschn. Klickrate' : 'Avg Click Rate'}
                 value={`${(avgCTR * 100).toFixed(1)}%`}
                 icon="📈"
               />
               <MetricCard
-                label="Total Users"
+                label={isGerman ? 'Nutzer gesamt' : 'Total Users'}
                 value={totalMetrics.uniqueUsers || 0}
                 icon="👥"
               />
               <MetricCard
-                label="Conversions"
+                label={isGerman ? 'Conversions' : 'Conversions'}
                 value={totalMetrics.conversions || 0}
                 icon="✨"
               />
               <MetricCard
-                label="Conversion Rate"
+                label={isGerman ? 'Conversion-Rate' : 'Conversion Rate'}
                 value={`${(avgConversionRate * 100).toFixed(1)}%`}
                 icon="🎯"
               />
@@ -191,7 +196,7 @@ export const BusinessAnalyticsScreen: React.FC<Props> = ({ navigation }) => {
 
           {/* Campaign Selection */}
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>By Campaign</Text>
+            <Text style={styles.sectionTitle}>{isGerman ? 'Nach Kampagne' : 'By Campaign'}</Text>
             <FlatList
               data={campaigns}
               renderItem={renderCampaignMetric}
@@ -204,59 +209,59 @@ export const BusinessAnalyticsScreen: React.FC<Props> = ({ navigation }) => {
           {/* Selected Campaign Details */}
           {selectedCampaign && (
             <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Detailed Metrics: {selectedCampaign.title}</Text>
+              <Text style={styles.sectionTitle}>{isGerman ? 'Detaillierte Metriken' : 'Detailed Metrics'}: {selectedCampaign.title}</Text>
 
               <View style={styles.detailCard}>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Impressions</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Impressionen' : 'Impressions'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.impressions || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Clicks</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Klicks' : 'Clicks'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.clicks || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Click-Through Rate (CTR)</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Klickrate (CTR)' : 'Click-Through Rate (CTR)'}</Text>
                   <Text style={styles.detailValue}>
                     {((metrics?.ctr || 0) * 100).toFixed(2)}%
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Engagements</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Interaktionen' : 'Engagements'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.engagements || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Activity Starts</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Aktivitatsstarts' : 'Activity Starts'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.activityStarts || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Calendar Adds</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Kalender-Eintrage' : 'Calendar Adds'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.calendarAdds || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Conversions</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Conversions' : 'Conversions'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.conversions || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={styles.detailRow}>
-                  <Text style={styles.detailLabel}>Unique Users</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Eindeutige Nutzer' : 'Unique Users'}</Text>
                   <Text style={styles.detailValue}>
                     {(metrics?.uniqueUsers || 0).toLocaleString()}
                   </Text>
                 </View>
                 <View style={[styles.detailRow, styles.detailRowLast]}>
-                  <Text style={styles.detailLabel}>Conversion Rate</Text>
+                  <Text style={styles.detailLabel}>{isGerman ? 'Conversion-Rate' : 'Conversion Rate'}</Text>
                   <Text style={styles.detailValue}>
                     {((metrics?.conversionRate || 0) * 100).toFixed(2)}%
                   </Text>

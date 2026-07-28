@@ -95,6 +95,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
   const [customInterests, setCustomInterests] = useState<string[]>(state.prefs.customInterests ?? []);
   const [interestInput, setInterestInput] = useState('');
   const [selfDescription, setSelfDescription] = useState(state.prefs.selfDescription ?? '');
+  const [chatDisplayName, setChatDisplayName] = useState(state.prefs.chatDisplayName ?? '');
   const [lifestyle, setLifestyle] = useState(state.prefs.lifestyle ?? 'mixed');
   const [sessionActivityIntent, setSessionActivityIntent] = useState(state.sessionActivityIntent ?? '');
   const [wakeStartTime, setWakeStartTime] = useState(normalizeClockTime(state.prefs.wakeStartTime ?? '07:00', '07:00'));
@@ -133,8 +134,9 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
     setInterestTags(state.prefs.interestTags || []);
     setCustomInterests(state.prefs.customInterests ?? []);
     setSelfDescription(state.prefs.selfDescription ?? '');
+    setChatDisplayName(state.prefs.chatDisplayName ?? '');
     setLifestyle(state.prefs.lifestyle ?? 'mixed');
-  }, [state.prefs.interestTags, state.prefs.customInterests, state.prefs.selfDescription, state.prefs.lifestyle]);
+  }, [state.prefs.interestTags, state.prefs.customInterests, state.prefs.selfDescription, state.prefs.chatDisplayName, state.prefs.lifestyle]);
 
   useEffect(() => {
     setSessionActivityIntent(state.sessionActivityIntent ?? '');
@@ -424,6 +426,25 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
             label={t('settings_dark_theme')}
             value={state.prefs.themeMode === 'dark'}
             onValueChange={(value) => actions.setPrefs({ ...state.prefs, themeMode: value ? 'dark' : 'light' })}
+          />
+        </View>
+
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>{isGerman ? 'Chat-Name' : 'Chat name'}</Text>
+          <Text style={styles.helperText}>
+            {isGerman
+              ? 'Dieser Name wird anderen in Aktivitätschats angezeigt. Deine E-Mail-Adresse bleibt verborgen.'
+              : 'This name is shown to others in activity chats. Your email address stays hidden.'}
+          </Text>
+          <TextInput
+            style={styles.textInput}
+            value={chatDisplayName}
+            onChangeText={setChatDisplayName}
+            onBlur={() => updatePrefs({ chatDisplayName: chatDisplayName.trim().replace(/\s+/g, ' ').slice(0, 32) })}
+            placeholder={isGerman ? 'z. B. Alex' : 'e.g. Alex'}
+            placeholderTextColor={theme.colors.textMuted}
+            autoCapitalize="words"
+            maxLength={32}
           />
         </View>
 

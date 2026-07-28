@@ -586,7 +586,10 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
   const onActionScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     const offsetX = e.nativeEvent.contentOffset.x;
     const idx = Math.round(offsetX / screenWidth);
-    setActionIndex(Math.max(0, Math.min(idx, ACTION_MODES.length - 1)));
+    const clamped = Math.max(0, Math.min(idx, ACTION_MODES.length - 1));
+    if (clamped !== actionIndexRef.current) {
+      setActionIndex(clamped);
+    }
   }, [screenWidth, ACTION_MODES.length]);
 
   const onBannerScroll = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -1352,6 +1355,8 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             horizontal
             pagingEnabled
             showsHorizontalScrollIndicator={false}
+            onScroll={onActionScroll}
+            scrollEventThrottle={16}
             onMomentumScrollEnd={onActionScroll}
             snapToInterval={screenWidth}
             decelerationRate="fast"
@@ -1811,16 +1816,16 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.habitsButtonText}>Habits</Text>
           </Pressable>
           <Pressable
-            style={({ pressed }) => [styles.habitsButton, styles.smartCalendarButton, pressed && styles.habitsButtonPressed]}
-            onPress={() => navigation.navigate('SmartCalendar')}
-          >
-            <Text style={styles.libraryButtonIcon}>{'\u{1F4C5}'}</Text>
-          </Pressable>
-          <Pressable
             style={({ pressed }) => [styles.habitsButton, styles.libraryButton, pressed && styles.habitsButtonPressed]}
             onPress={() => navigation.navigate('Library')}
           >
             <Text style={styles.libraryButtonIcon}>{'\u{1F4DA}'}</Text>
+          </Pressable>
+          <Pressable
+            style={({ pressed }) => [styles.habitsButton, styles.smartCalendarButton, pressed && styles.habitsButtonPressed]}
+            onPress={() => navigation.navigate('SmartCalendar')}
+          >
+            <Text style={styles.libraryButtonIcon}>{'\u{1F4C5}'}</Text>
           </Pressable>
           <Pressable
             style={({ pressed }) => [styles.habitsButton, styles.addIdeaButton, pressed && styles.habitsButtonPressed]}

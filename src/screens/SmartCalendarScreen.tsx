@@ -1577,6 +1577,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       language,
       generationSpeedFactor: premiumEnabled ? PREMIUM_GENERATION_SPEED_FACTOR : 1,
       aiTargetCount: aiSuggestionCount,
+      activityLog: state.activityLog,
     })
       .then((result) => {
         const nextSuggestions = result

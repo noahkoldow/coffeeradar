@@ -40,6 +40,7 @@ import { getCampaignsByStatus } from './business';
 import { evaluateTodoWindowFit, estimateTodoDurationMin, getTodoAtomizedProgress, parseTodoExplicitDurationMin } from '../utils/todoAtomization';
 import { selectChallengeCandidates } from '../utils/challengeMode';
 import { getTodoDeadlineAt, getTodoDueDate, getTodoUrgencyScore, isTodoEligibleForWindow } from '../utils/todos';
+import { loadActivityChatSocialProofCounts } from './activityChat';
 
 const BUFFER_MIN = 10;
 const GEMINI_SOURCE_BOOST = 0.08;
@@ -718,7 +719,7 @@ const enrichSuggestion = (
   availability: Availability,
   location: LocationState,
 ): DeckSuggestion => {
-  const meta: SuggestionMeta = { timeZone: location.timeZone ?? getPreferredTimeZone() };
+  const meta: SuggestionMeta = { ...(suggestion as DeckSuggestion).meta, timeZone: location.timeZone ?? getPreferredTimeZone() };
   const now = new Date();
   const availabilityStart = fromISO(availability.start) ?? now;
   const availabilityEnd = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
@@ -941,6 +942,12 @@ const scoreSuggestion = (
   const habitBoost = suggestion.source === 'habit' ? 0.12 : 0;
   const geminiBoost = suggestion.source === 'gemini' ? GEMINI_SOURCE_BOOST : 0;
   const todoBoost = suggestion.source === 'todo' ? 0.08 : 0;
+  const socialProofCount = Number.isFinite(suggestion.meta?.socialProofCount)
+    ? Math.max(0, Math.floor(suggestion.meta?.socialProofCount as number))
+    : 0;
+  const socialProofBoost = socialProofCount > 0
+    ? Math.min(0.22, 0.09 + Math.log2(socialProofCount + 1) * 0.04)
+    : 0;
 
   // ── Late-night penalty for outdoor / go-out activities ──
   const now = new Date();
@@ -985,6 +992,7 @@ const scoreSuggestion = (
     habitBoost +
     todoBoost +
     geminiBoost +
+    socialProofBoost +
     nightPenalty +
     locationBoost +
     urgencyBoost;
@@ -1332,7 +1340,23 @@ export const buildDeck = async (
   const candidates = [...baseCandidates, ...geminiCandidates, ...communityCandidates, ...todoCandidates];
   console.log('[buildDeck] candidates:', candidates.length, 'weather:', weather ? 'yes' : 'no');
 
-  const enriched = candidates.map((item) => enrichSuggestion(item, availability, location));
+  const enrichedBase = candidates.map((item) => enrichSuggestion(item, availability, location));
+  const chatSocialCounts = await loadActivityChatSocialProofCounts(enrichedBase, location.areaLabel).catch(() => ({} as Record<string, number>));
+  const enriched = enrichedBase.map((item) => {
+    const existingCount = Number.isFinite(item.meta?.socialProofCount)
+      ? Math.max(0, Math.floor(item.meta?.socialProofCount as number))
+      : 0;
+    const chatCount = chatSocialCounts[item.id] ?? 0;
+    const socialProofCount = Math.max(existingCount, chatCount);
+    if (socialProofCount <= 0) return item;
+    return {
+      ...item,
+      meta: {
+        ...item.meta,
+        socialProofCount,
+      },
+    };
+  });
   const uniqueMap = new Map<string, DeckSuggestion>();
   const normalize = (value?: string) => (value ?? '').trim().toLowerCase();
   for (const item of enriched) {

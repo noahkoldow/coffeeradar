@@ -248,7 +248,12 @@ export const communityIdeaToSuggestion = (idea: CommunityIdeaSubmission): DeckSu
     isRepetitionFriendly: true,
   };
 
-  return suggestion;
+  return {
+    ...suggestion,
+    meta: {
+      socialProofCount: Math.max(0, Math.floor(idea.completionCount ?? 0)),
+    },
+  };
 };
 
 export const submitCommunityIdea = async (
