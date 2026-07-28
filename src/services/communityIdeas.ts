@@ -1,22 +1,20 @@
 import { collection, doc, getDoc, getDocs, increment, query, setDoc, Timestamp, updateDoc, where } from 'firebase/firestore';
 import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
-import { auth, db, ensureAuth, firebaseEnabled, storage } from './firebase';
+import { auth, db, ensureAuth, firebaseEnabled, storage, functions } from './firebase'; // Added 'functions'
 import { CommunityIdeaSubmission, CommunityIdeaSubmissionInput, DeckSuggestion, HabitTimeOfDay, Suggestion } from '../types';
+import { httpsCallable } from 'firebase/functions'; // Added httpsCallable
 
-const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
-const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
-const allowDirectModelCalls = isDevBuild
-  || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
+const communityIdeaCollection = 'community_ideas';
+const approvalQueueCollection = 'approval_queue';
+const COMMUNITY_POLISH_VERSION = 'v1';
+
+const polishCommunityIdeaCallable = functions ? httpsCallable(functions, 'polishCommunityIdea') : null;
 
 const canSync = (): boolean => {
   if (!firebaseEnabled || !db || !auth) return false;
   const user = auth.currentUser;
   return !!user && !user.isAnonymous;
 };
-
-const communityIdeaCollection = 'community_ideas';
-const approvalQueueCollection = 'approval_queue';
-const COMMUNITY_POLISH_VERSION = 'v1';
 
 const normalizeTags = (tags?: string[]): string[] => (tags ?? [])
   .map((tag) => tag.trim().toLowerCase())
@@ -67,20 +65,7 @@ const uploadCommunityIdeaImage = async (userId: string, ideaId: string, localIma
   return getDownloadURL(imageRef);
 };
 
-const isCommunityIdeaPolishEnabled = (): boolean => {
-  const enabled = String(env.EXPO_PUBLIC_ENABLE_COMMUNITY_IDEA_POLISH ?? '').toLowerCase() === 'true';
-  return allowDirectModelCalls
-    && enabled
-    && typeof env.EXPO_PUBLIC_GEMINI_API_KEY === 'string'
-    && env.EXPO_PUBLIC_GEMINI_API_KEY.length > 0;
-};
-
-const parseGeminiJson = (text: string): Record<string, any> => {
-  const trimmed = text.trim();
-  const match = trimmed.match(/\{[\s\S]*\}/m);
-  const jsonText = match ? match[0] : trimmed;
-  return JSON.parse(jsonText);
-};
+// Removed isCommunityIdeaPolishEnabled as it's now handled by the cloud function
 
 const normalizeSingleLine = (value: unknown): string => {
   if (typeof value !== 'string') return '';
@@ -112,73 +97,44 @@ const normalizeTimeOfDay = (value: unknown): HabitTimeOfDay | undefined => {
 };
 
 const polishCommunityIdeaCopy = async (idea: CommunityIdeaSubmission): Promise<CommunityIdeaPolishResult | null> => {
-  if (!isCommunityIdeaPolishEnabled()) return null;
-
-  const model = env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${env.EXPO_PUBLIC_GEMINI_API_KEY}`;
-  const prompt = [
-    'Return ONLY valid JSON.',
-    'Schema: {"hook":string,"description":string,"cta":string|null,"tags":string[]|null,"emojis":string[]|null,"timeOfDay":"any"|"morning"|"afternoon"|"evening"|null}',
-    'Task: Improve readability and appeal for this community activity copy and fill optional missing fields without changing factual content.',
-    'Hard constraints:',
-    '- Keep the same activity intent, type, duration, place/event facts, and safety level.',
-    '- Do not add new offers, prices, venues, schedules, claims, or instructions.',
-    '- Keep tone concise and neutral-positive.',
-    '- Keep tags short, lowercase, and broad (e.g. wellness, fitness, explore).',
-    '- Keep emojis optional and minimal (0-3).',
-    `Current hook: ${idea.hook}`,
-    `Current description: ${idea.description}`,
-    `Current cta: ${idea.cta ?? ''}`,
-    `Type: ${idea.type}`,
-    `Duration minutes: ${idea.durationMin}`,
-    `Tags: ${(idea.tags ?? []).join(', ')}`,
-    `Emojis: ${(idea.emojis ?? []).join(' ')}`,
-    `Time of day: ${idea.timeOfDay ?? ''}`,
-  ].join('\n');
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      generationConfig: {
-        temperature: 0.25,
-        responseMimeType: 'application/json',
-      },
-    }),
-  });
-
-  if (!response.ok) {
-    throw new Error(`Gemini polish failed: ${response.status}`);
+  if (!polishCommunityIdeaCallable) {
+    console.warn('Firebase functions not available for polishing community idea.');
+    return null;
   }
 
-  const payload = await response.json();
-  const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text
-    || payload?.candidates?.[0]?.content?.parts?.map((part: any) => part.text).join('')
-    || '';
-  if (!text) return null;
+  try {
+    const result = await polishCommunityIdeaCallable({ idea });
+    const data = result.data as { payload: CommunityIdeaPolishResult };
 
-  const parsed = parseGeminiJson(text);
-  const hook = normalizeSingleLine(parsed.hook) || idea.hook;
-  const description = normalizeSingleLine(parsed.description) || idea.description;
-  const cta = normalizeSingleLine(parsed.cta);
-  const tags = normalizeTags(parsed.tags);
-  const emojis = normalizeEmojiList(parsed.emojis);
-  const timeOfDay = normalizeTimeOfDay(parsed.timeOfDay);
+    if (!data?.payload) {
+      console.warn('Cloud function did not return a valid payload for polishing.');
+      return null;
+    }
 
-  return {
-    hook,
-    description,
-    ...(cta ? { cta } : {}),
-    ...(tags.length > 0 ? { tags } : {}),
-    ...(emojis.length > 0 ? { emojis } : {}),
-    ...(timeOfDay ? { timeOfDay } : {}),
-  };
+    const parsed = data.payload;
+    const hook = normalizeSingleLine(parsed.hook) || idea.hook;
+    const description = normalizeSingleLine(parsed.description) || idea.description;
+    const cta = normalizeSingleLine(parsed.cta);
+    const tags = normalizeTags(parsed.tags);
+    const emojis = normalizeEmojiList(parsed.emojis);
+    const timeOfDay = normalizeTimeOfDay(parsed.timeOfDay);
+
+    return {
+      hook,
+      description,
+      ...(cta ? { cta } : {}),
+      ...(tags.length > 0 ? { tags } : {}),
+      ...(emojis.length > 0 ? { emojis } : {}),
+      ...(timeOfDay ? { timeOfDay } : {}),
+    };
+  } catch (error) {
+    console.error('Error calling polishCommunityIdea cloud function:', error);
+    return null;
+  }
 };
 
 const applyCommunityIdeaPolish = async (ideaId: string): Promise<void> => {
-  if (!isCommunityIdeaPolishEnabled()) return;
-
+  // Removed isCommunityIdeaPolishEnabled check
   const ideaRef = doc(db!, communityIdeaCollection, ideaId);
   const ideaSnap = await getDoc(ideaRef);
   if (!ideaSnap.exists()) return;
@@ -214,7 +170,7 @@ const applyCommunityIdeaPolish = async (ideaId: string): Promise<void> => {
       : {}),
     aiPolish: {
       version: COMMUNITY_POLISH_VERSION,
-      model: env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.0-flash',
+      model: 'gemini-pro', // Model is now handled on the server
       polishedAt: new Date().toISOString(),
       changed,
       original: {

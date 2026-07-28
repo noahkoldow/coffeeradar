@@ -1,10 +1,10 @@
 import { collection, deleteDoc, doc, getDoc, getDocs, increment, limit, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
 import { Availability, Business, BusinessSubmission, BusinessSubmissionStatus, Habit, LocationProfile, SavedSuggestion, TagAffinities, UserPrefs } from '../types';
-import { auth, db, ensureAuth, firebaseEnabled } from './firebase';
+import { auth, db, ensureAuth, firebaseEnabled, isAdminCallable } from './firebase'; // Added isAdminCallable
 import { validateBusinessSubmission } from './businessService';
 import { saveOnboardingComplete } from '../utils/storage';
 
-const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
+// Removed 'env' as it's no longer used for admin checks
 
 /** Skip Firestore writes for anonymous users — they have no server-side
  *  profile and default security rules reject the request. */
@@ -12,6 +12,16 @@ const canSync = (): boolean => {
   if (!firebaseEnabled || !db || !auth) return false;
   const user = auth.currentUser;
   return !!user && !user.isAnonymous;
+};
+
+export const isAdminUser = async (): Promise<boolean> => {
+  try {
+    const result = await isAdminCallable();
+    return (result.data as { isAdmin: boolean }).isAdmin;
+  } catch (error) {
+    console.error('Error checking admin status:', error);
+    return false;
+  }
 };
 
 export const upsertUserData = async (payload: {
@@ -438,13 +448,6 @@ const readIsoTimestamp = (value: any): string | null => {
   return null;
 };
 
-const getAdminEmails = (): string[] => {
-  const raw = String(env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS ?? env.EXPO_PUBLIC_ADMIN_EMAILS ?? '');
-  return raw
-    .split(',')
-    .map((item) => item.trim().toLowerCase())
-    .filter((item) => item.length > 0);
-};
 
 const getPremiumEmails = (): string[] => {
   const raw = String(env.EXPO_PUBLIC_BUSINESS_PREMIUM_EMAILS ?? '');
@@ -454,18 +457,13 @@ const getPremiumEmails = (): string[] => {
     .filter((item) => item.length > 0);
 };
 
-export const isBusinessAdmin = (email?: string | null): boolean => {
-  if (!email) return false;
-  const normalized = email.trim().toLowerCase();
-  return getAdminEmails().includes(normalized);
-};
-
-export const isBusinessPremium = (email?: string | null): boolean => {
+export const isBusinessPremium = async (email?: string | null): Promise<boolean> => {
   if (!email) return false;
   const normalized = email.trim().toLowerCase();
   // Admins should always inherit premium capabilities.
-  return getPremiumEmails().includes(normalized) || isBusinessAdmin(normalized);
+  return getPremiumEmails().includes(normalized) || await isAdminUser();
 };
+
 
 const toBusinessSubmission = (id: string, data: any): BusinessSubmission | null => {
   const business = data?.business as Business | undefined;
@@ -555,7 +553,8 @@ export const reviewBusinessSubmission = async (
   try {
     const uid = await ensureAuth();
     if (!uid) return false;
-    if (!isBusinessAdmin(auth?.currentUser?.email ?? null)) return false;
+    // Use the server-side isAdminUser check
+    if (!await isAdminUser()) return false;
     const submissionRef = doc(db!, businessSubmissionCollection, submissionId);
     const snap = await getDoc(submissionRef);
     if (!snap.exists()) return false;

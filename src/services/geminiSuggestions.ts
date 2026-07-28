@@ -1,22 +1,18 @@
 import { Availability, LocationState, Suggestion, SuggestionType, UserPrefs } from '../types';
 import { addDebugMessage } from './debug';
 import { WeatherInfo } from './weather';
-import { formatLocalDateTime, getTimeZoneParts, resolveTimeZone } from '../utils/time';
+import { formatLocalDateTime, getTimeZoneParts, resolveTimeZone, getPreferredTimeZone } from '../utils/time';
 import { loadGeminiUsage, loadPremiumActive, saveGeminiUsage } from '../utils/storage';
 import { selectChallengeCandidates } from '../utils/challengeMode';
+import { functions } from './firebase';
+import { httpsCallable } from 'firebase/functions';
 
-const GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY;
 const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
 const allowDirectModelCalls = isDevBuild
   || String((globalThis as any).process?.env?.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
-const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
 const MAX_SUGGESTIONS = 15; // Grab more from Gemini during this permissive phase
 
-// Debug: log if API key is present (without exposing it)
-if (typeof window === 'undefined' && !GEMINI_KEY) {
-  console.warn('[Gemini] API key not found. Set EXPO_PUBLIC_GEMINI_API_KEY in .env.local');
-}
+const findOrGenerateActivity = functions ? httpsCallable(functions, 'findOrGenerateActivity') : null;
 
 type GeminiRawSuggestion = {
   type?: string;
@@ -114,9 +110,6 @@ const reserveGeminiCall = async (dailyCallLimit: number, userId?: string | null)
   await saveGeminiUsage({ callCount: callCount + 1, date: today }, userId).catch(() => undefined);
   return true;
 });
-
-const buildUrl = (model: string) =>
-  `${GEMINI_BASE_URL}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY ?? '')}`;
 
 const sanitizeTag = (tag: string): string =>
   tag
@@ -798,49 +791,64 @@ const buildPrompt = (
 
 const GEMINI_FETCH_TIMEOUT_MS = 20000; // Gemini 2.5 Flash can take 10-15s; 20s gives headroom
 
-const fetchGeminiText = async (model: string, prompt: string, generationConfig: GeminiGenerationConfig): Promise<string> => {
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), GEMINI_FETCH_TIMEOUT_MS);
-
+const fetchGeminiViaFunction = async (prompt: string, learningContext?: GeminiLearningContext, location?: LocationState): Promise<string> => {
+  if (!findOrGenerateActivity) {
+    throw new Error('Firebase Functions not initialized.');
+  }
   try {
-    const response = await fetch(buildUrl(model), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      signal: controller.signal,
-      body: JSON.stringify({
-        generationConfig: {
-          ...generationConfig,
-          responseMimeType: 'application/json',
-        },
-        contents: [
-          {
-            role: 'user',
-            parts: [{ text: prompt }],
-          },
-        ],
-      }),
+    const timeZone = location?.timeZone ?? getPreferredTimeZone();
+    const tzParts = getTimeZoneParts(new Date(), timeZone);
+    const localHour = tzParts.hour;
+    const timeOfDay = localHour < 12 ? 'morning' : localHour < 17 ? 'afternoon' : localHour < 21 ? 'evening' : 'night';
+    const timeHints = [tzParts.weekday, timeOfDay];
+
+    const result = await findOrGenerateActivity({
+      attributes: learningContext?.topPositiveTags ?? [],
+      timeHints,
+      latLonBucket: location?.areaLabel,
+      intentText: prompt, // Pass the detailed prompt here
     });
 
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      const errorMsg = `Gemini ${response.status}: ${body.slice(0, 220)}`;
-      console.error('[Gemini]', errorMsg);
-      throw new Error(errorMsg);
+    const data = result.data as any;
+    if (data?.activity) {
+      const activity = data.activity;
+      const suggestion: GeminiRawSuggestion = {
+        title: activity.title,
+        description: activity.description,
+        tags: activity.attributes,
+        type: activity.type,
+        durationMin: activity.durationMin,
+        // The following fields might not be in the activity object, so we use optional chaining
+        hook: activity.hook,
+        cta: activity.cta,
+        whyNow: activity.whyNow,
+        instructions: activity.instructions,
+        confidence: activity.confidence,
+        moodFit: activity.moodFit,
+        emojis: activity.emojis,
+        isRepetitionFriendly: activity.isRepetitionFriendly,
+        openStatus: activity.openStatus,
+        opensInMin: activity.opensInMin,
+        closesInMin: activity.closesInMin,
+        placeName: activity.place?.name,
+        placeAddress: activity.place?.address,
+        placeLat: activity.place?.lat,
+        placeLng: activity.place?.lng,
+        eventStartAt: activity.event?.startAt,
+        eventVenue: activity.event?.venue,
+        eventTicketUrl: activity.event?.ticketUrl,
+      };
+      return JSON.stringify({ suggestions: [suggestion] });
+    }
+    
+    // If the function returns a Gemini payload directly (e.g. from the model)
+    if (data?.suggestions) {
+      return JSON.stringify(data);
     }
 
-    const data = await response.json();
-    const text = extractText(data);
-    if (!text) throw new Error('Gemini returned empty content.');
-    return text;
+    throw new Error('Cloud function did not return a valid activity.');
   } catch (error) {
-    clearTimeout(timeoutId);
-    if (error instanceof Error && error.name === 'AbortError') {
-      throw new Error(`Gemini request timeout after ${GEMINI_FETCH_TIMEOUT_MS}ms`);
-    }
+    console.error('[Gemini] findOrGenerateActivity function call failed:', error);
     throw error;
   }
 };
@@ -1000,12 +1008,6 @@ const runGeminiSuggestions = async (
     return [];
   }
 
-  if (!GEMINI_KEY) {
-    console.warn('[Gemini] No API key — set EXPO_PUBLIC_GEMINI_API_KEY');
-    addDebugMessage('gemini', 'Missing API key - skipping Gemini source.');
-    return [];
-  }
-
   const isPremium = await loadPremiumActive(userId).catch(() => false);
   const dailyCallLimit = resolveGeminiDailyCallLimit(isPremium);
   const today = new Date().toISOString().slice(0, 10);
@@ -1043,20 +1045,19 @@ const runGeminiSuggestions = async (
     let validationFeedback = '';
 
     for (let attempt = 0; attempt < MAX_GEMINI_ATTEMPTS; attempt++) {
-      const model = GEMINI_MODELS[attempt % GEMINI_MODELS.length];
       const attemptPrompt = validationFeedback
         ? `${prompt}\n\nVALIDATION FEEDBACK:\n${validationFeedback}\nReturn corrected STRICT JSON only.`
         : prompt;
       try {
-        const text = await fetchGeminiText(model, attemptPrompt, generationConfig);
-        console.log(`[Gemini] ${model} raw text length:`, text?.length ?? 0);
+        const text = await fetchGeminiViaFunction(attemptPrompt, learning, location);
+        console.log(`[Gemini] Cloud function raw text length:`, text?.length ?? 0);
         const payload = safeJsonParse(text);
         const validation = validatePayload(payload);
         if (!validation.ok) {
           validationFeedback = validation.issues.slice(0, 6).join(' ');
           lastError = validationFeedback;
-          console.warn(`[Gemini] ${model} validation failed:`, validationFeedback);
-          addDebugMessage('gemini', `Model ${model} validation failed: ${validationFeedback}`);
+          console.warn(`[Gemini] Cloud function validation failed:`, validationFeedback);
+          addDebugMessage('gemini', `Cloud function validation failed: ${validationFeedback}`);
           continue;
         }
 
@@ -1080,29 +1081,29 @@ const runGeminiSuggestions = async (
           if (challengeSuggestions.length < 3) {
             validationFeedback = 'Challenge mode requires explicit mission-style outputs with measurable constraints and discomfort/stretch elements. Re-generate with stronger challenge specificity.';
             lastError = validationFeedback;
-            addDebugMessage('gemini', `Model ${model} returned weak challenge suggestions.`);
+            addDebugMessage('gemini', `Cloud function returned weak challenge suggestions.`);
             continue;
           }
 
           suggestions = challengeSuggestions.slice(0, MAX_SUGGESTIONS);
         }
 
-        console.log(`[Gemini] ${model} raw=${raw.length} → valid=${suggestions.length}`);
+        console.log(`[Gemini] Cloud function raw=${raw.length} → valid=${suggestions.length}`);
 
         if (!suggestions.length) {
           validationFeedback = 'The response parsed but contained no usable suggestions after sanitization.';
           lastError = validationFeedback;
-          addDebugMessage('gemini', `Model ${model} returned no usable suggestions.`);
+          addDebugMessage('gemini', `Cloud function returned no usable suggestions.`);
           continue;
         }
 
-        console.log(`[Gemini] ${model} success: returning ${suggestions.length} suggestions`);
-        addDebugMessage('gemini', `Model ${model} returned ${suggestions.length} suggestions.`);
+        console.log(`[Gemini] Cloud function success: returning ${suggestions.length} suggestions`);
+        addDebugMessage('gemini', `Cloud function returned ${suggestions.length} suggestions.`);
         return suggestions;
       } catch (error) {
         lastError = error instanceof Error ? error.message : 'Unknown Gemini error';
-        console.error(`[Gemini] ${model} error:`, lastError);
-        addDebugMessage('gemini', `Model ${model} failed: ${lastError}`);
+        console.error(`[Gemini] Cloud function error:`, lastError);
+        addDebugMessage('gemini', `Cloud function failed: ${lastError}`);
         // Don't retry on timeout — subsequent attempts will also time out
         if (lastError.includes('timeout') || lastError.includes('abort') || lastError.includes('AbortError')) {
           break;

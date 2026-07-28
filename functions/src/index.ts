@@ -134,17 +134,34 @@ function determineTTLSeconds(generated: any, attrs: string[]) {
 }
 
 async function callGemini(prompt: string) {
-	const apiUrl = functionsV1.config().models?.api_url || process.env.MODEL_API_URL;
 	const apiKey = GEMINI_API_KEY.value();
-	if (!apiUrl || !apiKey) throw new HttpsError('internal', 'Gemini API URL or Key not configured.');
-	const headers: any = { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` };
-	const resp = await fetch(apiUrl, { method: 'POST', headers, body: JSON.stringify({ prompt }) });
+	if (!apiKey) {
+		throw new HttpsError('internal', 'Gemini API Key not configured.');
+	}
+	const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+	const headers = { 'Content-Type': 'application/json' };
+	const body = JSON.stringify({
+		contents: [{
+			parts: [{ text: prompt }]
+		}],
+		generationConfig: {
+			responseMimeType: 'application/json',
+		}
+	});
+
+	const resp = await fetch(url, { method: 'POST', headers, body });
+
 	if (!resp.ok) {
 		const txt = await resp.text();
 		throw new HttpsError('internal', `Gemini API error ${resp.status}: ${txt}`);
 	}
-	const text = await resp.text();
-	try { return JSON.parse(text); } catch { return { text }; }
+
+	const data = await resp.json();
+	const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+	if (!text) {
+		throw new HttpsError('internal', 'No text in Gemini response');
+	}
+	return text;
 }
 
 function normalizeAttributes(raw: any[]): string[] {
@@ -229,16 +246,16 @@ export const findOrGenerateActivity = functionsV1.https.onCall(async (payload, c
 	}
 
 	// 2) call Gemini
-	const prompt = `Produce a JSON object with keys "title" and "description" for an activity.
-Attributes: ${wantedAttrs.join(', ')}. Time: ${timeHints.join(', ')}. Intent: ${intentText}`;
+	const prompt = intentText;
 	let generated: any;
 	try {
-		const resp = await callGemini(prompt);
-		if (resp.title && resp.description) generated = { title: resp.title, description: resp.description, expires_at: resp.expires_at };
-		else if (resp.text) {
-			const parsed = tryParseModelText(resp.text);
-			generated = parsed || { title: wantedAttrs.slice(0,3).join(', '), description: resp.text };
-		} else generated = { title: wantedAttrs.slice(0,3).join(', '), description: JSON.stringify(resp).slice(0,1000) };
+		const text = await callGemini(prompt);
+		const parsed = tryParseModelText(text);
+		if (parsed) {
+			generated = parsed;
+		} else {
+			generated = { title: 'AI Suggestion', description: text };
+		}
 	} catch (e: any) {
 		console.error('Gemini call failed', e);
 		throw new functionsV1.https.HttpsError('internal', 'Model call failed');
@@ -408,10 +425,7 @@ export const rankTodoSlots = functionsV1.https.onCall(async (data, ctx) => {
 
 	try {
 		const resp = await callGemini(prompt);
-		let text = '';
-		if (typeof resp?.text === 'string') text = resp.text;
-		else text = JSON.stringify(resp);
-		const parsed = tryParseModelText(text) || {};
+		const parsed = tryParseModelText(resp) || {};
 		return { payload: parsed };
 	} catch (e: any) {
 		console.error('rankTodoSlots failed', e);
@@ -419,12 +433,67 @@ export const rankTodoSlots = functionsV1.https.onCall(async (data, ctx) => {
 	}
 });
 
+export const polishCommunityIdea = functionsV1.https.onCall(async (data, ctx) => {
+	requireAuth(ctx);
+	requireAppCheck(ctx);
+
+	const idea = data.idea;
+
+	if (!idea) {
+		throw new functionsV1.https.HttpsError('invalid-argument', 'idea is required');
+	}
+
+	const prompt = [
+		'Return ONLY valid JSON.',
+		'Schema: {"hook":string,"description":string,"cta":string|null,"tags":string[]|null,"emojis":string[]|null,"timeOfDay":"any"|"morning"|"afternoon"|"evening"|null}',
+		'Task: Improve readability and appeal for this community activity copy and fill optional missing fields without changing factual content.',
+		'Hard constraints:',
+		'- Keep the same activity intent, type, duration, place/event facts, and safety level.',
+		'- Do not add new offers, prices, venues, schedules, claims, or instructions.',
+		'- Keep tone concise and neutral-positive.',
+		'- Keep tags short, lowercase, and broad (e.g. wellness, fitness, explore).',
+		'- Keep emojis optional and minimal (0-3).',
+		`Current hook: ${idea.hook}`,
+		`Current description: ${idea.description}`,
+		`Current cta: ${idea.cta ?? ''}`,
+		`Type: ${idea.type}`,
+		`Duration minutes: ${idea.durationMin}`,
+		`Tags: ${(idea.tags ?? []).join(', ')}`,
+		`Emojis: ${(idea.emojis ?? []).join(' ')}`,
+		`Time of day: ${idea.timeOfDay ?? ''}`,
+	  ].join('\n');
+
+	try {
+		const resp = await callGemini(prompt);
+		const parsed = tryParseModelText(resp) || {};
+		return { payload: parsed };
+	} catch (e: any) {
+		console.error('polishCommunityIdea failed', e);
+		throw new functionsV1.https.HttpsError('internal', 'Unable to polish idea right now');
+	}
+});
+
 function tryParseModelText(txt: string) {
 	if (!txt) return null;
-	const jsonMatch = txt.match(/\{[\s\S]*\}/m);
-	if (jsonMatch) {
-		try { const parsed = JSON.parse(jsonMatch[0]); if (parsed.title && parsed.description) return { title: parsed.title, description: parsed.description, expires_at: parsed.expires_at }; } catch (e) {}
+	const jsonMatch = txt.match(/```(json)?\s*(\{[\s\S]*\})\s*```/m);
+	if (jsonMatch && jsonMatch[2]) {
+		try {
+			return JSON.parse(jsonMatch[2]);
+		} catch (e) {
+			// Ignore parsing error and proceed to next check
+		}
 	}
+	
+	// Fallback for cases where the model might not use markdown code fences
+	const looseJsonMatch = txt.match(/\{[\s\S]*\}/m);
+	if(looseJsonMatch) {
+		try {
+			return JSON.parse(looseJsonMatch[0]);
+		} catch (e) {
+			// Ignore parsing error
+		}
+	}
+	
 	const lines = txt.split('
 ').map(s => s.trim()).filter(Boolean);
 	if (lines.length) return { title: lines[0], description: lines.slice(1).join('
@@ -528,4 +597,15 @@ export const fetchExternalData = onCall({
         message: 'External data fetched successfully (with some potential failures).',
         results: aggregatedResults,
     };
+});
+
+export const isAdmin = functionsV1.https.onCall(async (data, ctx) => {
+	requireAuth(ctx);
+	requireAppCheck(ctx);
+
+	const adminEmailsRaw = functionsV1.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
+	const adminEmails = String(adminEmailsRaw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+	const userEmail = (ctx.auth.token.email || '').toLowerCase();
+
+	return { isAdmin: adminEmails.includes(userEmail) };
 });
