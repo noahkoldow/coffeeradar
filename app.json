@@ -18,7 +18,8 @@
       "usesAppleSignIn": true,
       "infoPlist": {
         "NSCalendarsUsageDescription": "We read your next event to find free time and write plans you commit to.",
-        "NSLocationWhenInUseUsageDescription": "We use your location to make sure you can arrive on time."
+        "NSLocationWhenInUseUsageDescription": "We use your location to make sure you can arrive on time.",
+        "ITSAppUsesNonExemptEncryption": false
       }
     },
     "android": {

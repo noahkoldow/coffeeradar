@@ -18,7 +18,7 @@ import { deletePlanEvent, getAvailability, getUpcomingEvents } from '../services
 import { getCurrentLocation } from '../services/location';
 import { formatDuration, formatTime, getTimeWindowContext } from '../utils/time';
 import { logEvent } from '../services/analytics';
-import { isBusinessAdmin, upsertUserData } from '../services/user';
+import { isAdminUser, isBusinessAdmin, upsertUserData } from '../services/user';
 import { fetchWeather, WeatherCondition } from '../services/weather';
 import { prefetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { loadProfileAvatarUri, loadWeatherCondition, saveWeatherCondition } from '../utils/storage';
@@ -178,8 +178,24 @@ export const HomeScreen: React.FC<Props> = ({ navigation }) => {
     challenge_me: null,
     at_home: null,
   });
-  const isAdmin = isBusinessAdmin(state.userEmail);
+  const [isAdmin, setIsAdmin] = useState(() => isBusinessAdmin(state.userEmail));
   const premiumEnabled = state.isPremium;
+
+  useEffect(() => {
+    let active = true;
+    setIsAdmin(isBusinessAdmin(state.userEmail));
+    isAdminUser()
+      .then((value) => {
+        if (active) setIsAdmin(value);
+      })
+      .catch(() => {
+        if (active) setIsAdmin(isBusinessAdmin(state.userEmail));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [state.userEmail, state.userId]);
 
   const screenWidth = Dimensions.get('window').width - theme.spacing.xl * 2;
   const homeScrollRef = useRef<ScrollView>(null);

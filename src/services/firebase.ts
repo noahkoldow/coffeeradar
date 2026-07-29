@@ -41,8 +41,6 @@ export const ensureAuth = async (): Promise<string> => {
     if (user) {
         return user.uid;
     }
-    // If there's no current user, wait for the auth state to change.
-    // This is useful for the initial load.
     return new Promise((resolve, reject) => {
         const unsubscribe = auth.onAuthStateChanged(user => {
             unsubscribe();

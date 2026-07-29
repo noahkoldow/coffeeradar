@@ -4,6 +4,7 @@ import { formatTime } from '../utils/time';
 import { getTodoDeadlineAt, getTodoDueDate, getTodoUrgencyScore, isTodoEligibleForWindow, isTodoOverdue } from '../utils/todos';
 import { evaluateTodoWindowFit, estimateTodoDurationMin, isTodoAtomizable, parseTodoExplicitDurationMin } from '../utils/todoAtomization';
 import { computeGapPatternBoost } from './activityPatternService';
+import { generateJsonWithFirebaseAiLogic } from './firebaseAiLogic';
 
 export type LocationHint = {
   title?: string;
@@ -64,8 +65,7 @@ const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env
 const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
 const allowDirectModelCalls = isDevBuild
   || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
-const GEMINI_KEY = env.EXPO_PUBLIC_GEMINI_API_KEY as string | undefined;
-const GEMINI_MODEL = (env.EXPO_PUBLIC_GEMINI_MODEL as string | undefined) || 'gemini-2.5-flash-lite';
+const GEMINI_MODEL = (env.EXPO_PUBLIC_GEMINI_MODEL as string | undefined) || 'gemini-3.6-flash';
 const TRANSIT_RISK_MULTIPLIER = 1.2;
 const TRANSIT_MIN_SAFETY_MIN = 4;
 const ITEM_TRANSITION_BUFFER_MIN = 6;
@@ -418,42 +418,25 @@ const requestGeminiGapSuggestions = async (
   options?: BuildGapOptions,
 ): Promise<SmartCalendarSuggestion[]> => {
   if (!allowDirectModelCalls) return [];
-  if (!GEMINI_KEY) return [];
 
   const speedFactor = Math.max(0.5, Math.min(1, options?.generationSpeedFactor ?? 1));
-  const controller = new AbortController();
   const timeoutMs = Math.round(12000 * speedFactor);
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
   const prompt = buildGapPrompt(gap, habits, todos, options);
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.35,
-          topP: 0.9,
-          topK: 32,
-          maxOutputTokens: Math.round(900 * speedFactor),
-          responseMimeType: 'application/json',
-        },
-      }),
+    const text = await generateJsonWithFirebaseAiLogic({
+      prompt,
+      model: GEMINI_MODEL,
+      temperature: 0.35,
+      topP: 0.9,
+      topK: 32,
+      maxOutputTokens: Math.round(900 * speedFactor),
+      timeoutMs,
     });
-
-    if (!response.ok) return [];
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.map((part: any) => String(part?.text ?? '')).join('') ?? '';
     const parsed = parseGeminiJson(text);
     return normalizeGeminiSuggestions(parsed, gap, todos, options);
   } catch {
     return [];
-  } finally {
-    clearTimeout(timeoutId);
   }
 };
 
@@ -1114,39 +1097,24 @@ export const planWeekWithGemini = async (
   days: WeekPlanDayInput[],
   context: WeekPlanContext,
 ): Promise<WeekPlanResult> => {
-  if (!allowDirectModelCalls || !GEMINI_KEY) {
+  if (!allowDirectModelCalls) {
     const heuristicItems = buildHeuristicWeekPlan(days, context);
     return { items: addAnimatorSmartTopUps(days, context, heuristicItems), usedAi: false };
   }
 
   const prompt = buildWeekPlanPrompt(days, context);
   const { maxOutputTokens } = estimateWeekPlanTokenCost(days, context);
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(GEMINI_MODEL)}:generateContent?key=${encodeURIComponent(GEMINI_KEY)}`;
 
   try {
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      signal: controller.signal,
-      body: JSON.stringify({
-        contents: [{ role: 'user', parts: [{ text: prompt }] }],
-        generationConfig: {
-          temperature: 0.4,
-          topP: 0.9,
-          topK: 40,
-          maxOutputTokens,
-          responseMimeType: 'application/json',
-        },
-      }),
+    const text = await generateJsonWithFirebaseAiLogic({
+      prompt,
+      model: GEMINI_MODEL,
+      temperature: 0.4,
+      topP: 0.9,
+      topK: 40,
+      maxOutputTokens,
+      timeoutMs: 30000,
     });
-    if (!response.ok) {
-      const heuristicItems = buildHeuristicWeekPlan(days, context);
-      return { items: addAnimatorSmartTopUps(days, context, heuristicItems), usedAi: false };
-    }
-    const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.map((part: any) => String(part?.text ?? '')).join('') ?? '';
     const parsed = parseGeminiJson(text) as { items?: RawWeekPlanItem[] } | null;
     const rawItems = Array.isArray(parsed?.items) ? parsed!.items! : [];
     const items = normalizeWeekPlanItems(rawItems, days, context);
@@ -1158,7 +1126,5 @@ export const planWeekWithGemini = async (
   } catch {
     const heuristicItems = buildHeuristicWeekPlan(days, context);
     return { items: addAnimatorSmartTopUps(days, context, heuristicItems), usedAi: false };
-  } finally {
-    clearTimeout(timeoutId);
   }
 };

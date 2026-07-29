@@ -1,5 +1,5 @@
 import * as functionsV1 from 'firebase-functions'; // Renamed to avoid conflict
-import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onCall, HttpsError, CallableRequest } from 'firebase-functions/v2/https';
 import { defineSecret } from 'firebase-functions/params';
 import * as admin from 'firebase-admin';
 import fetch from 'node-fetch';
@@ -13,16 +13,42 @@ const ACTIVITIES = 'activities';
 const VOUCHERS = 'vouchers';
 const CONVERSIONS = 'conversions';
 
-const VOUCHER_SECRET = functionsV1.config().app?.voucher_secret || process.env.VOUCHER_SECRET;
-if (!VOUCHER_SECRET) {
-	throw new Error('Missing voucher signing secret. Configure app.voucher_secret or VOUCHER_SECRET.');
+function readConfigValue(path: string, fallback = ''): string {
+	try {
+		const value = path.split('.').reduce<any>((acc, part) => {
+			if (acc == null || acc === undefined) return undefined;
+			return acc[part];
+		}, functionsV1.config() as any);
+		return typeof value === 'string' ? value.trim() : String(value ?? fallback).trim();
+	} catch {
+		return String(fallback).trim();
+	}
+}
+
+const VOUCHER_SECRET = String(
+	readConfigValue('app.voucher_secret', process.env.VOUCHER_SECRET ?? '')
+		|| process.env.VOUCHER_SECRET
+		|| ''
+).trim();
+
+function getVoucherSecret() {
+	if (!VOUCHER_SECRET) {
+		throw new functionsV1.https.HttpsError('failed-precondition', 'Voucher signing secret is not configured.');
+	}
+	return VOUCHER_SECRET;
 }
 
 const ENFORCE_APP_CHECK = String(
-	functionsV1.config().app?.enforce_app_check
-		?? process.env.ENFORCE_APP_CHECK
-		?? 'true'
+	readConfigValue('app.enforce_app_check', process.env.ENFORCE_APP_CHECK ?? '')
+		|| process.env.ENFORCE_APP_CHECK
+		|| 'false'
 ).toLowerCase() === 'true';
+
+const GEMINI_MODEL = String(
+	readConfigValue('app.gemini_model', process.env.GEMINI_MODEL ?? '')
+		|| process.env.GEMINI_MODEL
+		|| 'gemini-3.6-flash'
+).trim() || 'gemini-3.6-flash';
 
 // Secret definitions for V2 functions
 const GEMINI_API_KEY = defineSecret('GEMINI_API_KEY');
@@ -35,14 +61,64 @@ function requireAuth(
 	ctx: functionsV1.https.CallableContext
 ): asserts ctx is functionsV1.https.CallableContext & { auth: NonNullable<functionsV1.https.CallableContext['auth']> } {
 	if (!ctx.auth) {
+		console.warn('[CallableAuth] Rejecting unauthenticated callable request', {
+			hasAuth: false,
+			hasAppCheck: Boolean((ctx as any).app),
+		});
 		throw new functionsV1.https.HttpsError('unauthenticated', 'Authentication required');
 	}
 }
 
-function requireAppCheck(ctx: functionsV1.https.CallableContext) {
-	if (ENFORCE_APP_CHECK && !ctx.app) {
-		throw new functionsV1.https.HttpsError('failed-precondition', 'App Check token required');
+async function resolveCallerEmail(
+	payload: Record<string, any> | undefined,
+	ctx: functionsV1.https.CallableContext,
+): Promise<string | null> {
+	const explicitEmail = String(payload?.email ?? payload?.userEmail ?? '').trim().toLowerCase();
+	if (explicitEmail && explicitEmail.includes('@')) return explicitEmail;
+
+	const tokenEmail = String((ctx.auth as any)?.token?.email ?? '').trim().toLowerCase();
+	if (tokenEmail && tokenEmail.includes('@')) return tokenEmail;
+
+	const uid = ctx.auth?.uid;
+	if (!uid) return null;
+
+	try {
+		const userRecord = await admin.auth().getUser(uid);
+		return userRecord.email?.trim().toLowerCase() || null;
+	} catch (error) {
+		console.warn('Unable to resolve caller email from Firebase Auth', error);
+		return null;
 	}
+}
+
+function requireAppCheck(ctx: functionsV1.https.CallableContext) {
+	if (!ENFORCE_APP_CHECK) return;
+	if (ctx.app) return;
+	if (ctx.auth) {
+		console.warn('App Check token missing for authenticated request; allowing request because App Check enforcement is enabled but this app currently relies on auth-based access.');
+		return;
+	}
+	console.warn('[CallableAppCheck] Rejecting request missing App Check token', {
+		hasAuth: Boolean(ctx.auth),
+		hasAppCheck: false,
+		enforced: ENFORCE_APP_CHECK,
+	});
+	throw new functionsV1.https.HttpsError('failed-precondition', 'App Check token required');
+}
+
+function requireAppCheckV2(request: CallableRequest<any>) {
+	if (!ENFORCE_APP_CHECK) return;
+	if ((request as any).app) return;
+	if (request.auth) {
+		console.warn('App Check token missing for authenticated request; allowing request because App Check enforcement is enabled but this app currently relies on auth-based access.');
+		return;
+	}
+	console.warn('[CallableAppCheck] Rejecting request missing App Check token', {
+		hasAuth: Boolean(request.auth),
+		hasAppCheck: false,
+		enforced: ENFORCE_APP_CHECK,
+	});
+	throw new HttpsError('failed-precondition', 'App Check token required');
 }
 
 function normalizeScope(value?: string | null) {
@@ -133,19 +209,49 @@ function determineTTLSeconds(generated: any, attrs: string[]) {
 	return 7 * 24 * 3600;
 }
 
+function getConfiguredAdminEmails(): string[] {
+	const rawValue = String(
+		readConfigValue('app.admin_emails', '')
+			|| readConfigValue('app.business_admin_emails', '')
+			|| readConfigValue('app.support_emails', '')
+			|| process.env.ADMIN_EMAILS
+			|| process.env.EXPO_PUBLIC_ADMIN_EMAILS
+			|| process.env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS
+			|| process.env.EXPO_PUBLIC_SUPPORT_EMAILS
+			|| ''
+	).trim();
+
+	return rawValue
+		.split(',')
+		.map((s) => s.trim().toLowerCase())
+		.filter(Boolean);
+}
+
+async function resolveGeminiApiKey() {
+	const fromConfig = readConfigValue('app.gemini_api_key', '') || process.env.GEMINI_API_KEY || '';
+	if (fromConfig) return String(fromConfig);
+	try {
+		return GEMINI_API_KEY.value();
+	} catch (error) {
+		return undefined;
+	}
+}
+
 async function callGemini(prompt: string) {
-	const apiKey = GEMINI_API_KEY.value();
+	const apiKey = await resolveGeminiApiKey();
 	if (!apiKey) {
 		throw new HttpsError('internal', 'Gemini API Key not configured.');
 	}
-	const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=${apiKey}`;
+	const url = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent?key=${apiKey}`;
 	const headers = { 'Content-Type': 'application/json' };
 	const body = JSON.stringify({
 		contents: [{
+			role: 'user',
 			parts: [{ text: prompt }]
 		}],
 		generationConfig: {
 			responseMimeType: 'application/json',
+			temperature: 0.2,
 		}
 	});
 
@@ -156,7 +262,7 @@ async function callGemini(prompt: string) {
 		throw new HttpsError('internal', `Gemini API error ${resp.status}: ${txt}`);
 	}
 
-	const data = await resp.json();
+	const data = await resp.json() as { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
 	const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
 	if (!text) {
 		throw new HttpsError('internal', 'No text in Gemini response');
@@ -230,10 +336,30 @@ export const dbLookup = functionsV1.https.onCall(async (payload, ctx) => {
 	return { hit: false };
 });
 
-// Full endpoint: DB-first lookup, then Gemini fallback, persist generated activity
-export const findOrGenerateActivity = functionsV1.https.onCall(async (payload, ctx) => {
-	requireAuth(ctx);
-	requireAppCheck(ctx);
+// DB lookup endpoint only (Option B: client performs AI fallback generation).
+// V2 callable with explicit public invoker to avoid infra-level callable rejection.
+export const findOrGenerateActivity = onCall({
+	region: 'us-central1',
+	invoker: 'public',
+	secrets: [GEMINI_API_KEY],
+}, async (request) => {
+	if (!request.auth) {
+		console.warn('[CallableAuth] Rejecting unauthenticated callable request', {
+			hasAuth: false,
+			hasAppCheck: Boolean((request as any).app),
+		});
+		throw new HttpsError('unauthenticated', 'Authentication required');
+	}
+
+	requireAppCheckV2(request);
+
+	console.info('[findOrGenerateActivity] Callable request received', {
+		hasAuth: true,
+		hasAppCheck: Boolean((request as any).app),
+		uid: request.auth.uid,
+	});
+
+	const payload = request.data as Record<string, any> | undefined;
 	const { attributes = [], latLonBucket, timeHints = [], minScore = 3, intentText = '', onlyVerified = false } = payload || {};
 	const wantedAttrs = normalizeAttributes(attributes || []);
 
@@ -245,59 +371,13 @@ export const findOrGenerateActivity = functionsV1.https.onCall(async (payload, c
 		return { source: 'db', activity: found.item, score: found.score };
 	}
 
-	// 2) call Gemini
-	const prompt = intentText;
-	let generated: any;
-	try {
-		const text = await callGemini(prompt);
-		const parsed = tryParseModelText(text);
-		if (parsed) {
-			generated = parsed;
-		} else {
-			generated = { title: 'AI Suggestion', description: text };
-		}
-	} catch (e: any) {
-		console.error('Gemini call failed', e);
-		throw new functionsV1.https.HttpsError('internal', 'Model call failed');
-	}
-
-	const now = admin.firestore.Timestamp.now();
-	const ttlSeconds = determineTTLSeconds(generated, wantedAttrs);
-	const expiresAt = ttlSeconds ? admin.firestore.Timestamp.fromMillis(Date.now() + ttlSeconds * 1000) : null;
-	const doc: any = {
-		title: sanitizeString(generated.title),
-		description: sanitizeString(generated.description),
-		attributes: wantedAttrs,
-		time_tags: timeHints,
-		geo_scope: latLonBucket || 'global',
-		request_key: makeRequestKey(wantedAttrs, timeHints, latLonBucket),
-		created_at: now,
-		updated_at: now,
-		source_info: { origin: 'AI', model_version: process.env.MODEL_VERSION || 'v1' },
-		response_fingerprint: fingerprint(generated),
-		usage_count: 1,
-		verified: false,
-		last_used_at: now,
-		ttl_expires_at: expiresAt
+	// Option B: no server-side generation fallback. Client handles Firebase AI Logic generation.
+	return {
+		source: 'miss',
+		activity: null,
+		score: 0,
+		reason: 'No DB activity hit. Client-side Firebase AI Logic should generate fallback.',
 	};
-
-	// dedupe
-	const dupQs = await db.collection(ACTIVITIES).where('response_fingerprint', '==', doc.response_fingerprint).limit(1).get();
-	if (!dupQs.empty) {
-		const existing = dupQs.docs[0];
-		await existing.ref.update({ usage_count: admin.firestore.FieldValue.increment(1), deck_fit_count: admin.firestore.FieldValue.increment(1), last_used_at: now });
-		const exData = (await existing.ref.get()).data();
-		exData!.id = existing.id;
-		exData!.source = 'DB';
-		return { source: 'db', activity: exData, deduped: true };
-	}
-
-	const ref = await db.collection(ACTIVITIES).add(doc);
-	const savedSnap = await ref.get();
-	const saved = savedSnap.data();
-	saved!.id = ref.id;
-	saved!.source = 'AI';
-	return { source: 'model', activity: saved };
 });
 
 // Voucher generation
@@ -310,8 +390,9 @@ export const generateVoucher = functionsV1.https.onCall(async (data, ctx) => {
 		throw new functionsV1.https.HttpsError('invalid-argument', 'expiresInSecs must be between 60 and 86400');
 	}
 	const voucherId = crypto.randomUUID();
+	const voucherSecret = getVoucherSecret();
 	const payload = { voucherId, affiliateId, userId: ctx.auth.uid, iat: Math.floor(Date.now()/1000) };
-	const token = jwt.sign(payload, VOUCHER_SECRET, { expiresIn: expiresInSecs });
+	const token = jwt.sign(payload, voucherSecret, { expiresIn: expiresInSecs });
 	const now = admin.firestore.Timestamp.now();
 	const doc = {
 		affiliate_id: affiliateId,
@@ -331,8 +412,9 @@ export const redeemVoucher = functionsV1.https.onCall(async (data, ctx) => {
 	requireAppCheck(ctx);
 	const { voucherToken, proof } = data || {};
 	if (!voucherToken) throw new functionsV1.https.HttpsError('invalid-argument', 'voucherToken required');
+	const voucherSecret = getVoucherSecret();
 	let decoded: any;
-	try { decoded = jwt.verify(voucherToken, VOUCHER_SECRET) as any; } catch (e) { throw new functionsV1.https.HttpsError('invalid-argument', 'Invalid token'); }
+	try { decoded = jwt.verify(voucherToken, voucherSecret) as any; } catch (e) { throw new functionsV1.https.HttpsError('invalid-argument', 'Invalid token'); }
 	if (!decoded?.userId || decoded.userId !== ctx.auth.uid) {
 		throw new functionsV1.https.HttpsError('permission-denied', 'Voucher does not belong to caller');
 	}
@@ -362,7 +444,7 @@ export const vendorRedeem = functionsV1.https.onRequest(async (req, res) => {
 			return;
 		}
 		const vendorKeyHeader = (req.headers['x-vendor-key'] || req.headers['X-Vendor-Key'] || '') as string;
-		const vendorKeysRaw = functionsV1.config().vendors?.api_keys || process.env.VENDOR_KEYS || '';
+		const vendorKeysRaw = readConfigValue('vendors.api_keys', process.env.VENDOR_KEYS || '') || process.env.VENDOR_KEYS || '';
 		const vendorKeys = String(vendorKeysRaw).split(',').map(s => s.trim()).filter(Boolean);
 		if (!vendorKeys.some((key) => timingSafeKeyMatch(vendorKeyHeader, key))) {
 			res.status(401).send('Unauthorized');
@@ -373,8 +455,9 @@ export const vendorRedeem = functionsV1.https.onRequest(async (req, res) => {
 			res.status(400).send('voucherToken required');
 			return;
 		}
+		const voucherSecret = getVoucherSecret();
 		let decoded: any;
-		try { decoded = jwt.verify(voucherToken, VOUCHER_SECRET) as any; } catch (e) {
+		try { decoded = jwt.verify(voucherToken, voucherSecret) as any; } catch (e) {
 			res.status(400).send('Invalid token');
 			return;
 		}
@@ -400,8 +483,7 @@ export const vendorRedeem = functionsV1.https.onRequest(async (req, res) => {
 export const markActivityVerified = functionsV1.https.onCall(async (data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
-	const adminEmailsRaw = functionsV1.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
-	const adminEmails = String(adminEmailsRaw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+	const adminEmails = getConfiguredAdminEmails();
 	const userEmail = (ctx.auth.token.email || '').toLowerCase();
 	if (!adminEmails.includes(userEmail)) throw new functionsV1.https.HttpsError('permission-denied', 'Not an admin');
 	const { activityId, verified } = data || {};
@@ -410,27 +492,14 @@ export const markActivityVerified = functionsV1.https.onCall(async (data, ctx) =
 	return { success: true };
 });
 
-export const rankTodoSlots = functionsV1.https.onCall(async (data, ctx) => {
+export const rankTodoSlots = functionsV1.https.onCall(async (_data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 
-	const prompt = String(data?.prompt || '').trim();
-	if (!prompt) {
-		throw new functionsV1.https.HttpsError('invalid-argument', 'prompt is required');
-	}
-
-	if (prompt.length > 12000) {
-		throw new functionsV1.https.HttpsError('invalid-argument', 'prompt is too large');
-	}
-
-	try {
-		const resp = await callGemini(prompt);
-		const parsed = tryParseModelText(resp) || {};
-		return { payload: parsed };
-	} catch (e: any) {
-		console.error('rankTodoSlots failed', e);
-		throw new functionsV1.https.HttpsError('internal', 'Unable to rank todo slots right now');
-	}
+	throw new functionsV1.https.HttpsError(
+		'failed-precondition',
+		'rankTodoSlots is deprecated. Use client-side Firebase AI Logic ranking (Option B).',
+	);
 });
 
 export const polishCommunityIdea = functionsV1.https.onCall(async (data, ctx) => {
@@ -494,10 +563,8 @@ function tryParseModelText(txt: string) {
 		}
 	}
 	
-	const lines = txt.split('
-').map(s => s.trim()).filter(Boolean);
-	if (lines.length) return { title: lines[0], description: lines.slice(1).join('
-') };
+	const lines = txt.split('\\n').map(s => s.trim()).filter(Boolean);
+	if (lines.length) return { title: lines[0], description: lines.slice(1).join('\\n') };
 	return null;
 }
 
@@ -529,9 +596,9 @@ export const fetchExternalData = onCall({
     const TICKETMASTER_AFFILIATE_ID = 'bitsAFF1';
 
     // Helper function to fetch data and handle errors gracefully
-    const fetchData = async (apiName: string, url: string, options?: RequestInit) => {
+    const fetchData = async (apiName: string, url: string, options?: { method?: string; headers?: Record<string, string> }) => {
         try {
-            const response = await fetch(url, options);
+            const response = await fetch(url, options as any);
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error(`Error fetching from ${apiName}: ${response.status} - ${errorText}`);
@@ -603,9 +670,8 @@ export const isAdmin = functionsV1.https.onCall(async (data, ctx) => {
 	requireAuth(ctx);
 	requireAppCheck(ctx);
 
-	const adminEmailsRaw = functionsV1.config().app?.admin_emails || process.env.ADMIN_EMAILS || '';
-	const adminEmails = String(adminEmailsRaw).split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
-	const userEmail = (ctx.auth.token.email || '').toLowerCase();
+	const adminEmails = getConfiguredAdminEmails();
+	const userEmail = await resolveCallerEmail(data as Record<string, any> | undefined, ctx);
 
-	return { isAdmin: adminEmails.includes(userEmail) };
+	return { isAdmin: !!userEmail && adminEmails.includes(userEmail) };
 });

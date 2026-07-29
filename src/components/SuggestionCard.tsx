@@ -9,6 +9,7 @@ import { MapThumbnail } from './MapThumbnail';
 import { chooseTravelMode } from '../services/travel';
 import { NativeAdSlide } from './ads/NativeAdSlide';
 import { getVisibleTags } from '../utils/visibleTags';
+import { CARD_HEIGHT } from './cardConstants';
 
 type Props = {
   suggestion: DeckSuggestion;
@@ -1073,8 +1074,6 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
     </Animated.View>
   );
 };
-
-const CARD_HEIGHT = 420;
 
 const SLIDE_BORDER_WIDTH = 24;
 

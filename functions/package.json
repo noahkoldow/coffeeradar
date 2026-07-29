@@ -3,7 +3,7 @@
 	"name": "coffee-radar-functions",
 	"version": "0.1.0",
 	"private": true,
-	"engines": { "node": "18" },
+	"engines": { "node": "20" },
 	"main": "lib/index.js",
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
@@ -18,6 +18,9 @@
 		"jsonwebtoken": "^9.0.0"
 	},
 	"devDependencies": {
+		"@types/markdown-it": "^14.1.2",
+		"acorn": "^8.18.0",
+		"markdown-it": "^14.3.0",
 		"typescript": "^5.1.3"
 	}
 }

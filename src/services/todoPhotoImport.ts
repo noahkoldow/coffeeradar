@@ -1,3 +1,5 @@
+import { generateJsonWithFirebaseAiLogic } from './firebaseAiLogic';
+
 export type TodoPhotoImportItem = {
   title: string;
   notes?: string;
@@ -17,12 +19,10 @@ type GeminiTodoPayload = {
   todos?: GeminiTodoItem[];
 };
 
-const GEMINI_KEY = (globalThis as any).process?.env?.EXPO_PUBLIC_GEMINI_API_KEY;
 const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
 const allowDirectModelCalls = isDevBuild
   || String((globalThis as any).process?.env?.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
-const GEMINI_MODELS = ['gemini-2.5-flash-lite', 'gemini-2.5-flash'];
-const GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/models';
+const GEMINI_MODELS = ['gemini-3.6-flash'];
 const MAX_IMPORTED_TODOS = 20;
 
 const toDateKey = (value?: string | null): string | null => {
@@ -223,10 +223,6 @@ const parseJsonPayload = (text: string): GeminiTodoPayload | null => {
   return null;
 };
 
-const buildVisionUrl = (model: string): string => (
-  `${GEMINI_BASE_URL}/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(GEMINI_KEY ?? '')}`
-);
-
 const normalizeTodos = (payload: GeminiTodoPayload | null): TodoPhotoImportItem[] => {
   const seenTitles = new Set<string>();
 
@@ -291,41 +287,17 @@ const callGeminiTodoVision = async (imageBase64: string, mimeType: string): Prom
 
   for (const model of GEMINI_MODELS) {
     try {
-      const response = await fetch(buildVisionUrl(model), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [
-            {
-              role: 'user',
-              parts: [
-                { text: buildPrompt() },
-                {
-                  inlineData: {
-                    mimeType,
-                    data: imageBase64,
-                  },
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            temperature: 0.1,
-            responseMimeType: 'application/json',
-            maxOutputTokens: 1600,
-          },
-        }),
+      const text = await generateJsonWithFirebaseAiLogic({
+        prompt: buildPrompt(),
+        model,
+        temperature: 0.1,
+        maxOutputTokens: 1600,
+        timeoutMs: 25000,
+        image: {
+          mimeType,
+          data: imageBase64,
+        },
       });
-
-      if (!response.ok) {
-        const body = await response.text();
-        throw new Error(`Gemini vision request failed (${response.status}): ${body.slice(0, 220)}`);
-      }
-
-      const payload = await response.json();
-      const text = payload?.candidates?.[0]?.content?.parts
-        ?.map((part: { text?: string }) => part?.text ?? '')
-        .join('') ?? '';
       const parsed = parseJsonPayload(text);
       const todos = normalizeTodos(parsed);
       if (todos.length > 0) return todos;
@@ -344,9 +316,6 @@ export const importTodosFromPhoto = async (
 ): Promise<TodoPhotoImportItem[]> => {
   if (!allowDirectModelCalls) {
     throw new Error('Direct model calls are disabled. Use secured backend inference for photo import.');
-  }
-  if (!GEMINI_KEY) {
-    throw new Error('Missing EXPO_PUBLIC_GEMINI_API_KEY.');
   }
   if (!imageBase64?.trim()) {
     return [];

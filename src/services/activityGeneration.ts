@@ -1,6 +1,6 @@
 import { addDoc, collection, doc, getDocs, limit, orderBy, query, serverTimestamp, updateDoc, where, Timestamp } from 'firebase/firestore';
-import { httpsCallable } from 'firebase/functions';
-import { db, firebaseEnabled, functionsClient } from './firebase';
+import { db, firebaseEnabled } from './firebase';
+import { generateJsonWithFirebaseAiLogic } from './firebaseAiLogic';
 
 type ActivityRequest = {
   attributes?: string[];
@@ -33,9 +33,6 @@ type ActivityDoc = {
 
 const COLLECTION = 'activities';
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
-const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
-const allowDirectModelCalls = isDevBuild
-  || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 
 function normalizeList(values: string[] = []) {
   return [...new Set(values.map((value) => String(value || '').trim().toLowerCase()).filter(Boolean))].sort();
@@ -168,36 +165,26 @@ function parseGeminiJson(text: string) {
 }
 
 async function callGemini(request: ActivityRequest) {
-  if (!allowDirectModelCalls) {
-    throw new Error('Direct model calls are disabled. Route AI requests through secured backend functions.');
-  }
-  const apiKey = env.EXPO_PUBLIC_GEMINI_API_KEY;
-  if (!apiKey) throw new Error('Missing EXPO_PUBLIC_GEMINI_API_KEY');
-
-  const model = env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.0-flash';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
   const prompt = buildPrompt(request);
 
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      contents: [
-        {
-          role: 'user',
-          parts: [{ text: prompt }],
-        },
-      ],
-      generationConfig: { temperature: 0.4, responseMimeType: 'application/json' },
-    }),
+  const text = await generateJsonWithFirebaseAiLogic({
+    prompt,
+    model: String(env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-3.6-flash').trim(),
+    temperature: 0.4,
+    timeoutMs: 20000,
+    responseSchema: {
+      type: 'object',
+      properties: {
+        title: { type: 'string' },
+        description: { type: 'string' },
+        attributes: { type: 'array', items: { type: 'string' } },
+        time_tags: { type: 'array', items: { type: 'string' } },
+        geo_scope: { type: 'string' },
+        ttl_expires_at: { type: 'string' },
+      },
+      required: ['title', 'description'],
+    },
   });
-
-  if (!response.ok) {
-    throw new Error(`Gemini request failed: ${response.status} ${await response.text()}`);
-  }
-
-  const payload = await response.json();
-  const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text || payload?.candidates?.[0]?.content?.parts?.map((part: any) => part.text).join('') || '';
   if (!text) throw new Error('Gemini response missing text');
   return parseGeminiJson(text);
 }
@@ -213,42 +200,6 @@ export async function findOrGenerateActivity(request: ActivityRequest) {
   const dbHit = await fetchBestDbMatch(request);
   if (dbHit) return { ...dbHit, activity: { ...dbHit.activity, source_info: { ...(dbHit.activity.source_info || {}), origin: 'DB' } } };
 
-  if (!allowDirectModelCalls) {
-    if (!functionsClient) {
-      throw new Error('Backend activity generation is unavailable: Firebase Functions client is not initialized.');
-    }
-
-    const callable = httpsCallable(functionsClient, 'findOrGenerateActivity');
-    const response = await callable({
-      attributes: request.attributes || [],
-      latLonBucket: request.latLonBucket,
-      timeHints: request.timeHints || [],
-      minScore: request.minScore ?? 3,
-      intentText: request.intentText || '',
-      onlyVerified: request.onlyVerified === true,
-    });
-
-    const payload = (response?.data ?? {}) as any;
-    const serverActivity = payload?.activity;
-    if (!serverActivity?.title || !serverActivity?.description) {
-      throw new Error('Backend activity generation returned an invalid payload.');
-    }
-
-    const origin = payload?.source === 'db' ? 'DB' : 'AI';
-    return {
-      id: String(serverActivity.id || ''),
-      source: origin,
-      score: Number(payload?.score || 0),
-      activity: {
-        ...serverActivity,
-        source_info: {
-          ...(serverActivity.source_info || {}),
-          origin,
-        },
-      },
-    };
-  }
-
   const generated = await callGemini(request);
   const requestKey = makeRequestKey(request);
   const activity: ActivityDoc = {
@@ -262,7 +213,7 @@ export async function findOrGenerateActivity(request: ActivityRequest) {
     verified: false,
     usage_count: 1,
     deck_fit_count: 1,
-    source_info: { origin: 'AI', model: env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-2.0-flash' },
+    source_info: { origin: 'AI', model: env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-3.6-flash' },
   };
 
   const saved = await addDoc(collection(db!, COLLECTION), {

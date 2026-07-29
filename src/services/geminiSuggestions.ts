@@ -4,15 +4,9 @@ import { WeatherInfo } from './weather';
 import { formatLocalDateTime, getTimeZoneParts, resolveTimeZone, getPreferredTimeZone } from '../utils/time';
 import { loadGeminiUsage, loadPremiumActive, saveGeminiUsage } from '../utils/storage';
 import { selectChallengeCandidates } from '../utils/challengeMode';
-import { functions } from './firebase';
-import { httpsCallable } from 'firebase/functions';
+import { generateJsonWithFirebaseAiLogic } from './firebaseAiLogic';
 
-const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
-const allowDirectModelCalls = isDevBuild
-  || String((globalThis as any).process?.env?.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 const MAX_SUGGESTIONS = 15; // Grab more from Gemini during this permissive phase
-
-const findOrGenerateActivity = functions ? httpsCallable(functions, 'findOrGenerateActivity') : null;
 
 type GeminiRawSuggestion = {
   type?: string;
@@ -45,6 +39,109 @@ type GeminiRawSuggestion = {
 
 type GeminiPayload = {
   suggestions?: GeminiRawSuggestion[];
+};
+
+const hasSuggestionSignal = (value: unknown): value is GeminiRawSuggestion => {
+  if (!value || typeof value !== 'object') return false;
+  const candidate = value as Record<string, unknown>;
+  return Boolean(
+    candidate.title
+    || candidate.description
+    || candidate.type
+    || candidate.hook
+    || candidate.cta
+    || candidate.placeName
+    || candidate.eventStartAt
+  );
+};
+
+const gatherSuggestionObjects = (value: unknown, seen = new Set<unknown>(), depth = 0): GeminiRawSuggestion[] => {
+  if (!value || depth > 5 || seen.has(value)) return [];
+  if (typeof value !== 'object') return [];
+  seen.add(value);
+
+  if (Array.isArray(value)) {
+    const direct = value.filter((item): item is GeminiRawSuggestion => hasSuggestionSignal(item));
+    if (direct.length) return direct;
+    return value.flatMap((item) => gatherSuggestionObjects(item, seen, depth + 1));
+  }
+
+  const record = value as Record<string, unknown>;
+  const keys = Object.keys(record);
+  const nestedArrays = keys
+    .map((key) => record[key])
+    .filter((candidate) => Array.isArray(candidate));
+
+  for (const candidate of nestedArrays) {
+    const nested = gatherSuggestionObjects(candidate, seen, depth + 1);
+    if (nested.length) return nested;
+  }
+
+  const nestedObjects = keys
+    .map((key) => record[key])
+    .filter((candidate) => !!candidate && typeof candidate === 'object' && !Array.isArray(candidate));
+
+  for (const candidate of nestedObjects) {
+    const nested = gatherSuggestionObjects(candidate, seen, depth + 1);
+    if (nested.length) return nested;
+  }
+
+  return hasSuggestionSignal(record) ? [record as GeminiRawSuggestion] : [];
+};
+
+const coerceGeminiPayload = (value: unknown): GeminiPayload | null => {
+  if (!value || typeof value !== 'object') return null;
+
+  const record = value as Record<string, unknown>;
+  const arrayKeys = ['suggestions', 'cards', 'items', 'results', 'activities'];
+
+  for (const key of arrayKeys) {
+    const candidate = record[key];
+    if (Array.isArray(candidate)) {
+      const suggestions = candidate.filter((item): item is GeminiRawSuggestion => !!item && typeof item === 'object') as GeminiRawSuggestion[];
+      if (suggestions.length) {
+        return { suggestions };
+      }
+    }
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      return { suggestions: [candidate as GeminiRawSuggestion] };
+    }
+    if (typeof candidate === 'string') {
+      try {
+        const parsed = JSON.parse(candidate);
+        const normalized = coerceGeminiPayload(parsed);
+        if (normalized?.suggestions?.length) return normalized;
+      } catch {
+        // Ignore stringified JSON that does not parse cleanly.
+      }
+    }
+  }
+
+  const singularKeys = ['suggestion', 'card', 'item', 'result', 'activity'];
+  for (const key of singularKeys) {
+    const candidate = record[key];
+    if (candidate && typeof candidate === 'object' && !Array.isArray(candidate)) {
+      return { suggestions: [candidate as GeminiRawSuggestion] };
+    }
+  }
+
+  if (record.title || record.description || record.type || record.placeName || record.eventStartAt) {
+    return { suggestions: [record as GeminiRawSuggestion] };
+  }
+
+  if (Array.isArray(value)) {
+    const suggestions = value.filter((item): item is GeminiRawSuggestion => hasSuggestionSignal(item));
+    if (suggestions.length) {
+      return { suggestions };
+    }
+  }
+
+  const nestedSuggestions = gatherSuggestionObjects(value);
+  if (nestedSuggestions.length) {
+    return { suggestions: nestedSuggestions };
+  }
+
+  return null;
 };
 
 export type GeminiLearningContext = {
@@ -280,7 +377,7 @@ const buildGenerationConfig = (
     temperature: clampNumber(temperature, 0.25, 0.78),
     topP: 0.92,
     topK: 32,
-    maxOutputTokens: 2400,
+    maxOutputTokens: 4096,
   };
 };
 
@@ -344,27 +441,101 @@ const safeJsonParse = (text: string): GeminiPayload | null => {
   const trimmed = text.trim();
   const direct = (() => {
     try {
-      return JSON.parse(trimmed) as GeminiPayload;
+      return coerceGeminiPayload(JSON.parse(trimmed));
     } catch {
       return null;
     }
   })();
   if (direct) return direct;
 
-  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
-  if (fenced?.[1]) {
-    try {
-      return JSON.parse(fenced[1]) as GeminiPayload;
-    } catch {
-      // continue
+  const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)\s*```/i)?.[1] ?? trimmed;
+
+  const tryParseBalanced = (source: string): GeminiPayload | null => {
+    const starts: number[] = [];
+    for (let i = 0; i < source.length; i++) {
+      const char = source[i];
+      if (char === '{' || char === '[') starts.push(i);
     }
-  }
+
+    const isInsideString = (value: string, index: number): boolean => {
+      let inside = false;
+      let escaped = false;
+      for (let i = 0; i < index; i++) {
+        const char = value[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') inside = !inside;
+      }
+      return inside;
+    };
+
+    for (const start of starts) {
+      if (isInsideString(source, start)) continue;
+      const open = source[start];
+      const close = open === '{' ? '}' : ']';
+      let depth = 0;
+      let inString = false;
+      let escaped = false;
+
+      for (let i = start; i < source.length; i++) {
+        const char = source[i];
+        if (escaped) {
+          escaped = false;
+          continue;
+        }
+        if (char === '\\') {
+          escaped = true;
+          continue;
+        }
+        if (char === '"') {
+          inString = !inString;
+          continue;
+        }
+        if (inString) continue;
+        if (char === open) depth += 1;
+        else if (char === close) {
+          depth -= 1;
+          if (depth === 0) {
+            const candidate = source.slice(start, i + 1);
+            try {
+              const parsed = JSON.parse(candidate);
+              const normalized = coerceGeminiPayload(parsed);
+              if (normalized) return normalized;
+              break;
+            } catch {
+              break;
+            }
+          }
+        }
+      }
+    }
+    return null;
+  };
+
+  const fencedParsed = tryParseBalanced(fenced);
+  if (fencedParsed) return fencedParsed;
 
   const first = trimmed.indexOf('{');
   const last = trimmed.lastIndexOf('}');
   if (first >= 0 && last > first) {
     try {
-      return JSON.parse(trimmed.slice(first, last + 1)) as GeminiPayload;
+      return coerceGeminiPayload(JSON.parse(trimmed.slice(first, last + 1)));
+    } catch {
+      // keep trying array-root fallback below
+    }
+  }
+
+  const firstArray = trimmed.indexOf('[');
+  const lastArray = trimmed.lastIndexOf(']');
+  if (firstArray >= 0 && lastArray > firstArray) {
+    try {
+      return coerceGeminiPayload(JSON.parse(trimmed.slice(firstArray, lastArray + 1)));
     } catch {
       return null;
     }
@@ -550,7 +721,7 @@ const buildPrompt = (
       '- No fabricated events, no fake ticket links, no impossible travel times.',
       '',
       'DIVERSITY REQUIREMENTS',
-      '- Return 5 to 8 challenge missions.',
+      '- Return exactly 5 challenge missions.',
       '- The deck/slides must visibly feel mixed, not like one repeated challenge type.',
       '- Include mixed intensity across the returned cards: at least 1 easy, at least 2 medium, and at least 1 hard challenge.',
       '- Include at least 1 sports/fitness challenge. This can be solo training, a sport skill drill, a race against a timer, or joining a public/open sports context when realistic.',
@@ -750,6 +921,7 @@ const buildPrompt = (
     '  - placeName, placeAddress, placeLat, placeLng (accurate coordinates for a real, near venue)',
     '  - openStatus: "open_now" | "opens_soon" | "unknown"; opensInMin/closesInMin when relevant',
     `  - EVENT only: eventStartAt (ISO timestamp with ${timeZone} offset), eventVenue`,
+    '  - If type is AT_HOME, still include placeName/placeAddress/placeLat/placeLng as null so the model always addresses them.',
     '',
     'Output STRICT JSON only, no markdown, no prose:',
     '{',
@@ -771,8 +943,8 @@ const buildPrompt = (
     '      "openStatus": "open_now",',
     '      "opensInMin": 0,',
     '      "closesInMin": 180,',
-    '      "placeName": "specific real venue",',
-    '      "placeAddress": "full street address with number",',
+    '      "placeName": "specific real venue or null",',
+    '      "placeAddress": "full street address with number or null",',
     '      "placeLat": 52.51,',
     '      "placeLng": 13.38,',
     '      "eventStartAt": "ISO timestamp with timezone offset for EVENT type",',
@@ -782,7 +954,7 @@ const buildPrompt = (
     '}',
     '',
     `Return 5-${MAX_SUGGESTIONS} suggestions, ONLY ones that truly fit their situation, time, sleep, weather, and opening hours.`,
-    'Quality over quantity: 5 excellent, well-fitted ideas beat 10 generic ones.',
+    'Quality over quantity: exactly 5 excellent, well-fitted ideas beat 10 generic ones.',
     learning?.filter === 'challenge_me'
       ? 'CHALLENGE MODE EXTRA RULES: At least 80% of suggestions must read as explicit missions (not generic activities). Each mission must include one discomfort lever (social exposure, unfamiliar environment, physical effort, strict focus, or creative risk) and one measurable success condition.'
       : '',
@@ -791,66 +963,57 @@ const buildPrompt = (
 
 const GEMINI_FETCH_TIMEOUT_MS = 20000; // Gemini 2.5 Flash can take 10-15s; 20s gives headroom
 
-const fetchGeminiViaFunction = async (prompt: string, learningContext?: GeminiLearningContext, location?: LocationState): Promise<string> => {
-  if (!findOrGenerateActivity) {
-    throw new Error('Firebase Functions not initialized.');
-  }
-  try {
-    const timeZone = location?.timeZone ?? getPreferredTimeZone();
-    const tzParts = getTimeZoneParts(new Date(), timeZone);
-    const localHour = tzParts.hour;
-    const timeOfDay = localHour < 12 ? 'morning' : localHour < 17 ? 'afternoon' : localHour < 21 ? 'evening' : 'night';
-    const timeHints = [tzParts.weekday, timeOfDay];
-
-    const result = await findOrGenerateActivity({
-      attributes: learningContext?.topPositiveTags ?? [],
-      timeHints,
-      latLonBucket: location?.areaLabel,
-      intentText: prompt, // Pass the detailed prompt here
-    });
-
-    const data = result.data as any;
-    if (data?.activity) {
-      const activity = data.activity;
-      const suggestion: GeminiRawSuggestion = {
-        title: activity.title,
-        description: activity.description,
-        tags: activity.attributes,
-        type: activity.type,
-        durationMin: activity.durationMin,
-        // The following fields might not be in the activity object, so we use optional chaining
-        hook: activity.hook,
-        cta: activity.cta,
-        whyNow: activity.whyNow,
-        instructions: activity.instructions,
-        confidence: activity.confidence,
-        moodFit: activity.moodFit,
-        emojis: activity.emojis,
-        isRepetitionFriendly: activity.isRepetitionFriendly,
-        openStatus: activity.openStatus,
-        opensInMin: activity.opensInMin,
-        closesInMin: activity.closesInMin,
-        placeName: activity.place?.name,
-        placeAddress: activity.place?.address,
-        placeLat: activity.place?.lat,
-        placeLng: activity.place?.lng,
-        eventStartAt: activity.event?.startAt,
-        eventVenue: activity.event?.venue,
-        eventTicketUrl: activity.event?.ticketUrl,
-      };
-      return JSON.stringify({ suggestions: [suggestion] });
-    }
-    
-    // If the function returns a Gemini payload directly (e.g. from the model)
-    if (data?.suggestions) {
-      return JSON.stringify(data);
-    }
-
-    throw new Error('Cloud function did not return a valid activity.');
-  } catch (error) {
-    console.error('[Gemini] findOrGenerateActivity function call failed:', error);
-    throw error;
-  }
+const fetchGeminiDirect = async (
+  prompt: string,
+  generationConfig: GeminiGenerationConfig,
+): Promise<string> => {
+  return generateJsonWithFirebaseAiLogic({
+    prompt,
+    model: 'gemini-3.6-flash',
+    temperature: generationConfig.temperature,
+    topP: generationConfig.topP,
+    topK: generationConfig.topK,
+    maxOutputTokens: generationConfig.maxOutputTokens,
+    timeoutMs: GEMINI_FETCH_TIMEOUT_MS,
+    responseSchema: {
+      type: 'object',
+      properties: {
+        suggestions: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              type: { type: 'string' },
+              title: { type: 'string' },
+              hook: { type: 'string' },
+              cta: { type: 'string' },
+              description: { type: 'string' },
+              whyNow: { type: 'string' },
+              durationMin: { type: 'number' },
+              tags: { type: 'array', items: { type: 'string' } },
+              instructions: { type: 'array', items: { type: 'string' } },
+              confidence: { type: 'number' },
+              moodFit: { type: 'array', items: { type: 'string' } },
+              emojis: { type: 'array', items: { type: 'string' } },
+              isRepetitionFriendly: { type: 'boolean' },
+              openStatus: { type: 'string' },
+              opensInMin: { type: 'number' },
+              closesInMin: { type: 'number' },
+              placeName: { type: 'string', nullable: true },
+              placeAddress: { type: 'string', nullable: true },
+              placeLat: { type: 'number', nullable: true },
+              placeLng: { type: 'number', nullable: true },
+              eventStartAt: { type: 'string' },
+              eventVenue: { type: 'string' },
+              eventTicketUrl: { type: 'string' },
+            },
+            required: ['type', 'title', 'description', 'durationMin', 'placeName', 'placeAddress', 'placeLat', 'placeLng'],
+          },
+        },
+      },
+      required: ['suggestions'],
+    },
+  });
 };
 
 const toSuggestion = (raw: GeminiRawSuggestion, index: number): Suggestion | null => {
@@ -998,11 +1161,6 @@ const runGeminiSuggestions = async (
   learning?: GeminiLearningContext,
   userId?: string | null,
 ): Promise<Suggestion[]> => {
-  if (!allowDirectModelCalls) {
-    addDebugMessage('gemini', 'Direct model calls disabled in this build; using non-Gemini sources only.');
-    return [];
-  }
-
   if (!userId) {
     addDebugMessage('gemini', 'Skipping Gemini source - no user id available for per-user quota.');
     return [];
@@ -1049,15 +1207,15 @@ const runGeminiSuggestions = async (
         ? `${prompt}\n\nVALIDATION FEEDBACK:\n${validationFeedback}\nReturn corrected STRICT JSON only.`
         : prompt;
       try {
-        const text = await fetchGeminiViaFunction(attemptPrompt, learning, location);
-        console.log(`[Gemini] Cloud function raw text length:`, text?.length ?? 0);
+        const text = await fetchGeminiDirect(attemptPrompt, generationConfig);
+        console.log(`[Gemini] Firebase AI Logic raw text length:`, text?.length ?? 0);
         const payload = safeJsonParse(text);
         const validation = validatePayload(payload);
         if (!validation.ok) {
           validationFeedback = validation.issues.slice(0, 6).join(' ');
           lastError = validationFeedback;
-          console.warn(`[Gemini] Cloud function validation failed:`, validationFeedback);
-          addDebugMessage('gemini', `Cloud function validation failed: ${validationFeedback}`);
+          console.warn(`[Gemini] Firebase AI Logic validation failed:`, validationFeedback);
+          addDebugMessage('gemini', `Firebase AI Logic validation failed: ${validationFeedback}`);
           continue;
         }
 
@@ -1081,29 +1239,29 @@ const runGeminiSuggestions = async (
           if (challengeSuggestions.length < 3) {
             validationFeedback = 'Challenge mode requires explicit mission-style outputs with measurable constraints and discomfort/stretch elements. Re-generate with stronger challenge specificity.';
             lastError = validationFeedback;
-            addDebugMessage('gemini', `Cloud function returned weak challenge suggestions.`);
+            addDebugMessage('gemini', `Firebase AI Logic returned weak challenge suggestions.`);
             continue;
           }
 
           suggestions = challengeSuggestions.slice(0, MAX_SUGGESTIONS);
         }
 
-        console.log(`[Gemini] Cloud function raw=${raw.length} → valid=${suggestions.length}`);
+        console.log(`[Gemini] Firebase AI Logic raw=${raw.length} -> valid=${suggestions.length}`);
 
         if (!suggestions.length) {
           validationFeedback = 'The response parsed but contained no usable suggestions after sanitization.';
           lastError = validationFeedback;
-          addDebugMessage('gemini', `Cloud function returned no usable suggestions.`);
+          addDebugMessage('gemini', `Firebase AI Logic returned no usable suggestions.`);
           continue;
         }
 
-        console.log(`[Gemini] Cloud function success: returning ${suggestions.length} suggestions`);
-        addDebugMessage('gemini', `Cloud function returned ${suggestions.length} suggestions.`);
+        console.log(`[Gemini] Firebase AI Logic success: returning ${suggestions.length} suggestions`);
+        addDebugMessage('gemini', `Firebase AI Logic returned ${suggestions.length} suggestions.`);
         return suggestions;
       } catch (error) {
         lastError = error instanceof Error ? error.message : 'Unknown Gemini error';
-        console.error(`[Gemini] Cloud function error:`, lastError);
-        addDebugMessage('gemini', `Cloud function failed: ${lastError}`);
+        console.error(`[Gemini] Firebase AI Logic error:`, lastError);
+        addDebugMessage('gemini', `Firebase AI Logic failed: ${lastError}`);
         // Don't retry on timeout — subsequent attempts will also time out
         if (lastError.includes('timeout') || lastError.includes('abort') || lastError.includes('AbortError')) {
           break;

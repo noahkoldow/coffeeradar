@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
 import { DeckSuggestion } from '../../types';
 import { useTheme } from '../../theme/ThemeProvider';
-import { CARD_HEIGHT } from '../SuggestionCard';
+import { CARD_HEIGHT } from '../cardConstants';
 import { AD_UNIT_IDS } from '../../services/ads/adConfig';
 import { adsSdk, isAdsAvailable } from '../../services/ads/mobileAds';
 import { buildAdRequestOptions } from '../../services/ads/consent';

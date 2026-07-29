@@ -21,7 +21,7 @@ import { fetchOsmSuggestions } from '../services/osmPlaces';
 import { fetchGeminiSuggestions } from '../services/geminiSuggestions';
 import { Availability } from '../types';
 import { formatClockTime, formatTime, normalizeClockTime } from '../utils/time';
-import { isBusinessAdmin } from '../services/user';
+import { isAdminUser, isBusinessAdmin } from '../services/user';
 import { resetAdsConsent, showAdsPrivacyOptions, useAdsCompliance } from '../services/ads/consent';
 import { getPrivacyPolicyUrl, getTermsOfServiceUrl } from '../legal/legalLinks';
 import { useI18n } from '../i18n/I18nProvider';
@@ -87,7 +87,7 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
   const isGerman = language === 'de';
   const adsCompliance = useAdsCompliance();
   const showRefineIntent = !!route.params?.fromRefine;
-  const isAdmin = isBusinessAdmin(state.userEmail);
+  const [isAdmin, setIsAdmin] = useState(() => isBusinessAdmin(state.userEmail));
   const [calendars, setCalendars] = useState<{ id: string; title: string }[]>([]);
   const [debugMessages, setDebugMessages] = useState<DebugMessage[]>([]);
   const [clockTick, setClockTick] = useState(Date.now());
@@ -105,6 +105,22 @@ export const SettingsScreen: React.FC<Props> = ({ navigation, route }) => {
   const updatePrefs = (patch: Partial<typeof state.prefs>) => {
     actions.setPrefs({ ...state.prefs, ...patch });
   };
+
+  useEffect(() => {
+    let active = true;
+    setIsAdmin(isBusinessAdmin(state.userEmail));
+    isAdminUser()
+      .then((value) => {
+        if (active) setIsAdmin(value);
+      })
+      .catch(() => {
+        if (active) setIsAdmin(isBusinessAdmin(state.userEmail));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [state.userEmail, state.userId]);
 
   useEffect(() => {
     const loadCalendars = async () => {

@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import { StyleSheet, Text, View } from 'react-native';
 import { DeckSuggestion } from '../../types';
 import { useTheme } from '../../theme/ThemeProvider';
-import { CARD_HEIGHT } from '../SuggestionCard';
+import { CARD_HEIGHT } from '../cardConstants';
 
 type Props = {
   suggestion: DeckSuggestion;

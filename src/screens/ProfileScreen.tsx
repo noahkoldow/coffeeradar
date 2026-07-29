@@ -10,7 +10,7 @@ import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
 import { signOutUser } from '../services/auth';
 import { firebaseEnabled } from '../services/firebase';
-import { isBusinessAdmin } from '../services/user';
+import { isAdminUser, isBusinessAdmin } from '../services/user';
 import { getAvatarInitial } from '../utils/social';
 import { loadProfileAvatarUri, saveProfileAvatarUri } from '../utils/storage';
 import { useI18n } from '../i18n/I18nProvider';
@@ -25,7 +25,23 @@ export const ProfileScreen: React.FC<Props> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const [profileAvatarUri, setProfileAvatarUri] = useState<string | null>(null);
   const [avatarLoading, setAvatarLoading] = useState(false);
-  const isAdmin = isBusinessAdmin(state.userEmail);
+  const [isAdmin, setIsAdmin] = useState(() => isBusinessAdmin(state.userEmail));
+
+  useEffect(() => {
+    let active = true;
+    setIsAdmin(isBusinessAdmin(state.userEmail));
+    isAdminUser()
+      .then((value) => {
+        if (active) setIsAdmin(value);
+      })
+      .catch(() => {
+        if (active) setIsAdmin(isBusinessAdmin(state.userEmail));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [state.userEmail, state.userId]);
 
   useEffect(() => {
     let active = true;

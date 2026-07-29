@@ -269,9 +269,63 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => { geminiPoolRef.current = geminiPool; }, [geminiPool]);
   useEffect(() => { deckIndexRef.current = deckIndex; }, [deckIndex]);
   const deckBuildId = useRef(0);
+  const deckBuildKeyRef = useRef<string | null>(null);
+
+  const buildDeckRequestKey = useCallback((avail: Availability) => JSON.stringify({
+    start: avail.start,
+    end: avail.end,
+    durationMin: avail.durationMin,
+    nextEventTitle: avail.nextEventTitle ?? null,
+    previousEventTitle: avail.previousEventTitle ?? null,
+    currentEventId: avail.currentEventId ?? null,
+    locationLat: preloadRef.current.location.lat ?? null,
+    locationLng: preloadRef.current.location.lng ?? null,
+    locationArea: preloadRef.current.location.areaLabel ?? null,
+    sessionActivityIntent,
+  }), [sessionActivityIntent]);
+
+  const runDeckPreload = useCallback((avail: Availability) => {
+    const requestKey = buildDeckRequestKey(avail);
+    if (deckLoading && deckBuildKeyRef.current === requestKey) {
+      return;
+    }
+    deckBuildKeyRef.current = requestKey;
+    const id = ++deckBuildId.current;
+    setDeckLoading(true);
+    setPreloadedDeck(null);
+    savePreloadedDeck(null, userId).catch(() => undefined);
+    const {
+      location: loc,
+      prefs: p,
+      history: h,
+      habits: hb,
+      smartTodos: todos,
+      tagAffinities: ta,
+      locationProfile: lp,
+      savedSuggestions: ss,
+    } = preloadRef.current;
+    buildDeck(avail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
+      .then((result) => {
+        if (deckBuildId.current === id) {
+          setPreloadedDeck(result);
+          savePreloadedDeck(result, userId).catch(() => undefined);
+        }
+      })
+      .catch(() => {
+        if (deckBuildId.current === id) {
+          setPreloadedDeck(null);
+          savePreloadedDeck(null, userId).catch(() => undefined);
+        }
+      })
+      .finally(() => {
+        if (deckBuildId.current === id) setDeckLoading(false);
+        if (deckBuildKeyRef.current === requestKey) deckBuildKeyRef.current = null;
+      });
+  }, [buildDeckRequestKey, deckLoading, sessionActivityIntent, userId]);
 
   const invalidatePreloadedDeck = useCallback(() => {
     deckBuildId.current += 1;
+    deckBuildKeyRef.current = null;
     setDeckLoading(false);
     setPreloadedDeck(null);
     savePreloadedDeck(null, userId).catch(() => undefined);
@@ -602,7 +656,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     if (!authChecked) return;
     (async () => {
       const storedPremium = await loadPremiumActive(userId).catch(() => false);
-      const effectivePremium = storedPremium || emailHasPremium;
+      const effectivePremium = Boolean(storedPremium || emailHasPremium);
       setIsPremium(effectivePremium);
       if (effectivePremium !== storedPremium) {
         savePremiumActive(effectivePremium, userId).catch(() => undefined);
@@ -840,39 +894,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           })()
         : avail;
       const sanitizedAvail = applyIgnoredEventsToAvailability(finalAvail, ignoredExternalEventKeys);
-      const id = ++deckBuildId.current;
-      setDeckLoading(true);
-      setPreloadedDeck(null);
-      savePreloadedDeck(null, userId).catch(() => undefined);
-      const {
-        location: loc,
-        prefs: p,
-        history: h,
-        habits: hb,
-        smartTodos: todos,
-        tagAffinities: ta,
-        locationProfile: lp,
-        savedSuggestions: ss,
-      } = preloadRef.current;
-      // Background preload gets a generous 15 s API timeout
-      // (the user isn't waiting — they're on HomeScreen or swiping)
-      buildDeck(sanitizedAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
-        .then((result) => {
-          // Only apply if this is still the latest build request
-          if (deckBuildId.current === id) {
-            setPreloadedDeck(result);
-            savePreloadedDeck(result, userId).catch(() => undefined);
-          }
-        })
-        .catch(() => {
-          if (deckBuildId.current === id) {
-            setPreloadedDeck(null);
-            savePreloadedDeck(null, userId).catch(() => undefined);
-          }
-        })
-        .finally(() => {
-          if (deckBuildId.current === id) setDeckLoading(false);
-        });
+        runDeckPreload(sanitizedAvail);
     },
     consumeDeck: () => {
       const result = preloadedDeckRef.current;
@@ -917,37 +939,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           } as any;
         })();
         const sanitizedAvail = applyIgnoredEventsToAvailability(finalAvail, ignoredExternalEventKeys);
-        const id = ++deckBuildId.current;
-        setDeckLoading(true);
-        setPreloadedDeck(null);
-        savePreloadedDeck(null, userId).catch(() => undefined);
-        const {
-          location: loc,
-          prefs: p,
-          history: h,
-          habits: hb,
-          smartTodos: todos,
-          tagAffinities: ta,
-          locationProfile: lp,
-          savedSuggestions: ss,
-        } = preloadRef.current;
-        // Background preload gets a generous 15 s API timeout
-        buildDeck(sanitizedAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
-          .then((result) => {
-            if (deckBuildId.current === id) {
-              setPreloadedDeck(result);
-              savePreloadedDeck(result, userId).catch(() => undefined);
-            }
-          })
-          .catch(() => {
-            if (deckBuildId.current === id) {
-              setPreloadedDeck(null);
-              savePreloadedDeck(null, userId).catch(() => undefined);
-            }
-          })
-          .finally(() => {
-            if (deckBuildId.current === id) setDeckLoading(false);
-          });
+        runDeckPreload(sanitizedAvail);
       } catch (err) {
         // ignore
       }
@@ -1087,36 +1079,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
           } as any;
         })();
         const sanitizedAvail = applyIgnoredEventsToAvailability(finalAvail, ignoredExternalEventKeys);
-        const id = ++deckBuildId.current;
-        setDeckLoading(true);
-        setPreloadedDeck(null);
-        savePreloadedDeck(null, userId).catch(() => undefined);
-        const {
-          location: loc,
-          prefs: p,
-          history: h,
-          habits: hb,
-          smartTodos: todos,
-          tagAffinities: ta,
-          locationProfile: lp,
-          savedSuggestions: ss,
-        } = preloadRef.current;
-        buildDeck(sanitizedAvail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
-          .then((result) => {
-            if (deckBuildId.current === id) {
-              setPreloadedDeck(result);
-              savePreloadedDeck(result, userId).catch(() => undefined);
-            }
-          })
-          .catch(() => {
-            if (deckBuildId.current === id) {
-              setPreloadedDeck(null);
-              savePreloadedDeck(null, userId).catch(() => undefined);
-            }
-          })
-          .finally(() => {
-            if (deckBuildId.current === id) setDeckLoading(false);
-          });
+        runDeckPreload(sanitizedAvail);
       } catch (err) {
         // ignore
       }
@@ -1243,7 +1206,7 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
       saveIsBusinessOnly(value, userId).catch(() => undefined);
     },
     setPremiumActive: (value) => {
-      const effectivePremium = value || emailHasPremium;
+      const effectivePremium = Boolean(value || emailHasPremium);
       setIsPremium(effectivePremium);
       savePremiumActive(effectivePremium, userId).catch(() => undefined);
     },

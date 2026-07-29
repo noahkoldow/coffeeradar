@@ -8,7 +8,6 @@ import * as ImagePicker from 'expo-image-picker';
 import * as Haptics from 'expo-haptics';
 import DateTimePicker, { DateTimePickerAndroid, DateTimePickerEvent } from '@react-native-community/datetimepicker';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { httpsCallable } from 'firebase/functions';
 import { SwipeDeck, SwipeDeckHandle } from '../components/SwipeDeck';
 import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
@@ -16,12 +15,12 @@ import { useTheme } from '../theme/ThemeProvider';
 import { createPlanEvent, deletePlanEvent, getUpcomingEvents } from '../services/calendar';
 import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, WeekPlanContext, WeekPlanDayInput, WeekPlanItem, buildGapSuggestions, computeTravelBufferMin, findCalendarGaps, planWeekWithGemini } from '../services/smartCalendar';
 import { importTodosFromPhoto } from '../services/todoPhotoImport';
-import { functionsClient } from '../services/firebase';
+import { generateJsonWithFirebaseAiLogic } from '../services/firebaseAiLogic';
 import { buildAdKeywords } from '../services/ads/adConfig';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
 import { isAdPlaceholderMode, isAdsAvailable } from '../services/ads/mobileAds';
 import { useAdsCompliance } from '../services/ads/consent';
-import { isBusinessAdmin } from '../services/user';
+import { isAdminUser as resolveAdminAccess, isBusinessAdmin } from '../services/user';
 import { VideoAdModal } from '../components/ads/VideoAdModal';
 import { Commitment, DeckSuggestion, ScheduledActivity, SmartTodoItem } from '../types';
 import { formatClockMinutes, formatTime } from '../utils/time';
@@ -77,6 +76,7 @@ const PREMIUM_GENERATION_SPEED_FACTOR = 0.9;
 const SMART_CALENDAR_DECK_COLORS = { bg: '#B5EAD7', text: '#1A4A3A' };
 const SMART_TODO_DEFAULT_DURATION_MIN = 30;
 const SMART_TODO_MAX_CANDIDATE_SLOTS = 24;
+const SMART_TODO_RANKING_MODEL = 'gemini-3.6-flash';
 
 const normalizeTodoTitleKey = (value: string): string => value
   .toLowerCase()
@@ -945,7 +945,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   }, [gapSuggestions, selectedGap]);
 
   const premiumEnabled = state.isPremium;
-  const isAdminUser = useMemo(() => isBusinessAdmin(state.userEmail), [state.userEmail]);
+  const [isAdminUser, setIsAdminUser] = useState(() => isBusinessAdmin(state.userEmail));
   const hasSwipesRemaining = (state.swipeBank?.current ?? 0) > 0;
   // Non-premium users see a short video ad while the week planner works.
   const adsFreeUser = !premiumEnabled
@@ -955,6 +955,22 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     [state.prefs, state.location],
   );
   // The "plan my whole week" button can be used once per 7 days (bool, no stacking).
+  useEffect(() => {
+    let active = true;
+    setIsAdminUser(isBusinessAdmin(state.userEmail));
+    resolveAdminAccess()
+      .then((value) => {
+        if (active) setIsAdminUser(value);
+      })
+      .catch(() => {
+        if (active) setIsAdminUser(isBusinessAdmin(state.userEmail));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [state.userEmail, state.userId]);
+
   const weekPlanAvailable = isAdminUser
     || !weekPlanLastUsedAt
     || (Date.now() - weekPlanLastUsedAt >= WEEK_PLAN_COOLDOWN_MS);
@@ -2181,8 +2197,6 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       };
     });
 
-    if (!functionsClient) return fallback;
-
     const prompt = [
       'You are an assistant that picks the best calendar slots for one todo.',
       'Return ONLY JSON with schema: {"estimatedDurationMin":number,"picks":[{"slotIndex":number,"startOffsetMin":number,"durationMin":number,"reason":string}]}',
@@ -2211,10 +2225,35 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     ].join('\n');
 
     try {
-      const callable = httpsCallable(functionsClient, 'rankTodoSlots');
-      const response = await callable({ prompt });
-      const data = response?.data as { payload?: any } | undefined;
-      const text = JSON.stringify(data?.payload ?? {});
+      const text = await generateJsonWithFirebaseAiLogic({
+        prompt,
+        model: SMART_TODO_RANKING_MODEL,
+        temperature: 0.2,
+        topP: 0.9,
+        topK: 32,
+        maxOutputTokens: 900,
+        timeoutMs: 12000,
+        responseSchema: {
+          type: 'object',
+          properties: {
+            estimatedDurationMin: { type: 'number' },
+            picks: {
+              type: 'array',
+              items: {
+                type: 'object',
+                properties: {
+                  slotIndex: { type: 'number' },
+                  startOffsetMin: { type: 'number' },
+                  durationMin: { type: 'number' },
+                  reason: { type: 'string' },
+                },
+                required: ['slotIndex', 'startOffsetMin', 'durationMin', 'reason'],
+              },
+            },
+          },
+          required: ['picks'],
+        },
+      });
       const parsed = parseSmartSlotJson(text);
       const picks = (parsed?.picks ?? [])
         .map((pick) => ({

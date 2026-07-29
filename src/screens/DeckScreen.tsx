@@ -20,7 +20,7 @@ import { addMinutes, formatDuration, formatTime, getTimeWindowContext, toISO } f
 import { chooseTravelMode, estimateEtaMinutes, haversineKm } from '../services/travel';
 import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../services/calendar';
 import { logEvent } from '../services/analytics';
-import { syncBusinessMetric } from '../services/user';
+import { isAdminUser, isBusinessAdmin, syncBusinessMetric } from '../services/user';
 import { AD_RULES, buildAdKeywords } from '../services/ads/adConfig';
 import { isAdPlaceholderMode, isAdsAvailable } from '../services/ads/mobileAds';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
@@ -32,12 +32,6 @@ import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
 
-/** Add your admin email(s) here to enable the source-debug overlay on every card */
-const ADMIN_EMAILS: string[] = (process.env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS ?? '')
-  .split(',')
-  .map((e: string) => e.trim())
-  .filter(Boolean);
-
 export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
@@ -46,7 +40,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const adsCompliance = useAdsCompliance();
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const isAdmin = ADMIN_EMAILS.length > 0 && ADMIN_EMAILS.includes(state.userEmail ?? '');
+  const [isAdmin, setIsAdmin] = useState(() => isBusinessAdmin(state.userEmail));
   const [deck, setDeck] = useState<DeckSuggestion[]>([]);
   const [index, setIndex] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -81,6 +75,22 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       gestureEnabled: false,
     });
   }, [navigation]);
+
+  useEffect(() => {
+    let active = true;
+    setIsAdmin(isBusinessAdmin(state.userEmail));
+    isAdminUser()
+      .then((value) => {
+        if (active) setIsAdmin(value);
+      })
+      .catch(() => {
+        if (active) setIsAdmin(isBusinessAdmin(state.userEmail));
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [state.userEmail, state.userId]);
 
   useEffect(() => {
     if (!loading) {
