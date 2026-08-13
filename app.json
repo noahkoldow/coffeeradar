@@ -14,7 +14,7 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.bits.app",
+      "bundleIdentifier": "com.bitsapp.404",
       "usesAppleSignIn": true,
       "infoPlist": {
         "NSCalendarsUsageDescription": "We read your next event to find free time and write plans you commit to.",
@@ -61,7 +61,8 @@
             "hv4b5e874q.skadnetwork"
           ]
         }
-      ]
+      ],
+      "expo-font"
     ],
     "scheme": "bits",
     "extra": {
