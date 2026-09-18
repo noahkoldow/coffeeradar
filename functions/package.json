@@ -1,9 +1,10 @@
-
 {
 	"name": "coffee-radar-functions",
 	"version": "0.1.0",
 	"private": true,
-	"engines": { "node": "20" },
+	"engines": {
+		"node": "22"
+	},
 	"main": "lib/index.js",
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
@@ -12,10 +13,10 @@
 		"admin:unset": "node scripts/manageAdminClaim.js unset"
 	},
 	"dependencies": {
-		"firebase-admin": "^11.10.0",
-		"firebase-functions": "^4.3.0",
-		"node-fetch": "^3.3.2",
-		"jsonwebtoken": "^9.0.0"
+		"@apple/app-store-server-library": "^3.1.0",
+		"firebase-admin": "^13.10.0",
+		"firebase-functions": "^6.6.0",
+		"node-fetch": "^3.3.2"
 	},
 	"devDependencies": {
 		"@types/markdown-it": "^14.1.2",
@@ -24,4 +25,3 @@
 		"typescript": "^5.1.3"
 	}
 }
-

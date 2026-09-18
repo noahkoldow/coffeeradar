@@ -2,6 +2,11 @@ rules_version = '2';
 
 service cloud.firestore {
   match /databases/{database}/documents {
+    // Request ownership comes from verified callable authentication, never client payloads.
+    match /account_deletion_requests/{uid} {
+      allow read: if request.auth != null && (request.auth.uid == uid || request.auth.token.admin == true);
+      allow write: if false;
+    }
     // ========================================================================
     // Helper Functions
     // ========================================================================
@@ -12,7 +17,7 @@ service cloud.firestore {
 
     function isAdmin() {
       return isSignedIn()
-        && request.auth.token.admin == true;
+        && request.auth.token.get('admin', false) == true;
     }
 
     function getUserId() {
@@ -107,23 +112,45 @@ service cloud.firestore {
         && data.title is string
         && data.title.size() > 0
         && data.hook is string
-        && data.cta is string
+        && (data.cta is string || data.cta is map)
         && data.status in [
           'draft',
           'pending_approval',
           'approved',
           'active',
           'paused',
-          'archived'
+          'archived',
+          'ended'
         ]
         && data.targeting is map
-        && data.targeting.keys().hasAll([
-          'moods',
-          'weatherConditions',
-          'locationRadius',
-          'interests'
-        ])
         && data.createdBy is string;
+    }
+
+    function validTextItem(items, index) {
+      return items.size() <= index || (items[index] is string && items[index].size() > 0 && items[index].size() <= 80);
+    }
+    function validTextList(items, maximum) {
+      return items is list && items.size() <= maximum
+        && validTextItem(items, 0) && validTextItem(items, 1) && validTextItem(items, 2) && validTextItem(items, 3)
+        && validTextItem(items, 4) && validTextItem(items, 5) && validTextItem(items, 6) && validTextItem(items, 7)
+        && validTextItem(items, 8) && validTextItem(items, 9);
+    }
+    function validCommunityContent(data) {
+      return data.title is string && data.title.size() > 0 && data.title.size() <= 160
+        && data.hook is string && data.hook.size() > 0 && data.hook.size() <= 300
+        && data.description is string && data.description.size() > 0 && data.description.size() <= 3000
+        && data.type in ['AT_HOME', 'GO_OUT', 'EVENT']
+        && data.durationMin is number && data.durationMin >= 1 && data.durationMin <= 1440
+        && validTextList(data.get('tags', []), 10) && validTextList(data.get('emojis', []), 6)
+        && data.get('cta', '') is string && data.get('imageUrl', '') is string
+        && data.get('timeOfDay', 'any') in ['any', 'morning', 'afternoon', 'evening']
+        && (!('place' in data) || (data.place is map && data.place.name is string
+          && data.place.name.size() > 0 && data.place.get('address', '') is string
+          && (!('lat' in data.place) || (data.place.lat is number && data.place.lat >= -90 && data.place.lat <= 90))
+          && (!('lng' in data.place) || (data.place.lng is number && data.place.lng >= -180 && data.place.lng <= 180))))
+        && (!('event' in data) || (data.event is map
+          && data.event.startAt is string && data.event.venue is string && data.event.ticketUrl is string
+          && data.event.get('priceRange', '') is string));
     }
 
     // ========================================================================
@@ -141,6 +168,22 @@ service cloud.firestore {
     }
 
     // ========================================================================
+    // Server-owned subscription state. Device storage and user documents cannot grant access.
+    match /entitlements/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false;
+    }
+    match /store_transactions/{transactionId} { allow read, write: if false; }
+    match /sandbox_entitlements/{userId} {
+      allow read: if isSignedIn() && request.auth.uid == userId;
+      allow write: if false;
+    }
+    match /sandbox_store_transactions/{transactionId} { allow read, write: if false; }
+    match /campaign_vouchers/{voucherId} {
+      allow read: if isSignedIn() && resource.data.userId == request.auth.uid;
+      allow write: if false;
+    }
+
     // Analytics Events Collection
     // ========================================================================
 
@@ -155,9 +198,27 @@ service cloud.firestore {
     // ========================================================================
 
     match /business_submissions/{submissionId} {
+      function validTag(tags, index) {
+        return tags.size() <= index || (tags[index] is string && tags[index].size() > 0 && tags[index].size() <= 60);
+      }
+      function validListing(b) {
+        return b is map && b.name is string && b.name.size() >= 2 && b.name.size() <= 120
+          && b.description is string && b.description.size() >= 20 && b.description.size() <= 1000
+          && b.type in ['gym', 'cafe', 'restaurant', 'studio', 'venue', 'other']
+          && b.place is map && b.place.name is string && b.place.name.size() > 0 && b.place.name.size() <= 120
+          && b.place.address is string && b.place.address.size() > 0 && b.place.address.size() <= 500
+          && b.place.lat is number && b.place.lat >= -90 && b.place.lat <= 90
+          && b.place.lng is number && b.place.lng >= -180 && b.place.lng <= 180
+          && b.targetTags is list && b.targetTags.size() > 0 && b.targetTags.size() <= 8
+          && validTag(b.targetTags, 0) && validTag(b.targetTags, 1) && validTag(b.targetTags, 2) && validTag(b.targetTags, 3)
+          && validTag(b.targetTags, 4) && validTag(b.targetTags, 5) && validTag(b.targetTags, 6) && validTag(b.targetTags, 7);
+      }
       allow create: if isSignedIn()
+        && request.resource.data.keys().hasOnly(['business', 'submittedBy', 'submittedByEmail', 'status', 'submittedAt', 'reviewNote'])
         && request.resource.data.submittedBy == request.auth.uid
         && request.resource.data.status == 'pending'
+        && request.resource.data.submittedAt is timestamp
+        && validListing(request.resource.data.business)
         && request.resource.data.business.isVerified == false;
 
       allow read: if isAdmin()
@@ -175,7 +236,8 @@ service cloud.firestore {
     // ========================================================================
 
     match /businesses/{businessId} {
-      allow read: if resource.data.verificationStatus == 'verified'
+      allow read: if (isSignedIn() && request.auth.uid == businessId && !exists(/databases/$(database)/documents/businesses/$(businessId)))
+        || resource.data.verificationStatus == 'verified'
         || isBusinessMember(businessId)
         || isAdmin();
 
@@ -185,11 +247,14 @@ service cloud.firestore {
         && request.resource.data.teamMembers is map
         && request.resource.data.verificationStatus == 'pending';
 
-      allow update: if (
-          isAdmin()
-          || isBusinessOwner(businessId)
-        )
-        && hasValidBusinessData(request.resource.data);
+      allow update: if hasValidBusinessData(request.resource.data)
+        && (isAdmin() || (isBusinessOwner(businessId)
+          && request.resource.data.ownerId == resource.data.ownerId
+          && request.resource.data.verificationStatus == resource.data.verificationStatus
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+            'businessName', 'category', 'email', 'location', 'website', 'phone',
+            'description', 'logo', 'logoUrl', 'coverImageUrl', 'socialLinks', 'updatedAt', 'teamMembers'
+          ])));
 
       allow delete: if isAdmin();
 
@@ -199,32 +264,22 @@ service cloud.firestore {
              .hasOnly(['metrics', 'updatedAt']);
 
       match /campaigns/{campaignId} {
-        allow read: if isBusinessMember(businessId)
-          || resource.data.status in ['approved', 'active'];
+        allow read: if isBusinessMember(businessId) || isAdmin()
+          || (resource.data.status == 'active'
+            && get(/databases/$(database)/documents/businesses/$(businessId)).data.verificationStatus == 'verified');
 
-        allow create: if isBusinessMemberWithRole(
-            businessId,
-            'editor'
-          )
+        // Draft validation and approval queues are transactional server operations.
+        allow create: if false;
+
+        allow update: if isAdmin() || (isBusinessMemberWithRole(businessId, 'editor')
           && hasValidCampaignData(request.resource.data)
-          && request.resource.data.businessId == businessId
-          && request.resource.data.status == 'draft'
-          && request.resource.data.createdBy == request.auth.uid;
-
-        allow update: if (
-            isBusinessMemberWithRole(businessId, 'editor')
-            && request.resource.data.status in [
-              'draft',
-              'pending_approval'
-            ]
-          )
-          || isAdmin();
-
-        allow update: if isAdmin()
-          && request.resource.data.status in [
-            'approved',
-            'active'
-          ];
+          && request.resource.data.businessId == resource.data.businessId
+          && request.resource.data.createdBy == resource.data.createdBy
+          && request.resource.data.createdAt == resource.data.createdAt
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status', 'updatedAt', 'publishedAt', 'pausedAt', 'resumedAt', 'archivedAt', 'endedAt', 'deletedAt'])
+          && ((resource.data.status in ['active', 'approved'] && request.resource.data.status == 'paused')
+            || (resource.data.status in ['approved', 'paused'] && request.resource.data.status == 'active')
+            || request.resource.data.status in ['archived', 'ended']));
 
         allow delete: if isBusinessOwner(businessId)
           || isAdmin();
@@ -362,6 +417,12 @@ service cloud.firestore {
       }
     }
 
+    // Canonical business account review is a separate operator workflow.
+    match /business_verification_requests/{businessId} {
+      allow read: if isAdmin() || (isSignedIn() && resource.data.requestedBy == request.auth.uid);
+      allow write: if false;
+    }
+
     // ========================================================================
     // Activities collection (DB-first content store)
     // ========================================================================
@@ -377,6 +438,10 @@ service cloud.firestore {
       allow create: if isSignedIn()
         && request.resource.data.submittedBy == request.auth.uid
         && request.resource.data.status == 'pending'
+        && request.resource.data.get('reviewerId', null) == null
+        && request.resource.data.get('reviewedAt', null) == null
+        && request.resource.data.get('reviewNote', null) == null
+        && validCommunityContent(request.resource.data)
         && request.resource.data.submittedAt is string
         && request.resource.data.submittedAtTs is timestamp
         && request.resource.data.createdAt is timestamp
@@ -399,6 +464,9 @@ service cloud.firestore {
           isSignedIn()
           && resource.data.submittedBy == request.auth.uid
           && resource.data.status == 'pending'
+          && request.resource.data.status == 'pending'
+          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['title', 'hook', 'description', 'type', 'durationMin', 'cta', 'tags', 'emojis', 'place', 'event', 'imageUrl', 'timeOfDay'])
+          && validCommunityContent(request.resource.data)
           && request.resource.data.submittedBy == resource.data.submittedBy
           && request.resource.data.submittedAt == resource.data.submittedAt
           && request.resource.data.submittedAtTs == resource.data.submittedAtTs
@@ -495,6 +563,63 @@ service cloud.firestore {
       }
     }
 
+    match /direct_chats/{threadId} {
+      function isDirectChatParticipant() {
+        return isSignedIn()
+          && resource.data.participantIds is list
+          && request.auth.uid in resource.data.participantIds;
+      }
+
+      allow read: if isDirectChatParticipant();
+
+      allow create: if isSignedIn()
+        && request.resource.data.id == threadId
+        && request.resource.data.participantIds is list
+        && request.resource.data.participantIds.size() == 2
+        && request.auth.uid in request.resource.data.participantIds
+        && request.resource.data.participantNames is map
+        && request.resource.data.createdAt is timestamp
+        && request.resource.data.updatedAt is timestamp
+        && (
+          request.resource.data.contextThreadId is string
+          || request.resource.data.contextThreadId == null
+        )
+        && (
+          request.resource.data.contextTitle is string
+          || request.resource.data.contextTitle == null
+        );
+
+      allow update: if isDirectChatParticipant()
+        && request.resource.data.participantIds == resource.data.participantIds
+        && request.resource.data.participantNames is map
+        && request.resource.data.updatedAt is timestamp
+        && (
+          request.resource.data.contextThreadId is string
+          || request.resource.data.contextThreadId == null
+        )
+        && (
+          request.resource.data.contextTitle is string
+          || request.resource.data.contextTitle == null
+        );
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if isDirectChatParticipant();
+        allow create: if isSignedIn()
+          && isDirectChatParticipant()
+          && request.resource.data.authorId == request.auth.uid
+          && request.resource.data.authorName is string
+          && request.resource.data.authorName.size() > 0
+          && request.resource.data.authorName.size() <= 32
+          && request.resource.data.body is string
+          && request.resource.data.body.size() > 0
+          && request.resource.data.body.size() <= 1000
+          && request.resource.data.createdAt is timestamp;
+        allow update, delete: if false;
+      }
+    }
+
     // ========================================================================
     // Affiliates catalog (public read, admin-managed)
     // ========================================================================
@@ -550,6 +675,9 @@ service cloud.firestore {
         && request.resource.data.durationMin is number
         && request.resource.data.durationMin > 0
         && request.resource.data.tags is list
+        && validTextList(request.resource.data.tags, 10)
+        && getAfter(/databases/$(database)/documents/community_ideas/$(approvalId)).data.submittedBy == request.auth.uid
+        && getAfter(/databases/$(database)/documents/community_ideas/$(approvalId)).data.status == 'pending'
         && request.resource.data.hasLocation is bool
         && request.resource.data.hasImage is bool;
       allow update: if isAdmin()
