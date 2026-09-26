@@ -1,6 +1,6 @@
 ﻿{
     "preparedAt":  "2026-09-26T19:23:23.9376545Z",
-    "status":  "VALIDATED_READY_TO_BUILD",
+    "status":  "TESTFLIGHT_AVAILABLE",
     "appVersion":  "1.0.0",
     "profile":  "testflight-staging",
     "channel":  "production",
@@ -34,5 +34,107 @@
     "archiveExclusions":  [
                               "Environment secrets and private signing keys",
                               "Browser profiles and generated test artifacts"
-                          ]
+                          ],
+    "sourceCommit":  "d1d79f01570205f782913a5f2f41f7febb91078f",
+    "sourceTag":  "v1.0.0-testflight.14",
+    "sourceUrl":  "https://github.com/noahkoldow/coffeeradar/tree/v1.0.0-testflight.14",
+    "buildNumber":  "14",
+    "buildId":  "d50b6d38-c50e-45eb-884a-abc82bf5daaa",
+    "buildUrl":  "https://expo.dev/accounts/noehxpo/projects/bits/builds/d50b6d38-c50e-45eb-884a-abc82bf5daaa",
+    "buildCompletedAt":  "2026-09-26T19:29:32.642Z",
+    "submissionId":  "84e4bd0d-f10c-4b87-9c2e-9e495992a698",
+    "submissionUrl":  "https://expo.dev/accounts/noehxpo/projects/bits/submissions/84e4bd0d-f10c-4b87-9c2e-9e495992a698",
+    "binaryVerification":  {
+                               "checkedAt":  "2026-09-26T19:30:11.520486+00:00",
+                               "buildId":  "d50b6d38-c50e-45eb-884a-abc82bf5daaa",
+                               "gitCommitHash":  "d1d79f01570205f782913a5f2f41f7febb91078f",
+                               "ipaBytes":  15300534,
+                               "ipaSha256":  "84d4868326c148fe07e87010cef3bb4a033b8e70a13ebe6cd0f308c0adbba8d3",
+                               "bundleIdentifier":  "com.bitsapp.404",
+                               "appVersion":  "1.0.0",
+                               "buildNumber":  "14",
+                               "runtimeVersion":  "1.0.0",
+                               "channel":  "production",
+                               "embeddedBundleSha256":  "ad1075b77ee66e9b2e0674643387af5679ea18bb02b37c90ddd8f4a76e8de2db",
+                               "metadataVerified":  true,
+                               "featureMarkers":  {
+                                                      "Session map":  true,
+                                                      "Your alternatives for this session":  true,
+                                                      "AIPrivacy":  true,
+                                                      "Cancel Premium":  true,
+                                                      "1 swipe recharges every 10 minutes.":  true,
+                                                      "habit_generalized":  true,
+                                                      "Bits Premium":  true
+                                                  },
+                               "activityChatMarkers":  {
+                                                           "Please sign in again to use the chat.":  true,
+                                                           "Chat is currently unavailable. Please try again.":  true,
+                                                           "Messages can have at most ":  true,
+                                                           " characters.":  true,
+                                                           "Your message could not be sent. Your text has been kept. Please try again.":  true,
+                                                           "Could not connect to the chat. Please check your connection and try again.":  true,
+                                                           "activity-chat/unauthenticated":  true,
+                                                           "activity-chat/message-too-long":  true,
+                                                           "activity-chat/display-name-required":  true,
+                                                           "Bitte melde dich erneut an, um den Chat zu nutzen.":  true,
+                                                           "Die Nachricht konnte nicht gesendet werden. Dein Text bleibt erhalten. Bitte versuche es erneut.":  true
+                                                       },
+                               "brandingAssets":  {
+                                                      "logo.png":  {
+                                                                       "sourceSha256":  "79bc06878694204ce16d4201cf40b98f9a6471ac4d5aa8372b3bde7f99cf7d14",
+                                                                       "archivePaths":  [
+                                                                                            "Payload/bits.app/assets/assets/logo.png"
+                                                                                        ],
+                                                                       "matchesSource":  true,
+                                                                       "embeddedSha256":  "79bc06878694204ce16d4201cf40b98f9a6471ac4d5aa8372b3bde7f99cf7d14",
+                                                                       "sourceDimensions":  [
+                                                                                                778,
+                                                                                                321
+                                                                                            ]
+                                                                   },
+                                                      "logo_premium.png":  {
+                                                                               "sourceSha256":  "f6c77fa84e7be2876e1293ca85ab8c081a115eabe85175a76d5f2fe2c4069b5a",
+                                                                               "archivePaths":  [
+                                                                                                    "Payload/bits.app/assets/assets/logo_premium.png"
+                                                                                                ],
+                                                                               "matchesSource":  true,
+                                                                               "embeddedSha256":  "f6c77fa84e7be2876e1293ca85ab8c081a115eabe85175a76d5f2fe2c4069b5a",
+                                                                               "sourceDimensions":  [
+                                                                                                        1672,
+                                                                                                        941
+                                                                                                    ]
+                                                                           },
+                                                      "b_loading.png":  {
+                                                                            "sourceSha256":  "02dfa39208c32ca78220a23bd16e3213793e0ec8c8568a99440b95a984e061e4",
+                                                                            "archivePaths":  [
+                                                                                                 "Payload/bits.app/assets/assets/b_loading.png"
+                                                                                             ],
+                                                                            "matchesSource":  true,
+                                                                            "embeddedSha256":  "02dfa39208c32ca78220a23bd16e3213793e0ec8c8568a99440b95a984e061e4",
+                                                                            "sourceDimensions":  [
+                                                                                                     547,
+                                                                                                     456
+                                                                                                 ]
+                                                                        }
+                                                  },
+                               "passed":  true
+                           },
+    "verifiedAt":  "2026-09-26T19:35:11.800Z",
+    "submissionStatus":  "FINISHED",
+    "testFlightAvailable":  true,
+    "testFlight":  {
+                       "appStoreConnectBuildId":  "77d123bd-a0a5-406f-ad0b-7a5cd2be09d4",
+                       "appVersion":  "1.0.0",
+                       "buildNumber":  "14",
+                       "processingState":  "VALID",
+                       "internalBuildState":  "IN_BETA_TESTING",
+                       "externalBuildState":  "READY_FOR_BETA_SUBMISSION",
+                       "expired":  false,
+                       "groupId":  "e34a6cc4-637f-4b3f-a575-e1d8f5753639",
+                       "groupName":  "Team (Expo)",
+                       "isInternalGroup":  true,
+                       "confirmedInGroup":  true,
+                       "url":  "https://appstoreconnect.apple.com/apps/6801029604/testflight/ios"
+                   },
+    "installation":  "Open TestFlight, select Bits, and update to version 1.0.0 (14)."
 }
