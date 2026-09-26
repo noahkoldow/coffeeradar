@@ -3,6 +3,7 @@ import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { auth, db, ensureAuth, firebaseEnabled, storage, functions } from './firebase'; // Added 'functions'
 import { CommunityIdeaSubmission, CommunityIdeaSubmissionInput, DeckSuggestion, HabitTimeOfDay, Suggestion } from '../types';
 import { httpsCallable } from 'firebase/functions'; // Added httpsCallable
+import { ensureCoreAiConsent } from './aiConsent';
 
 const communityIdeaCollection = 'community_ideas';
 const approvalQueueCollection = 'approval_queue';
@@ -103,6 +104,7 @@ const polishCommunityIdeaCopy = async (idea: CommunityIdeaSubmission): Promise<C
   }
 
   try {
+    if (!await ensureCoreAiConsent()) return null;
     const result = await polishCommunityIdeaCallable({ idea });
     const data = result.data as { payload: CommunityIdeaPolishResult };
 

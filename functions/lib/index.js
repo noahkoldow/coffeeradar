@@ -36,12 +36,18 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.reviewBusinessAccount = exports.createBusinessAccount = exports.moderateCommunityIdea = exports.requestAccountDeletion = exports.reviewBusinessListing = exports.validateBusinessCampaignCommitment = exports.recordBusinessCampaignEvent = exports.redeemCampaignVoucher = exports.issueCampaignVoucher = exports.getBusinessCampaignById = exports.reviewBusinessCampaign = exports.submitBusinessCampaign = exports.saveBusinessCampaign = exports.appStoreNotifications = exports.refreshPremiumEntitlement = exports.verifyPremiumPurchase = exports.getPremiumBillingConfiguration = exports.isAdmin = exports.fetchExternalData = exports.polishCommunityIdea = exports.rankTodoSlots = exports.markActivityVerified = exports.findOrGenerateActivity = exports.dbLookup = exports.setEmailVerificationPolicy = exports.getAccountAccess = void 0;
-const aiImage_1 = require("./aiImage");
+exports.reviewBusinessAccount = exports.createBusinessAccount = exports.moderateCommunityIdea = exports.requestAccountDeletion = exports.reviewBusinessListing = exports.validateBusinessCampaignCommitment = exports.recordBusinessCampaignEvent = exports.redeemCampaignVoucher = exports.issueCampaignVoucher = exports.getBusinessCampaignById = exports.reviewBusinessCampaign = exports.submitBusinessCampaign = exports.saveBusinessCampaign = exports.appStoreNotifications = exports.refreshPremiumEntitlement = exports.verifyPremiumPurchase = exports.getPremiumBillingConfiguration = exports.isAdmin = exports.fetchExternalData = exports.polishCommunityIdea = exports.rankTodoSlots = exports.markActivityVerified = exports.findOrGenerateActivity = exports.dbLookup = exports.discoverCityEvents = exports.setEmailVerificationPolicy = exports.getAccountAccess = exports.getCoreAiConsent = exports.setCoreAiConsent = exports.generateAiJson = void 0;
+const aiGateway_1 = require("./aiGateway");
+var aiGateway_2 = require("./aiGateway");
+Object.defineProperty(exports, "generateAiJson", { enumerable: true, get: function () { return aiGateway_2.generateAiJson; } });
+var aiConsent_1 = require("./aiConsent");
+Object.defineProperty(exports, "setCoreAiConsent", { enumerable: true, get: function () { return aiConsent_1.setCoreAiConsent; } });
+Object.defineProperty(exports, "getCoreAiConsent", { enumerable: true, get: function () { return aiConsent_1.getCoreAiConsent; } });
 var accountAccess_1 = require("./accountAccess");
 Object.defineProperty(exports, "getAccountAccess", { enumerable: true, get: function () { return accountAccess_1.getAccountAccess; } });
 Object.defineProperty(exports, "setEmailVerificationPolicy", { enumerable: true, get: function () { return accountAccess_1.setEmailVerificationPolicy; } });
-const aiQuota_1 = require("./aiQuota");
+var cityEvents_1 = require("./cityEvents");
+Object.defineProperty(exports, "discoverCityEvents", { enumerable: true, get: function () { return cityEvents_1.discoverCityEvents; } });
 const authorization_1 = require("./authorization");
 const functionsV1 = __importStar(require("firebase-functions/v1")); // Keep legacy callable signatures explicit.
 const https_1 = require("firebase-functions/v2/https");
@@ -68,11 +74,7 @@ function readConfigValue(path, fallback = '') {
 const ENFORCE_APP_CHECK = String(readConfigValue('app.enforce_app_check', process.env.ENFORCE_APP_CHECK ?? '')
     || process.env.ENFORCE_APP_CHECK
     || 'false').toLowerCase() === 'true';
-const GEMINI_MODEL = String(readConfigValue('app.gemini_model', process.env.EXPO_PUBLIC_GEMINI_MODEL ?? '')
-    || process.env.EXPO_PUBLIC_GEMINI_MODEL
-    || process.env.GEMINI_MODEL).trim();
-// Secret definitions for V2 functions
-const GEMINI_API_KEY = (0, params_1.defineSecret)('GEMINI_API_KEY');
+// Secret definitions for external data providers
 const TICKETMASTER_API_KEY = (0, params_1.defineSecret)('TICKETMASTER_API_KEY');
 const SEATGEEK_CLIENT_ID = (0, params_1.defineSecret)('SEATGEEK_CLIENT_ID');
 const SEATGEEK_CLIENT_SECRET = (0, params_1.defineSecret)('SEATGEEK_CLIENT_SECRET');
@@ -199,82 +201,8 @@ function determineTTLSeconds(generated, attrs) {
         return 12 * 3600;
     return 7 * 24 * 3600;
 }
-async function resolveGeminiApiKey() {
-    const fromConfig = readConfigValue('app.gemini_api_key', '') || process.env.GEMINI_API_KEY || '';
-    if (fromConfig)
-        return String(fromConfig);
-    try {
-        return GEMINI_API_KEY.value();
-    }
-    catch (error) {
-        return undefined;
-    }
-}
 async function callGemini(prompt, options) {
-    if (typeof prompt !== 'string' || !prompt.trim() || prompt.length > 24000) {
-        throw new https_1.HttpsError('invalid-argument', 'A prompt between 1 and 24000 characters is required.');
-    }
-    const allowedModels = [GEMINI_MODEL, 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'].filter(Boolean);
-    const model = typeof options.model === 'string' && allowedModels.includes(options.model) ? options.model : GEMINI_MODEL;
-    if (!model)
-        throw new https_1.HttpsError('failed-precondition', 'Gemini model is not configured.');
-    const apiKey = await resolveGeminiApiKey();
-    if (!apiKey)
-        throw new https_1.HttpsError('failed-precondition', 'Gemini API key is not configured.');
-    const schema = options.responseSchema;
-    if (schema != null && (typeof schema !== 'object' || Array.isArray(schema) || JSON.stringify(schema).length > 16000)) {
-        throw new https_1.HttpsError('invalid-argument', 'Invalid response schema.');
-    }
-    let image;
-    try {
-        image = (0, aiImage_1.validateAiImage)(options.image);
-    }
-    catch (error) {
-        throw new https_1.HttpsError('invalid-argument', error.message);
-    }
-    const timeoutMs = typeof options.timeoutMs === 'number' && Number.isFinite(options.timeoutMs) ? Math.min(25000, Math.max(1000, options.timeoutMs)) : 20000;
-    const releaseBudget = await (0, aiQuota_1.acquireAiBudget)(db, options.uid);
-    const controller = new AbortController();
-    const startedAt = Date.now();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    try {
-        const resp = await (0, node_fetch_1.default)(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: controller.signal,
-            body: JSON.stringify({
-                contents: [{ role: 'user', parts: [{ text: prompt }, ...(image ? [{ inlineData: image }] : [])] }],
-                generationConfig: {
-                    responseMimeType: 'application/json',
-                    ...(/^gemini-3\.[56]-flash/.test(model) ? { thinkingConfig: { thinkingLevel: 'minimal' } } : {}),
-                    temperature: typeof options.temperature === 'number' && Number.isFinite(options.temperature) ? Math.min(1, Math.max(0, options.temperature)) : 0.3,
-                    maxOutputTokens: typeof options.maxOutputTokens === 'number' && Number.isFinite(options.maxOutputTokens) ? Math.min(8192, Math.max(512, Math.floor(options.maxOutputTokens))) : 4096,
-                    ...(schema ? { responseJsonSchema: schema } : {}),
-                },
-            }),
-        });
-        if (!resp.ok) {
-            const code = resp.status === 429 ? 'resource-exhausted' : [401, 403].includes(resp.status) ? 'permission-denied' : [400, 404].includes(resp.status) ? 'failed-precondition' : 'unavailable';
-            const retrySeconds = Number(resp.headers.get('retry-after'));
-            throw new https_1.HttpsError(code, `Gemini HTTP ${resp.status}`, { providerHttpStatus: resp.status,
-                ...(Number.isFinite(retrySeconds) && retrySeconds > 0 ? { retryAfterMs: Math.min(3600000, retrySeconds * 1000) } : {}) });
-        }
-        const data = await resp.json();
-        const text = (data.candidates?.[0]?.content?.parts || []).filter((part) => part.thought !== true).map((part) => part.text || '').join('').trim();
-        const finishReason = data.candidates?.[0]?.finishReason || 'unknown';
-        console.info('Gemini provider response', { model, elapsedMs: Date.now() - startedAt, outputCharacters: text.length, finishReason,
-            promptTokens: data.usageMetadata?.promptTokenCount, outputTokens: data.usageMetadata?.candidatesTokenCount, thinkingTokens: data.usageMetadata?.thoughtsTokenCount, totalTokens: data.usageMetadata?.totalTokenCount });
-        if (!text)
-            throw new https_1.HttpsError('unavailable', 'Gemini returned an empty response.', { reason: 'empty-output', finishReason });
-        return text;
-    }
-    catch (error) {
-        if (controller.signal.aborted)
-            throw new https_1.HttpsError('deadline-exceeded', 'Gemini request timeout.');
-        throw error;
-    }
-    finally {
-        clearTimeout(timer);
-        await releaseBudget();
-    }
+    return (await (0, aiGateway_1.generateForUser)(options.uid, { ...options, prompt })).text;
 }
 function normalizeAttributes(raw) {
     if (!raw)
@@ -355,7 +283,6 @@ exports.dbLookup = functionsV1.https.onCall(async (payload, ctx) => {
 exports.findOrGenerateActivity = (0, https_1.onCall)({
     region: 'us-central1',
     invoker: 'public',
-    secrets: [GEMINI_API_KEY],
 }, async (request) => {
     if (!request.auth) {
         console.warn('[CallableAuth] Rejecting unauthenticated callable request', {
@@ -411,7 +338,7 @@ exports.rankTodoSlots = functionsV1.https.onCall(async (_data, ctx) => {
     requireAppCheck(ctx);
     throw new functionsV1.https.HttpsError('failed-precondition', 'rankTodoSlots is deprecated. Use client-side Firebase AI Logic ranking (Option B).');
 });
-exports.polishCommunityIdea = functionsV1.https.onCall(async (data, ctx) => {
+exports.polishCommunityIdea = functionsV1.runWith({ secrets: ['AI_PROVIDER_KEYS'], enforceAppCheck: ENFORCE_APP_CHECK, timeoutSeconds: 60, maxInstances: 20 }).https.onCall(async (data, ctx) => {
     requireAuth(ctx);
     requireAppCheck(ctx);
     const idea = data.idea;
@@ -443,7 +370,7 @@ exports.polishCommunityIdea = functionsV1.https.onCall(async (data, ctx) => {
         return { payload: parsed };
     }
     catch (e) {
-        console.error('polishCommunityIdea failed', e);
+        console.warn('polishCommunityIdea failed', { code: e instanceof https_1.HttpsError ? e.code : 'unavailable' });
         throw new functionsV1.https.HttpsError('internal', 'Unable to polish idea right now');
     }
 });
@@ -484,21 +411,22 @@ function tryParseModelText(txt) {
  * @param {string} [data.searchQuery] - An optional search query for events/places.
  */
 exports.fetchExternalData = (0, https_1.onCall)({
+    ...aiGateway_1.AI_FUNCTION_OPTIONS,
     enforceAppCheck: ENFORCE_APP_CHECK,
-    secrets: [GEMINI_API_KEY, TICKETMASTER_API_KEY, SEATGEEK_CLIENT_ID, SEATGEEK_CLIENT_SECRET, GOOGLE_PLACES_API_KEY]
+    secrets: [aiGateway_1.AI_PROVIDER_KEYS, TICKETMASTER_API_KEY, SEATGEEK_CLIENT_ID, SEATGEEK_CLIENT_SECRET, GOOGLE_PLACES_API_KEY]
 }, async (request) => {
     // Ensure the user is authenticated
     if (!request.auth) {
         throw new https_1.HttpsError('unauthenticated', 'Authentication required.');
     }
-    const { location, geminiPrompt, searchQuery } = request.data;
+    const { location, geminiPrompt, searchQuery } = request.data || {};
     if (geminiPrompt) {
         const consent = await db.doc(`users/${request.auth.uid}/consents/coreAI`).get();
         if (consent.data()?.allowed !== true) {
             throw new https_1.HttpsError('permission-denied', 'Accept the current AI processing notice before using AI features.');
         }
     }
-    // The AI transport requests only Gemini. Do not wait for unrelated venue APIs or
+    // Preserve the legacy Gemini response key while routing AI on the server. Do not wait for unrelated venue APIs or
     // access their credentials when no search was requested.
     if (location === 'unknown' && !searchQuery && geminiPrompt) {
         try {
@@ -546,12 +474,12 @@ exports.fetchExternalData = (0, https_1.onCall)({
                 return { apiName: 'Gemini', status: 'skipped', message: 'No Gemini prompt provided.' };
             }
             try {
-                // The existing callGemini function is now adapted to use the secret.
+                // The shared router also enforces consent, budgets and configured provider order.
                 const geminiResult = await callGemini(geminiPrompt, { uid: request.auth.uid });
                 return { apiName: 'Gemini', status: 'success', data: geminiResult };
             }
             catch (error) {
-                console.error('Error calling Gemini API:', error);
+                console.warn('AI routing failed', { code: error instanceof https_1.HttpsError ? error.code : 'unavailable' });
                 return { apiName: 'Gemini', status: 'failed', error: error.message };
             }
         })(),

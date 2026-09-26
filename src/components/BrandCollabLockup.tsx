@@ -2,6 +2,7 @@ import React, { useMemo } from 'react';
 import { Image, StyleProp, StyleSheet, Text, View, ViewStyle } from 'react-native';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
+import { BrandLogo } from './BrandLogo';
 
 type BrandCollabLockupProps = {
   height?: number;
@@ -17,17 +18,12 @@ export const BrandCollabLockup: React.FC<BrandCollabLockupProps> = ({
   const theme = useTheme();
   const { state } = useAppState();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const bitsLogo = state.isPremium
-    ? require('../../assets/logo_premium.png')
-    : require('../../assets/logo.png');
-
-  const logoWidth = bitsWidth ?? height * 3;
   const partnerSize = Math.max(20, Math.round(height * 0.95));
   const businessLogoUrl = state.businessProfile?.logo?.url;
 
   return (
     <View style={[styles.container, style]}>
-      <Image source={bitsLogo} style={{ width: logoWidth, height }} resizeMode="contain" />
+      <BrandLogo premium={state.isPremium} height={height} width={bitsWidth} onDarkBackground={theme.isDark} />
       {businessLogoUrl ? (
         <>
           <Text style={[styles.collabDivider, { fontSize: Math.max(11, Math.round(height * 0.4)) }]}>X</Text>

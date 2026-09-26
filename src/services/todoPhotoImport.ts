@@ -19,9 +19,6 @@ type GeminiTodoPayload = {
   todos?: GeminiTodoItem[];
 };
 
-const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
-const allowDirectModelCalls = isDevBuild
-  || String((globalThis as any).process?.env?.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 const GEMINI_MODELS = ['gemini-3.6-flash'];
 const MAX_IMPORTED_TODOS = 20;
 
@@ -314,9 +311,6 @@ export const importTodosFromPhoto = async (
   imageBase64: string,
   mimeType = 'image/jpeg',
 ): Promise<TodoPhotoImportItem[]> => {
-  if (!allowDirectModelCalls) {
-    throw new Error('Direct model calls are disabled. Use secured backend inference for photo import.');
-  }
   if (!imageBase64?.trim()) {
     return [];
   }

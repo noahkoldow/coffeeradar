@@ -1,0 +1,13 @@
+{
+  "verifiedAt": "2026-09-24T11:32:10.083Z",
+  "project": "coffeeradar-415f2",
+  "accountEmail": "bitsapp.admin@gmail.com",
+  "change": "Explicitly authorized manual administrator role",
+  "admin": true,
+  "emailVerified": false,
+  "emailVerificationChanged": false,
+  "accountEnabled": true,
+  "manualRole": true,
+  "managedEmailAdmin": false,
+  "unrelatedClaimsPreserved": true
+}

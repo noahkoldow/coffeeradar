@@ -15,6 +15,8 @@ import { buildBadgeProgress, BadgeProgress } from '../utils/badges';
 import { streakEmoji } from '../utils/habits';
 import { logEvent } from '../services/analytics';
 import { useI18n } from '../i18n/I18nProvider';
+import { generalizeActivityIntoHabit } from '../services/geminiSuggestions';
+import { auth } from '../services/firebase';
 import { analyzeHabitPattern } from '../services/activityPatternService';
 import {
   getHabitPromptKey,
@@ -229,8 +231,10 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const handleAddAsHabit = useCallback(() => {
     if (addedAsHabit) return;
+    const userId = state.userId;
+    const habitId = `habit_${Date.now()}`;
     const newHabit: Habit = {
-      id: `habit_${Date.now()}`,
+      id: habitId,
       name: title,
       type: suggestionType === 'AT_HOME' ? 'AT_HOME' : 'GO_OUT',
       lengthMin: durationMin,
@@ -248,7 +252,31 @@ export const CompletionScreen: React.FC<Props> = ({ navigation, route }) => {
     setAddedAsHabit(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
     logEvent('habit_added_from_completion', { title });
-  }, [addedAsHabit, title, suggestionType, durationMin, description, tags, actions]);
+
+    // Generalize the one-off activity into a reusable habit template in the background
+    // (e.g. "Ramen at Otto's Noodle Bar" -> "Try a new noodle spot"), so it doesn't show up
+    // verbatim every time. Skipped silently if it fails — the habit above already works fine as-is.
+    generalizeActivityIntoHabit({
+      title,
+      description,
+      type: newHabit.type,
+      durationMin,
+      tags,
+      language: isGerman ? 'de' : 'en',
+    }, userId).then((result) => {
+      // This callback can outlive the screen; never apply an old account's
+      // result through actions that still capture that account's storage key.
+      if (!result?.wasGeneralized || !userId || auth.currentUser?.uid !== userId) return;
+      actions.updateHabit({
+        ...newHabit,
+        name: result.name,
+        description: result.description,
+        adaptationGuidance: result.adaptationGuidance,
+        isGeneralized: true,
+      });
+      logEvent('habit_generalized', { habit_id: habitId, original_title: title, generalized_name: result.name });
+    }).catch(() => undefined);
+  }, [addedAsHabit, title, suggestionType, durationMin, description, tags, actions, isGerman, state.userId]);
 
   const handleRememberSessionIntent = useCallback(() => {
     if (!sessionActivityIntent || rememberedSessionIntent) return;

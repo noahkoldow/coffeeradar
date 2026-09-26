@@ -213,7 +213,7 @@ export async function findOrGenerateActivity(request: ActivityRequest) {
     verified: false,
     usage_count: 1,
     deck_fit_count: 1,
-    source_info: { origin: 'AI', model: env.EXPO_PUBLIC_GEMINI_MODEL || 'gemini-3.6-flash' },
+    source_info: { origin: 'AI', model: 'server-routed' },
   };
 
   const saved = await addDoc(collection(db!, COLLECTION), {

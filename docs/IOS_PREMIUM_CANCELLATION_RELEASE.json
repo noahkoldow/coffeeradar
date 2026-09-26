@@ -1,0 +1,61 @@
+{
+  "publishedAt": "2026-09-25T19:53:26.491Z",
+  "channel": "production",
+  "platform": "ios",
+  "runtimeVersion": "1.0.0",
+  "delivery": "OTA update for existing compatible TestFlight installations",
+  "compatibleBuilds": [
+    "11",
+    "12"
+  ],
+  "supersedesGroup": "63a4537e-8c94-486f-b81d-12565eecbb52",
+  "previousReleaseRecord": "IOS_RELEASE_20260925.json",
+  "sourceBase": "72d522eee5cf276aea1718c215719ec98ceb0c23",
+  "scope": "PremiumScreen only; all other released app files preserved",
+  "reason": "The previously published TestFlight bundle did not contain subscription-management controls.",
+  "behavior": "Cancel Premium is visible near the top of Premium for both local entitlement states and opens the purchase store subscription manager.",
+  "bundleSha256": "7c16ca36b1604ddfdb4b2ea27b327db2a22296501e27abbeb4fb5239ce37ee5b",
+  "lockedDependencies": true,
+  "runtimeDependenciesVerified": 37,
+  "nativeBuildCreated": false,
+  "backendDeployed": false,
+  "updates": [
+    {
+      "id": "01a0da21-3cdb-7d22-95be-f48088c4d472",
+      "createdAt": "2026-09-25T19:53:26.491Z",
+      "group": "4424f90b-26dc-49bd-bae2-f061a35b464e",
+      "branch": "production",
+      "message": "Make Premium cancellation visible for all accounts",
+      "runtimeVersion": "1.0.0",
+      "platform": "ios",
+      "manifestPermalink": "https://u.expo.dev/update/01a0da21-3cdb-7d22-95be-f48088c4d472",
+      "isRollBackToEmbedded": false,
+      "gitCommitHash": "72d522eee5cf276aea1718c215719ec98ceb0c23"
+    }
+  ],
+  "dashboardUrl": "https://expo.dev/accounts/noehxpo/projects/bits/updates/4424f90b-26dc-49bd-bae2-f061a35b464e",
+  "validation": {
+    "premiumManagementTestsPassed": 14,
+    "workspaceTypeCheckPassed": true,
+    "releaseEntrypointTypeCheckPassed": true,
+    "nativeIosExportPassed": true,
+    "mobileVisualChecksPassed": true,
+    "nativeDeviceVerified": false
+  },
+  "verification": {
+    "verifiedAt": "2026-09-25T19:53:44.590Z",
+    "manifestStatus": 200,
+    "servedUpdateId": "01a0da21-3cdb-7d22-95be-f48088c4d472",
+    "servedRuntimeVersion": "1.0.0",
+    "manifestBundleSha256Matches": true,
+    "assetsDownloadedAndHashVerified": 28,
+    "allAssetsVerified": true,
+    "deviceApplicationVerified": false
+  },
+  "changedFiles": [
+    {
+      "file": "src/screens/PremiumScreen.tsx",
+      "sha256": "fb7655a072e9dd5a1608ce331deeca9921851f0e4f887f7b12e7f3972852a30f"
+    }
+  ]
+}

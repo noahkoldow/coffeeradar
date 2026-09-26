@@ -3,6 +3,7 @@ import { Commitment, DeckSuggestion, Habit } from '../types';
 export type RootStackParamList = {
   Auth: undefined;
   PrivacyPolicy: undefined;
+  AIPrivacy: undefined;
   TermsOfService: undefined;
   Welcome: undefined;
   CalendarPermission: undefined;

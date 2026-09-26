@@ -1,12 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   FlatList,
   Pressable,
+  RefreshControl,
   StyleSheet,
   Text,
   View,
 } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -164,7 +165,7 @@ export const CampaignListScreen: React.FC<Props> = ({ navigation }) => {
         style={[styles.container, { paddingTop: insets.top }]}
       >
         <View style={styles.centerContent}>
-          <ActivityIndicator color={theme.colors.accent} size="large" />
+          <BrandLoader size="large" />
         </View>
       </LinearGradient>
     );
@@ -246,8 +247,18 @@ export const CampaignListScreen: React.FC<Props> = ({ navigation }) => {
           renderItem={renderCampaignCard}
           keyExtractor={(item) => item.id}
           contentContainerStyle={styles.listContent}
-          refreshing={refreshing}
-          onRefresh={handleRefresh}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              tintColor="transparent"
+              colors={['transparent']}
+              progressBackgroundColor="transparent"
+            />
+          }
+          ListHeaderComponent={refreshing ? (
+            <BrandLoader style={styles.refreshLoader} />
+          ) : null}
           showsVerticalScrollIndicator={false}
         />
       )}
@@ -320,6 +331,9 @@ const createStyles = (theme: ReturnType<typeof useTheme>) =>
       paddingHorizontal: theme.spacing.lg,
       paddingVertical: theme.spacing.md,
       gap: theme.spacing.md,
+    },
+    refreshLoader: {
+      paddingVertical: theme.spacing.sm,
     },
     campaignCard: {
       backgroundColor: theme.colors.card,

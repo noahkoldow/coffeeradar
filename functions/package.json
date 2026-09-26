@@ -8,6 +8,7 @@
 	"main": "lib/index.js",
 	"scripts": {
 		"build": "tsc -p tsconfig.json",
+		"test:ai": "npm run build && node --test scripts/aiRouter.test.js scripts/aiGateway.test.js scripts/aiClientTransport.test.js ../scripts/ai-consent.test.cjs",
 		"watch": "tsc -w -p tsconfig.json",
 		"admin:set": "node scripts/manageAdminClaim.js set",
 		"admin:unset": "node scripts/manageAdminClaim.js unset"

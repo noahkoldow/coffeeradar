@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Animated, Easing, StyleSheet, Text, View } from 'react-native';
 import { useTheme } from '../theme/ThemeProvider';
 import { findOrGenerateActivity } from '../services/activityGeneration';
+import { BrandLoader } from './BrandLoader';
 
 type DeckType = 'do_now' | 'productive' | 'plan_tomorrow' | 'homebody' | 'challenge_me';
 type LoaderConfig = { messages: Array<{ text: string; emoji: string }>; emojis: string[]; color?: string };
@@ -91,8 +92,6 @@ export const DeckLoader: React.FC<Props> = ({ deckType, request, onResult }) => 
   const pulse = useRef(new Animated.Value(0.3)).current;
   // Message fade
   const fade = useRef(new Animated.Value(1)).current;
-  // Spinner rotation
-  const spin = useRef(new Animated.Value(0)).current;
   // Floating emojis
   const floatY = useRef(new Animated.Value(0)).current;
 
@@ -135,36 +134,39 @@ export const DeckLoader: React.FC<Props> = ({ deckType, request, onResult }) => 
 
   useEffect(() => {
     // Continuous pulse
-    Animated.loop(
+    const pulseAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(pulse, { toValue: 1, duration: 600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
         Animated.timing(pulse, { toValue: 0.3, duration: 600, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ]),
-    ).start();
-
-    // Continuous spin
-    Animated.loop(
-      Animated.timing(spin, { toValue: 1, duration: 2000, easing: Easing.linear, useNativeDriver: true }),
-    ).start();
+    );
+    pulseAnimation.start();
 
     // Floating animation for background emojis
-    Animated.loop(
+    const floatAnimation = Animated.loop(
       Animated.sequence([
         Animated.timing(floatY, { toValue: -20, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
         Animated.timing(floatY, { toValue: 0, duration: 2000, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ]),
-    ).start();
+    );
+    floatAnimation.start();
 
     // Cycle messages every 1.5s
     const interval = setInterval(() => {
-      Animated.timing(fade, { toValue: 0, duration: 200, useNativeDriver: true }).start(() => {
+      Animated.timing(fade, { toValue: 0, duration: 200, useNativeDriver: true }).start(({ finished }) => {
+        if (!finished) return;
         setMsgIndex((prev) => (prev + 1) % config.messages.length);
         Animated.timing(fade, { toValue: 1, duration: 300, useNativeDriver: true }).start();
       });
     }, 1500);
 
-    return () => clearInterval(interval);
-  }, [pulse, spin, fade, config.messages.length, floatY]);
+    return () => {
+      clearInterval(interval);
+      pulseAnimation.stop();
+      floatAnimation.stop();
+      fade.stopAnimation();
+    };
+  }, [pulse, fade, config.messages.length, floatY]);
 
   useEffect(() => {
     let mounted = true;
@@ -186,11 +188,6 @@ export const DeckLoader: React.FC<Props> = ({ deckType, request, onResult }) => 
       mounted = false;
     };
   }, [request, onResult]);
-
-  const rotation = spin.interpolate({
-    inputRange: [0, 1],
-    outputRange: ['0deg', '360deg'],
-  });
 
   const msg = config.messages[msgIndex];
 
@@ -217,10 +214,7 @@ export const DeckLoader: React.FC<Props> = ({ deckType, request, onResult }) => 
         ))}
       </View>
 
-      <Animated.View style={[styles.spinnerWrap, { transform: [{ rotate: rotation }] }]}>
-        <View style={[styles.spinnerDot, { backgroundColor: deckColors.bg }]} />
-        <View style={[styles.spinnerDot, styles.spinnerDot2, { backgroundColor: deckColors.bg }]} />
-      </Animated.View>
+      <BrandLoader size={48} />
 
       <Animated.Text style={[styles.emoji, { opacity: pulse }]}>{msg.emoji}</Animated.Text>
 
@@ -261,28 +255,6 @@ const styles = StyleSheet.create({
   },
   floatingEmoji: {
     fontSize: 28,
-  },
-  spinnerWrap: {
-    width: 48,
-    height: 48,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  spinnerDot: {
-    position: 'absolute',
-    width: 12,
-    height: 12,
-    borderRadius: 6,
-    top: 0,
-    left: 18,
-  },
-  spinnerDot2: {
-    top: 36,
-    left: 18,
-    width: 8,
-    height: 8,
-    borderRadius: 4,
-    opacity: 0.5,
   },
   emoji: {
     fontSize: 40,

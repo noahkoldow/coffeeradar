@@ -1,0 +1,38 @@
+{
+  "checkedAt": "2026-09-24T10:27:17.263Z",
+  "project": "coffeeradar-415f2",
+  "results": [
+    {
+      "test": "read initial consent",
+      "pass": true,
+      "httpStatus": 200,
+      "redirected": false,
+      "url": "https://us-central1-coffeeradar-415f2.cloudfunctions.net/getCoreAiConsent"
+    },
+    {
+      "test": "consent saved",
+      "pass": true,
+      "httpStatus": 200,
+      "redirected": false,
+      "url": "https://us-central1-coffeeradar-415f2.cloudfunctions.net/setCoreAiConsent"
+    },
+    {
+      "test": "authenticated Gemini generation",
+      "pass": true,
+      "httpStatus": 200,
+      "elapsedMs": 1634,
+      "redirected": false
+    },
+    {
+      "test": "consent revoked",
+      "pass": true,
+      "httpStatus": 200
+    },
+    {
+      "test": "revocation blocks cached generation",
+      "pass": true,
+      "httpStatus": 403,
+      "error": "PERMISSION_DENIED"
+    }
+  ]
+}

@@ -1,0 +1,38 @@
+﻿{
+    "preparedAt":  "2026-09-26T19:23:23.9376545Z",
+    "status":  "VALIDATED_READY_TO_BUILD",
+    "appVersion":  "1.0.0",
+    "profile":  "testflight-staging",
+    "channel":  "production",
+    "runtimeVersion":  "1.0.0",
+    "appStoreConnectId":  "6801029604",
+    "bundleIdentifier":  "com.bitsapp.404",
+    "sourceBranch":  "backend-hardening-astra",
+    "previousBuildNumber":  "13",
+    "scope":  [
+                  "All current application, asset, backend and regression-test changes saved to GitHub",
+                  "Updated branding and animated loading indicator",
+                  "Activity chat reliability and error handling",
+                  "Session maps and verified activity locations",
+                  "Swipe interactions, calendar planning, checklists and reusable habits",
+                  "Premium management and AI consent/privacy"
+              ],
+    "backend":  {
+                    "deployedByThisRelease":  false,
+                    "aiAndConsentEndpointsReachable":  true,
+                    "cityEventDiscoveryDeployed":  false,
+                    "cityEventDiscoveryRequirement":  "Brave WEB_SEARCH_API_KEY and separate discoverCityEvents deployment; client continues with other sources",
+                    "firestoreRulesDeployment":  "Not performed; existing production-specific rules preserved"
+                },
+    "validation":  {
+                       "appTypeCheck":  "passed",
+                       "functionsTypeCheck":  "passed",
+                       "regressionTests":  "382 passed",
+                       "nativeDeviceVerified":  false,
+                       "swipeBrowserTests":  "16 passed"
+                   },
+    "archiveExclusions":  [
+                              "Environment secrets and private signing keys",
+                              "Browser profiles and generated test artifacts"
+                          ]
+}

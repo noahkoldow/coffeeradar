@@ -16,9 +16,19 @@
     "production": {
       "autoIncrement": true,
       "channel": "production"
+    },
+    "testflight-staging": {
+      "extends": "production",
+      "distribution": "store",
+      "channel": "production"
     }
   },
   "submit": {
-    "production": {}
+    "production": {},
+    "testflight-staging": {
+      "ios": {
+        "ascAppId": "6801029604"
+      }
+    }
   }
 }

@@ -6,6 +6,7 @@ import { StackScreenProps } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
 import { useI18n } from '../i18n/I18nProvider';
+import { getCoreAiNotice } from '../services/aiConsent';
 
 type Props = StackScreenProps<RootStackParamList, 'PrivacyPolicy'>;
 
@@ -46,9 +47,16 @@ export const PrivacyPolicyScreen: React.FC<Props> = ({ navigation }) => {
 
         <Section title={isGerman ? 'Drittanbieter-Dienste' : 'Third-party services'}>
           {isGerman
-            ? 'Wir nutzen Firebase (Authentifizierung und Speicherung), Google AdMob sowie optionale Integrationen wie Google Places, Open-Meteo, Ticketmaster, SeatGeek und Gemini, sofern aktiviert.'
-            : 'We use Firebase (authentication and storage), Google AdMob, and optional integrations including Google Places, Open-Meteo, Ticketmaster, SeatGeek, and Gemini when enabled.'}
+            ? 'Wir nutzen Firebase (Authentifizierung und Speicherung), Google AdMob sowie optionale Integrationen wie Google Places, Open-Meteo, Ticketmaster, SeatGeek, Google Gemini und Groq, sofern aktiviert.'
+            : 'We use Firebase (authentication and storage), Google AdMob, and optional integrations including Google Places, Open-Meteo, Ticketmaster, SeatGeek, Google Gemini, and Groq when enabled.'}
         </Section>
+
+        <View style={styles.section}>
+          <Pressable accessibilityRole="link" onPress={() => navigation.navigate('AIPrivacy')}>
+            <Text style={[styles.sectionTitle, styles.link]}>{isGerman ? 'KI-Datenschutz' : 'AI privacy'}</Text>
+          </Pressable>
+          <Text style={styles.body}>{getCoreAiNotice(isGerman)}</Text>
+        </View>
 
         <Section title={isGerman ? 'Datenweitergabe' : 'Data sharing'}>
           {isGerman
@@ -135,5 +143,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontSize: 14,
     lineHeight: 21,
     color: theme.colors.textMuted,
+  },
+  link: {
+    color: theme.colors.accent,
+    textDecorationLine: 'underline',
+    paddingVertical: theme.spacing.xs,
   },
 });

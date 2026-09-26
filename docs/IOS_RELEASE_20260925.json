@@ -1,0 +1,154 @@
+{
+  "publishedAt": "2026-09-25T19:38:39.393Z",
+  "channel": "production",
+  "platform": "ios",
+  "runtimeVersion": "1.0.0",
+  "delivery": "OTA update for the existing compatible TestFlight installation",
+  "compatibleBuilds": [
+    "11",
+    "12"
+  ],
+  "sourceBase": "72d522eee5cf276aea1718c215719ec98ceb0c23",
+  "supersedesGroup": "d2e1125b-fc6a-4cd0-84e1-2c269d27b090",
+  "bundleSha256": "8e4f6f91ef68a239c60eda9415265748b8cccf92a6aac734f1507569005a87d6",
+  "lockedDependencies": true,
+  "runtimeDependenciesVerified": 37,
+  "nativeBuildCreated": false,
+  "backendDeployed": false,
+  "updates": [
+    {
+      "id": "01a0da13-b3a1-727d-8457-12312f096f07",
+      "createdAt": "2026-09-25T19:38:39.393Z",
+      "group": "63a4537e-8c94-486f-b81d-12565eecbb52",
+      "branch": "production",
+      "message": "Add map discovery, varied suggestions, activity checklists, calendar placement and swipe fixes",
+      "runtimeVersion": "1.0.0",
+      "platform": "ios",
+      "manifestPermalink": "https://u.expo.dev/update/01a0da13-b3a1-727d-8457-12312f096f07",
+      "isRollBackToEmbedded": false,
+      "gitCommitHash": "72d522eee5cf276aea1718c215719ec98ceb0c23"
+    }
+  ],
+  "dashboardUrl": "https://expo.dev/accounts/noehxpo/projects/bits/updates/63a4537e-8c94-486f-b81d-12565eecbb52",
+  "validation": {
+    "releaseRegressionTestsPassed": 136,
+    "swipeBrowserTestsPassed": 12,
+    "workspaceTypeCheckPassed": true,
+    "releaseEntrypointTypeCheckPassed": true,
+    "nativeDeviceVerified": false
+  },
+  "verification": {
+    "verifiedAt": "2026-09-25T19:38:47.901Z",
+    "manifestStatus": 200,
+    "servedUpdateId": "01a0da13-b3a1-727d-8457-12312f096f07",
+    "servedRuntimeVersion": "1.0.0",
+    "manifestBundleSha256Matches": true,
+    "assetsDownloadedAndHashVerified": 28,
+    "allAssetsVerified": true,
+    "deviceApplicationVerified": false
+  },
+  "changedFiles": [
+    {
+      "file": "src/components/ActivityMap.native.tsx",
+      "sha256": "cf45698227fc94e6e50748c21e64a01113be1db7b1b9915f073b56a3b7714dbf"
+    },
+    {
+      "file": "src/components/ActivityMap.types.ts",
+      "sha256": "aee10b0827cc44edb67ac7af8d7c77aa0b735838508b74a6404cd3c51029b261"
+    },
+    {
+      "file": "src/components/ActivityMap.web.tsx",
+      "sha256": "a1f81c6fdfee46cf7f48c98f55dd0c0683cd24adc09074947cc3a980f174467c"
+    },
+    {
+      "file": "src/components/ActivityMapDiagram.tsx",
+      "sha256": "a0358c015640d92c2617800ca18944bf295e3d636913aacf0bd72c6ce814b89b"
+    },
+    {
+      "file": "src/components/ads/NativeAdSlide.tsx",
+      "sha256": "860905941a9f9f91fbd3a6107061156b4fd66de496c24a5bdcacec3a4e6ffde8"
+    },
+    {
+      "file": "src/components/MapDiscoveryCard.tsx",
+      "sha256": "9ddddb8e84237ff48399471e049084a973ad96e42ab144c46ff97cbc99d9ce3b"
+    },
+    {
+      "file": "src/components/SuggestionCard.tsx",
+      "sha256": "c8d1ab447b341d53dd4842739d808c1b288be9a425ec129fd2c3ab13167cf129"
+    },
+    {
+      "file": "src/components/SwipeDeck.tsx",
+      "sha256": "924d88eb4b7c6d7f8fbe5e8de46d0ecdee4baa31af07cf30f2f46ec6daf3baf9"
+    },
+    {
+      "file": "src/i18n/translations.ts",
+      "sha256": "e873b17732c8b7c1de10443b9b2895d44c157544697604a16c618dd7ba145366"
+    },
+    {
+      "file": "src/screens/DeckScreen.tsx",
+      "sha256": "be3ca45382771c887e45bb2fe9d417718dbc0d9d917b2b16995578c5636c5bc9"
+    },
+    {
+      "file": "src/screens/PlanScreen.tsx",
+      "sha256": "f570ce33d00a0fe2e1ce11b73619560a762e819292dd7a9f1b358dc4df0bdf70"
+    },
+    {
+      "file": "src/screens/SmartCalendarScreen.tsx",
+      "sha256": "10ee2b654d76c8f21263d0ce7909b92a56696a4fd625ca0acb8c7bdb87b01e8b"
+    },
+    {
+      "file": "src/services/deckPresentation.ts",
+      "sha256": "775ae677f85580dbcf32c2383d49260a0faeb86d2331114d6621d563e76a9279"
+    },
+    {
+      "file": "src/services/geminiSuggestions.ts",
+      "sha256": "f70e7753af701d6a4e051afaf7adb3ec3a455a220af732d2fbc782101ea93416"
+    },
+    {
+      "file": "src/services/mapDiscovery.ts",
+      "sha256": "cb1662cbc6b282f5a17fc12356962b0173e0d05854080623e077a3ae51c4c9eb"
+    },
+    {
+      "file": "src/services/mapDiscoveryCandidates.ts",
+      "sha256": "21e3937bc0fceb71adb823d78f43c309d2b60bf691f1f56d3905b5858e1e1eb6"
+    },
+    {
+      "file": "src/services/osmPlaces.ts",
+      "sha256": "b96a1c30dc59a61cb391039346d88c94d9c7f0ef0c340c0b1d9735bba2955b22"
+    },
+    {
+      "file": "src/services/suggestionIdentity.ts",
+      "sha256": "a8d251a124d876af70f301c3155677172bc82131e570a8036ad4ccb4ec39aeb1"
+    },
+    {
+      "file": "src/services/suggestions.ts",
+      "sha256": "49e85d8fe27b4ae6c8d298f5d942247ae5af50831b4a1658ebf7ecb381af1e6e"
+    },
+    {
+      "file": "src/services/travel.ts",
+      "sha256": "0ad9212d75328bb8cb6291cdf19b85253c52c4e6a8909e9ce37b5c087afd75b4"
+    },
+    {
+      "file": "src/state/AppState.tsx",
+      "sha256": "c64febe35b9e8be9efdb4cef6d350976f00335ddb8273ea7ca09207d1e5cd48a"
+    },
+    {
+      "file": "src/types/index.ts",
+      "sha256": "f3099c81ebbb9c7d646450a9c2aa25074f328c1d8d121d40e59d9b17a69bb1e1"
+    },
+    {
+      "file": "src/utils/storage.ts",
+      "sha256": "9d3a525ce9c1169638d932773f09d13d0839e49c2cc786cea795f41162c0d4c7"
+    },
+    {
+      "file": "src/services/calendar.native.ts",
+      "sha256": "57aa63236baa6f641c3a0f05940abe6a05587285cd2c9234e58d65ba2ed0f289",
+      "reason": "Dependency of today's Smart Calendar task editing"
+    },
+    {
+      "file": "src/services/calendar.web.ts",
+      "sha256": "b2b277a8217dfa40a457d7982f72fa27c5c3080b29593a863533d61f0da6b691",
+      "reason": "Dependency of today's Smart Calendar task editing"
+    }
+  ]
+}

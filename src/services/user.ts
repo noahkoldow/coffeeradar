@@ -1,12 +1,9 @@
-import Constants from 'expo-constants';
-import { httpsCallable } from 'firebase/functions';
 import { collection, deleteDoc, doc, getDoc, getDocs, increment, limit, query, serverTimestamp, setDoc, updateDoc, where } from 'firebase/firestore';
 import { Availability, Business, BusinessSubmission, BusinessSubmissionStatus, Habit, LocationProfile, SavedSuggestion, TagAffinities, UserPrefs } from '../types';
-import { auth, db, ensureAuth, firebaseEnabled, functions } from './firebase';
+import { auth, db, ensureAuth, firebaseEnabled } from './firebase';
+import { getCachedAdminAccess, resolveAdminAccess } from './adminAccess';
 import { validateBusinessSubmission } from './businessService';
 import { saveOnboardingComplete } from '../utils/storage';
-
-// Removed 'env' as it's no longer used for admin checks
 
 /** Skip Firestore writes for anonymous users — they have no server-side
  *  profile and default security rules reject the request. */
@@ -16,81 +13,9 @@ const canSync = (): boolean => {
   return !!user && !user.isAnonymous;
 };
 
-const normalizeAdminEmails = (value?: string | null): string[] =>
-  String(value ?? '')
-    .split(',')
-    .map((entry) => entry.trim().toLowerCase())
-    .filter(Boolean);
-
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
-
-const getExpoExtraConfig = (): Record<string, unknown> => {
-  const extra = (Constants as any)?.expoConfig?.extra
-    ?? (Constants as any)?.manifest?.extra
-    ?? (Constants as any)?.manifest2?.extra
-    ?? {};
-  return typeof extra === 'object' && extra !== null ? (extra as Record<string, unknown>) : {};
-};
-
-const getConfiguredAdminEmails = (): string[] => {
-  const extraConfig = getExpoExtraConfig();
-  const candidateValues = [
-    env.EXPO_PUBLIC_ADMIN_EMAILS,
-    env.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS,
-    env.EXPO_PUBLIC_SUPPORT_EMAILS,
-    (globalThis as any).process?.env?.EXPO_PUBLIC_ADMIN_EMAILS,
-    (globalThis as any).process?.env?.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS,
-    (globalThis as any).process?.env?.EXPO_PUBLIC_SUPPORT_EMAILS,
-    extraConfig.EXPO_PUBLIC_ADMIN_EMAILS as string | undefined,
-    extraConfig.EXPO_PUBLIC_BUSINESS_ADMIN_EMAILS as string | undefined,
-    extraConfig.EXPO_PUBLIC_SUPPORT_EMAILS as string | undefined,
-  ];
-
-  for (const candidate of candidateValues) {
-    const emails = normalizeAdminEmails(candidate);
-    if (emails.length > 0) return emails;
-  }
-
-  return normalizeAdminEmails((globalThis as any).process?.env?.ADMIN_EMAILS);
-};
-
-export const isBusinessAdmin = (email?: string | null): boolean => {
-  const normalizedEmail = email?.trim().toLowerCase();
-  if (!normalizedEmail) return false;
-  const configuredEmails = getConfiguredAdminEmails();
-  return configuredEmails.includes(normalizedEmail);
-};
-
-const getCurrentUserEmail = (): string | null => {
-  const user = auth.currentUser;
-  return user?.email
-    ?? user?.providerData?.find((profile) => !!profile.email)?.email
-    ?? null;
-};
-
-export const isAdminUser = async (): Promise<boolean> => {
-  try {
-    const user = auth.currentUser;
-    if (!user || user.isAnonymous) {
-      return isBusinessAdmin(getCurrentUserEmail());
-    }
-
-    const email = getCurrentUserEmail();
-    const callable = httpsCallable(functions, 'isAdmin');
-    const result = await callable({ email, uid: auth.currentUser?.uid ?? null });
-    const payload = result.data as { isAdmin?: boolean } | undefined;
-    if (typeof payload?.isAdmin === 'boolean') {
-      return payload.isAdmin;
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error ?? 'unknown');
-    if (!/unauthenticated/i.test(message)) {
-      console.warn('Cloud admin check failed, falling back to local configuration:', error);
-    }
-  }
-
-  return isBusinessAdmin(getCurrentUserEmail());
-};
+export const isBusinessAdmin = getCachedAdminAccess;
+export const isAdminUser = resolveAdminAccess;
 
 export const upsertUserData = async (payload: {
   availability?: Availability | null;

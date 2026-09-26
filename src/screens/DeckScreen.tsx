@@ -1,11 +1,16 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Animated, Easing, Image, Modal, Platform, Pressable, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Alert, Animated, Easing, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Haptics from 'expo-haptics';
 import { PrimaryButton } from '../components/PrimaryButton';
 import { SwipeDeck, SwipeDeckHandle } from '../components/SwipeDeck';
+import { SessionMapPanel } from '../components/SessionMapPanel';
+import { SessionMapButton } from '../components/SessionMapButton';
+import { hasMapCoordinates } from '../services/mapDiscovery';
+import { createSessionMapCollection, getSessionMapOptions } from '../services/sessionMap';
+import { filterUnseenSuggestions, getSuggestionIdentityKeys } from '../services/suggestionIdentity';
 import { EmojiConfetti } from '../components/EmojiConfetti';
 import { DeckLoader } from '../components/DeckLoader';
 import { useAppState } from '../state/AppState';
@@ -14,13 +19,15 @@ import ChargeBar from '../components/ChargeBar';
 import { RootStackParamList } from '../navigation/types';
 import { Availability, Commitment, DeckSuggestion, HistoryState, SavedSuggestion, ScheduledActivity, Suggestion } from '../types';
 import { buildDeck, buildFilteredFallbacks } from '../services/suggestions';
+import { eventVisitWindow } from '../services/discoveryTiming';
 import { recordActivityShown, recordActivityCompleted, shouldSuggestHabitConversion } from '../services/activityRepetitionService';
 import { recordAccept, recordInterested, recordReject, recordTypeAccept, recordTypeReject, decayAffinities } from '../services/affinity';
 import { addMinutes, formatDuration, formatTime, getTimeWindowContext, toISO } from '../utils/time';
 import { chooseTravelMode, estimateEtaMinutes, haversineKm } from '../services/travel';
 import { createPlanEvent, getAvailabilityForDate, getUpcomingEvents } from '../services/calendar';
 import { logEvent } from '../services/analytics';
-import { isAdminUser, isBusinessAdmin, syncBusinessMetric } from '../services/user';
+import { syncBusinessMetric } from '../services/user';
+import { useAdminAccess } from '../services/useAdminAccess';
 import { AD_RULES, buildAdKeywords } from '../services/ads/adConfig';
 import { isAdPlaceholderMode, isAdsAvailable } from '../services/ads/mobileAds';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
@@ -31,18 +38,25 @@ import { applyIgnoredEventsToAvailability } from '../utils/availabilityIgnore';
 import { useI18n } from '../i18n/I18nProvider';
 
 type Props = StackScreenProps<RootStackParamList, 'Deck'>;
+type DeckResult = { deck: DeckSuggestion[]; usedFallback: boolean; mapCandidates?: DeckSuggestion[] };
 
 export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
-  const { t } = useI18n();
+  const { t, language } = useI18n();
+  const isGerman = language === 'de';
   const { state, actions } = useAppState();
   const adsCompliance = useAdsCompliance();
   const insets = useSafeAreaInsets();
   const { width: screenWidth, height: screenHeight } = useWindowDimensions();
-  const [isAdmin, setIsAdmin] = useState(() => isBusinessAdmin(state.userEmail));
+  const compactLayout = screenHeight - insets.top - insets.bottom < 740;
+  const isAdmin = useAdminAccess(state.userId, state.userEmail);
   const [deck, setDeck] = useState<DeckSuggestion[]>([]);
   const [index, setIndex] = useState(0);
+  const sessionMapRef = useRef(createSessionMapCollection());
+  const [sessionMap, setSessionMap] = useState(() => sessionMapRef.current.snapshot());
+  const [sessionMapOpen, setSessionMapOpen] = useState(false);
+  const [selectedMapActivityId, setSelectedMapActivityId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [confirming, setConfirming] = useState(false);
   const [lastSlideIndex, setLastSlideIndex] = useState<number | null>(null);
@@ -65,8 +79,33 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     return 'all';
   }, [planDate, route.params?.filter]);
 
+  const deckColors = useMemo(() => {
+    const filter = route.params?.filter;
+    if (filter === 'productive') {
+      return theme.isDark
+        ? { bg: '#2A4A5E', text: '#D8F0FF' }
+        : { bg: '#A8D8EA', text: '#1A3A4A' };
+    }
+    if (filter === 'challenge_me') {
+      return theme.isDark
+        ? { bg: '#4D2E66', text: '#F0E3FF' }
+        : { bg: '#D7B9F1', text: '#3E2257' };
+    }
+    if (filter === 'at_home') {
+      return theme.isDark
+        ? { bg: '#54374A', text: '#F5DDED' }
+        : { bg: '#E2B6CF', text: '#3A1A2E' };
+    }
+    if (planDate === 'tomorrow') {
+      return theme.isDark
+        ? { bg: '#2E4F45', text: '#D9F6EA' }
+        : { bg: '#B5EAD7', text: '#1A4A3A' };
+    }
+    return { bg: theme.colors.accent, text: theme.colors.accentText };
+  }, [planDate, route.params?.filter, theme.isDark, theme.colors.accent, theme.colors.accentText]);
+
   const INTERVAL_MIN = 30;
-  const outOfSwipesBase = !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow';
+  const outOfSwipesBase = !sessionMapOpen && !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && deck.length > 0 && !confirming && planDate !== 'tomorrow';
   const controlsDisabled = confirming || (!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow');
   const overlayVisible = outOfSwipesBase || outOfSwipesGridVisible;
 
@@ -75,22 +114,6 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       gestureEnabled: false,
     });
   }, [navigation]);
-
-  useEffect(() => {
-    let active = true;
-    setIsAdmin(isBusinessAdmin(state.userEmail));
-    isAdminUser()
-      .then((value) => {
-        if (active) setIsAdmin(value);
-      })
-      .catch(() => {
-        if (active) setIsAdmin(isBusinessAdmin(state.userEmail));
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [state.userEmail, state.userId]);
 
   useEffect(() => {
     if (!loading) {
@@ -147,7 +170,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   }, [outOfSwipesBase, outOfSwipesGridUnlocked, outOfSwipesGridVisible]);
 
   useEffect(() => {
-    if (deck.length >= DESIRED_SIZE && index >= deck.length && !outOfSwipesGridUnlocked) {
+    if (deck.length > 0 && index >= deck.length && !outOfSwipesGridUnlocked) {
       setOutOfSwipesGridUnlocked(true);
     }
   }, [deck.length, index, outOfSwipesGridUnlocked]);
@@ -180,11 +203,46 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   const historyRef = useRef(state.history);
   const loadingRef = useRef(true); // mirrors `loading` for use in effects
   const didLoadDeck = useRef(false); // true once we successfully showed a deck
+  const deckRequestRef = useRef(0);
+  const newSetBusyRef = useRef(false);
+  const sessionEpochRef = useRef(0);
   const commitWatchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const uiAppear = useRef(new Animated.Value(0)).current;
   const schedulePreviewAnim = useRef(new Animated.Value(0)).current;
   const savedPopupAnim = useRef(new Animated.Value(0)).current;
   const prevIndexRef = useRef(0);
+
+  const collectSessionActivities = useCallback((suggestions: readonly DeckSuggestion[], saved = false) => {
+    setSessionMap(sessionMapRef.current.add(suggestions, { saved }));
+  }, []);
+
+  const resetSessionMap = useCallback(() => {
+    sessionEpochRef.current += 1;
+    if (commitWatchdogRef.current) clearTimeout(commitWatchdogRef.current);
+    commitWatchdogRef.current = null;
+    swipeLockRef.current = false;
+    setConfirming(false);
+    setSavedPopupVisible(false);
+    setSessionMap(sessionMapRef.current.reset());
+    setSessionMapOpen(false);
+    setSelectedMapActivityId(null);
+  }, []);
+
+  // Pushing Bank/Settings or backgrounding the app does not end a swipe session.
+  useEffect(() => { resetSessionMap(); }, [state.userId, resetSessionMap]);
+  useEffect(() => navigation.addListener('beforeRemove', () => {
+    resetSessionMap();
+    deckRequestRef.current += 1;
+  }), [navigation, resetSessionMap]);
+
+  useEffect(() => {
+    deckRequestRef.current += 1;
+    didLoadDeck.current = false;
+    loadingRef.current = true;
+    setDeck([]);
+    setIndex(0);
+    setLoading(true);
+  }, [state.userId, activityMode, route.params?.filter, planDate]);
 
   useEffect(() => {
     const interval = setInterval(() => setBedtimeNow(Date.now()), 60_000);
@@ -256,6 +314,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     ]);
   };
   const goBack = () => {
+    resetSessionMap();
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
@@ -270,6 +329,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     const end = new Date(tomorrow);
     end.setHours(21, 0, 0, 0);
     return {
+      discoveryMode: 'plan_ahead',
       start: toISO(tomorrow),
       end: toISO(end),
       durationMin: Math.max(0, Math.round((end.getTime() - tomorrow.getTime()) / 60000)),
@@ -286,7 +346,6 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
 
     let cancelled = false;
-    setLoading(true);
 
     (async () => {
       try {
@@ -338,10 +397,6 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           setTomorrowAvailability(buildTomorrowFallbackAvailability());
           setTomorrowCalendarEvents([]);
         }
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
       }
     })();
 
@@ -367,6 +422,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         ].filter((title, idx, arr) => !!title && arr.indexOf(title) === idx).slice(0, 12);
         return {
           ...applyIgnoredEventsToAvailability(tomorrowAvailability, ignoredKeys),
+          discoveryMode: 'plan_ahead',
           contextEventTitles,
         };
       }
@@ -398,6 +454,22 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // Only recompute when the actual data changes, not every render
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [planDate, tomorrowAvailability, state.scheduledActivities, state.availability?.durationMin, state.availability?.start, state.ignoredExternalEventKeys, route.params?.durationOverride, buildTomorrowFallbackAvailability]);
+
+  /**
+   * DO SOMETHING NOW ("all" mode) on-the-go prequeue top-up.
+   * After every swipe, ask AppState to (re)compute whether the Gemini buffer needs
+   * refilling. AppState's preloadDeck only actually spends a Gemini call while a
+   * deficit exists (last deck needed the fallback pool) and swipes remain — once
+   * remaining swipes are covered by non-fallback sources, this becomes a no-op.
+   */
+  useEffect(() => {
+    if (activityMode !== 'all' || planDate === 'tomorrow') return;
+    if (state.swipeBank.current <= 0) return;
+    if (state.preloadedDeck || state.deckLoading) return;
+    actions.preloadDeck(availability);
+    // Only re-run when swipe count actually changes — availability/actions are stable enough
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activityMode, planDate, state.swipeBank.current, state.preloadedDeck, state.deckLoading]);
 
   type DayEvent = { title: string; start: number; end: number };
 
@@ -505,7 +577,13 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
     return cards
       .map((card) => {
-        const fit = findBestTomorrowFit(card.durationMin);
+        const visit = card.type === 'EVENT' ? eventVisitWindow(card, availability) : null;
+        const eventConflict = visit && tomorrowContextEvents.some(event =>
+          event.start < visit.end.getTime() + (card.meta?.etaMin ?? 25) * 60000 && event.end > visit.departure.getTime());
+        const fit = card.type === 'EVENT'
+          ? visit && !eventConflict ? { slotStart: visit.start, slotEnd: visit.end, slackMin: 0,
+            before: undefined, after: undefined } : null
+          : findBestTomorrowFit(card.durationMin);
         if (!fit) {
           return { card, rank: Number.POSITIVE_INFINITY };
         }
@@ -526,9 +604,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           },
         };
       })
+      .filter(entry => Number.isFinite(entry.rank))
       .sort((a, b) => a.rank - b.rank)
       .map((entry) => entry.card);
-  }, [planDate, findBestTomorrowFit, availability.start]);
+  }, [planDate, findBestTomorrowFit, availability, tomorrowContextEvents]);
 
   /** Record all card IDs from a deck using smart repetition tracking */
   const recordShown = useCallback((cards: DeckSuggestion[]) => {
@@ -646,8 +725,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   /** Build deck with filter applied — keeps rebuilding until we have 5 or exhaust retries.
    *  When a filter is active, pads remaining slots from a filter-aware fallback pool
    *  so the user always gets a full 5-card deck when possible. */
-  const buildFilteredDeck = useCallback(async (): Promise<{ deck: DeckSuggestion[]; usedFallback: boolean }> => {
+  const buildFilteredDeck = useCallback(async (): Promise<DeckResult> => {
     const collected: DeckSuggestion[] = [];
+    const mapCandidates: DeckSuggestion[] = [];
+    const attemptedIdentities = new Set(actions.getSessionSuggestionExclusions());
     let usedFallback = false;
     const maxAttempts = route.params?.filter ? 3 : 1;
 
@@ -667,13 +748,20 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         state.sessionActivityIntent,
         state.userId,
         planDate === 'tomorrow' ? new Date(availability.start) : undefined,
+        undefined,
+        // DO SOMETHING NOW ("all" mode, no filter) only needs a 2-card Gemini prequeue —
+        // background preloads/top-ups keep the buffer topped up from there (see AppState).
+        route.params?.filter ? undefined : 2,
+        new Set([...actions.getSessionSuggestionExclusions(), ...attemptedIdentities]),
       );
 
       usedFallback = usedFallback || result.usedFallback;
-      const filtered = filterDeck(result.deck);
+      result.deck.forEach(card => getSuggestionIdentityKeys(card).forEach(key => attemptedIdentities.add(key)));
+      mapCandidates.push(...filterDeck(result.mapCandidates ?? []));
+      const filtered = actions.filterUnseenSuggestions(filterDeck(result.deck));
       for (const card of filtered) {
         if (collected.length >= DESIRED_SIZE) break;
-        if (!collected.find((c) => c.id === card.id)) {
+        if (filterUnseenSuggestions([...collected, card]).length > collected.length) {
           collected.push(card);
         }
       }
@@ -692,46 +780,34 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         availability,
         state.location,
         new Set([...collectedIds, ...seenIds]),
+        actions.getSessionSuggestionExclusions(),
       );
-      for (const card of extras) {
+      for (const card of actions.filterUnseenSuggestions(extras)) {
         if (collected.length >= DESIRED_SIZE) break;
+        if (filterUnseenSuggestions([...collected, card]).length === collected.length) continue;
         collected.push(card);
         usedFallback = true;
-      }
-      // Last resort: allow previously-seen cards
-      if (collected.length < DESIRED_SIZE) {
-        const nowIds = new Set(collected.map((c) => c.id));
-        const lastResort = buildFilteredFallbacks(
-          route.params.filter,
-          availability,
-          state.location,
-          nowIds,
-        );
-        for (const card of lastResort) {
-          if (collected.length >= DESIRED_SIZE) break;
-          collected.push(card);
-          usedFallback = true;
-        }
       }
     }
     const trimmed = collected.slice(0, DESIRED_SIZE);
     const ranked = rankTomorrowCards(trimmed);
-    return { deck: ranked, usedFallback };
-  }, [availability, state.location, state.prefs, state.habits, filterDeck, route.params?.filter, planDate, rankTomorrowCards]);
+    return { deck: ranked, usedFallback, mapCandidates: rankTomorrowCards(actions.filterUnseenSuggestions(mapCandidates)) };
+  }, [availability, state.location, state.prefs, state.habits, state.smartTodos, state.tagAffinities, state.locationProfile, state.savedSuggestions, state.sessionActivityIntent, state.userId, actions, filterDeck, route.params?.filter, planDate, rankTomorrowCards]);
 
   /** Apply a deck result to local state */
-  const applyDeck = useCallback((result: { deck: DeckSuggestion[]; usedFallback: boolean }, preloaded: boolean) => {
-    const filtered = filterDeck(result.deck);
-    console.log('[DeckScreen] applyDeck:', result.deck.length, 'cards →', filtered.length, 'after filter, preloaded:', preloaded);
-    setDeck(injectAdsIntoDeck(filtered.slice(0, DESIRED_SIZE)));
+  const applyDeck = useCallback((result: DeckResult, preloaded: boolean) => {
+    const filtered = actions.filterUnseenSuggestions(filterDeck([...result.deck, ...(result.mapCandidates ?? [])])).slice(0, DESIRED_SIZE);
+    // Reserve synchronously: a queued deck cannot reuse any of these activities.
+    const reserved = actions.reserveDeckSuggestions(filtered);
+    setDeck(injectAdsIntoDeck(reserved));
     setFallbackUsed(result.usedFallback);
     setIndex(0);
     setLoading(false);
     loadingRef.current = false;
     didLoadDeck.current = true;
-    recordShown(filtered);
+    recordShown(reserved);
     logEvent('deck_shown', { freeWindowDuration: availability.durationMin, preloaded, filter: route.params?.filter ?? 'all' });
-  }, [availability.durationMin, recordShown, filterDeck, route.params?.filter, injectAdsIntoDeck]);
+  }, [availability, actions, recordShown, filterDeck, route.params?.filter, injectAdsIntoDeck]);
 
   /**
    * Single effect that handles all deck-loading scenarios:
@@ -743,13 +819,17 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   useEffect(() => {
     // Already loaded a deck — nothing to do
     if (didLoadDeck.current) return;
+    // Calendar preparation must finish before building Tomorrow's first set.
+    // Only the deck request may finish the loading state.
+    if (planDate === 'tomorrow' && !tomorrowAvailability) return;
 
     // 1. Try consuming a ready preloaded deck (only when no filter or enough filtered cards)
-    if (planDate !== 'tomorrow' && state.preloadedDeck && state.preloadedDeck.deck.length > 0) {
+    if (planDate !== 'tomorrow' && state.preloadedDeck
+      && (state.preloadedDeck.deck.length > 0 || (state.preloadedDeck.mapCandidates?.length ?? 0) > 0)) {
       const result = actions.consumeDeck();
-      if (result && result.deck.length > 0) {
-        const filtered = filterDeck(result.deck);
-        if (!route.params?.filter || filtered.length >= DESIRED_SIZE) {
+      if (result) {
+        const filtered = actions.filterUnseenSuggestions(filterDeck([...result.deck, ...(result.mapCandidates ?? [])]));
+        if (filtered.length > 0 && (!route.params?.filter || filtered.length >= DESIRED_SIZE)) {
           applyDeck(result, true);
           return;
         }
@@ -767,23 +847,15 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     // 3 & 4. No preload running, nothing ready — build fresh with filter-aware retry
     console.log('[DeckScreen] building fresh deck...');
     let cancelled = false;
+    const requestId = ++deckRequestRef.current;
 
     (async () => {
       try {
         const result = await buildFilteredDeck();
-        if (!cancelled) {
-          setDeck(injectAdsIntoDeck(result.deck));
-          setFallbackUsed(result.usedFallback);
-          setIndex(0);
-          setLoading(false);
-          loadingRef.current = false;
-          didLoadDeck.current = true;
-          recordShown(result.deck);
-          logEvent('deck_shown', { freeWindowDuration: availability.durationMin, preloaded: false, filter: route.params?.filter ?? 'all' });
-        }
+        if (!cancelled && requestId === deckRequestRef.current) applyDeck(result, false);
       } catch (error) {
         console.warn('[DeckScreen] buildDeck error', error);
-        if (!cancelled) {
+        if (!cancelled && requestId === deckRequestRef.current) {
           setDeck([]);
           setLoading(false);
           loadingRef.current = false;
@@ -793,14 +865,15 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     })();
 
     return () => { cancelled = true; };
-  }, [planDate, state.preloadedDeck, state.deckLoading, availability, state.location, state.prefs, state.habits, actions, applyDeck, buildFilteredDeck, filterDeck, recordShown, route.params?.filter]);
+  }, [planDate, tomorrowAvailability, state.userId, state.preloadedDeck, state.deckLoading, availability, state.location, state.prefs, state.habits, actions, applyDeck, buildFilteredDeck, filterDeck, route.params?.filter]);
 
   // Always-fresh rebuild for "New set" button
   const rebuildDeck = useCallback(async () => {
+    const requestId = ++deckRequestRef.current;
     // First try the preloaded deck (it had full API time in the background)
     const preloaded = planDate !== 'tomorrow' ? actions.consumeDeck() : null;
-    if (preloaded && preloaded.deck.length > 0) {
-      const filtered = filterDeck(preloaded.deck);
+    if (preloaded) {
+      const filtered = actions.filterUnseenSuggestions(filterDeck([...preloaded.deck, ...(preloaded.mapCandidates ?? [])]));
       if (filtered.length >= DESIRED_SIZE) {
         applyDeck(preloaded, true);
         return;
@@ -812,41 +885,48 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     loadingRef.current = true;
     try {
       const result = await buildFilteredDeck();
-      setDeck(injectAdsIntoDeck(result.deck));
-      setFallbackUsed(result.usedFallback);
-      setIndex(0);
-      recordShown(result.deck);
+      if (requestId === deckRequestRef.current) applyDeck(result, false);
     } catch (error) {
       console.warn('Deck error', error);
-      setDeck([]);
+      if (requestId === deckRequestRef.current) setDeck([]);
     } finally {
-      setLoading(false);
-      loadingRef.current = false;
+      if (requestId === deckRequestRef.current) {
+        setLoading(false);
+        loadingRef.current = false;
+      }
     }
-  }, [planDate, filterDeck, buildFilteredDeck, recordShown, actions, applyDeck, injectAdsIntoDeck]);
+  }, [planDate, filterDeck, buildFilteredDeck, actions, applyDeck]);
 
   /** "New set" entry point — plays a video ad on every 2nd request for free
    *  users, while the fresh deck builds/queues in the background. */
   const handleNewSet = useCallback(async () => {
-    const willPlayAd = adsFreeUser && (newSetCount + 1) % AD_RULES.videoEveryNthNewSet === 0;
-    setNewSetCount((c) => c + 1);
-    // Kick off the deck build immediately so it is ready right after the ad.
-    const buildPromise = rebuildDeck();
-    if (willPlayAd) {
-      const ad = consumeVideoAd(adKeywords);
-      if (ad) {
-        logEvent('ad_video_shown', { new_set_number: newSetCount + 1 });
-        await new Promise<void>((resolve) => {
-          videoAdResolveRef.current = resolve;
-          setVideoAd(ad);
-        });
-      } else {
-        // Nothing ready — warm one up for next time and continue.
-        preloadVideoAd(adKeywords);
+    if (newSetBusyRef.current) return;
+    newSetBusyRef.current = true;
+    try {
+      // Archive only the deck actually presented to this user, never preloads.
+      collectSessionActivities(deck.slice(index));
+      const willPlayAd = adsFreeUser && (newSetCount + 1) % AD_RULES.videoEveryNthNewSet === 0;
+      setNewSetCount((c) => c + 1);
+      // Kick off the deck build immediately so it is ready right after the ad.
+      const buildPromise = rebuildDeck();
+      if (willPlayAd) {
+        const ad = consumeVideoAd(adKeywords);
+        if (ad) {
+          logEvent('ad_video_shown', { new_set_number: newSetCount + 1 });
+          await new Promise<void>((resolve) => {
+            videoAdResolveRef.current = resolve;
+            setVideoAd(ad);
+          });
+        } else {
+          // Nothing ready — warm one up for next time and continue.
+          preloadVideoAd(adKeywords);
+        }
       }
+      await buildPromise;
+    } finally {
+      newSetBusyRef.current = false;
     }
-    await buildPromise;
-  }, [adsFreeUser, newSetCount, rebuildDeck, adKeywords]);
+  }, [adsFreeUser, newSetCount, rebuildDeck, adKeywords, collectSessionActivities, deck, index]);
 
   const closeVideoAd = useCallback(() => {
     setVideoAd(null);
@@ -860,7 +940,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
   useEffect(() => {
     swipeLockRef.current = false;
-  }, [index]);
+  }, [index, selectedMapActivityId, sessionMapOpen]);
 
   const updateRippleLayout = useCallback(() => {
     if (!commitButtonRef.current) return;
@@ -890,14 +970,21 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   useEffect(() => {
     if (loading) return;
     uiAppear.setValue(0);
-    Animated.timing(uiAppear, {
+    const animation = Animated.timing(uiAppear, {
       toValue: 1,
       duration: 240,
       useNativeDriver: true,
-    }).start();
-  }, [loading, index, uiAppear]);
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [loading, uiAppear]);
 
   useEffect(() => () => {
+    deckRequestRef.current += 1;
+    sessionEpochRef.current += 1;
+    sessionMapRef.current.reset();
+    videoAdResolveRef.current?.();
+    videoAdResolveRef.current = null;
     if (commitWatchdogRef.current) {
       clearTimeout(commitWatchdogRef.current);
       commitWatchdogRef.current = null;
@@ -933,8 +1020,33 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     await new Promise((resolve) => setTimeout(resolve, 420));
   }, [planDate, schedulePreviewAnim]);
 
-  const current = deck[index] ?? null;
-  const next = deck[index + 1] ?? null;
+  const rawCurrent = deck[index] ?? null;
+  const sessionMapOptions = useMemo(() => getSessionMapOptions(sessionMap.entries, state.location, state.locationProfile),
+    [sessionMap.entries, state.location, state.locationProfile]);
+  const selectedMapEntry = sessionMapOpen ? sessionMap.entries.find(entry => entry.suggestion.id === selectedMapActivityId) : undefined;
+  const selectedMapOption = sessionMapOptions.find(option => option.suggestion.id === selectedMapEntry?.suggestion.id);
+  const selectedMapSuggestion = selectedMapEntry ? {
+    ...selectedMapEntry.suggestion,
+    ...(selectedMapOption ? { meta: { ...selectedMapEntry.suggestion.meta,
+      travelMode: selectedMapOption.travelMode, etaMin: selectedMapOption.travelMin } } : {}),
+  } : null;
+  const current = sessionMapOpen ? selectedMapSuggestion : rawCurrent;
+  const next = sessionMapOpen ? null : deck[index + 1] ?? null;
+  const mapOverviewVisible = sessionMapOpen && !selectedMapEntry;
+  const toggleSessionMap = () => {
+    if (confirming || swipeLockRef.current) return;
+    if (!sessionMapOpen) setSessionMap(sessionMapRef.current.markRead());
+    setSelectedMapActivityId(null);
+    setSessionMapOpen(!sessionMapOpen);
+  };
+  const selectSessionMapActivity = (id: string) => {
+    if (!confirming && !swipeLockRef.current && sessionMapOpen
+      && sessionMap.entries.some(entry => entry.suggestion.id === id)) setSelectedMapActivityId(id);
+  };
+  const sessionMapControl = <View style={styles.sessionMapControl}>
+    <SessionMapButton unreadCount={sessionMap.unreadCount} active={sessionMapOpen}
+      disabled={confirming} deckColors={deckColors} onPress={toggleSessionMap} />
+  </View>;
 
   const openGridCard = useCallback((card: DeckSuggestion) => {
     if (gridUsed) {
@@ -954,28 +1066,34 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
 
     const now = new Date();
-    const startDate = new Date(now);
-    const endDate = addMinutes(startDate, card.durationMin);
+    const visit = card.type === 'EVENT' ? eventVisitWindow(card, availability) : null;
+    if (card.type === 'EVENT' && !visit) return;
+    const startDate = visit?.start ?? (planDate === 'tomorrow' && card.meta?.planStartAt
+      ? new Date(card.meta.planStartAt) : now);
+    const endDate = visit?.end ?? addMinutes(startDate, card.durationMin);
     const commitment: Commitment = {
       suggestionId: card.id,
       type: card.type,
       title: card.title,
       startAt: startDate.toISOString(),
       endAt: endDate.toISOString(),
+      leaveBy: visit?.departure.toISOString(),
     };
 
     setGridUsed(true);
     setInspectedGridCard(null);
+    resetSessionMap();
 
     if (navigation.canGoBack()) {
       navigation.navigate('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
     } else {
       navigation.replace('Plan', { commitment, suggestion: card, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
     }
-  }, [activityMode, gridUsed, navigation, planDate, t]);
+  }, [activityMode, availability, gridUsed, navigation, planDate, t, resetSessionMap]);
 
   const declineInspectedCard = useCallback(() => {
     if (inspectedGridCard) {
+      collectSessionActivities([inspectedGridCard]);
       setDeclinedGridCardIds((prev) => {
         const nextIds = new Set(prev);
         nextIds.add(inspectedGridCard.id);
@@ -983,10 +1101,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       });
     }
     setInspectedGridCard(null);
-  }, [inspectedGridCard]);
+  }, [inspectedGridCard, collectSessionActivities]);
 
   const saveInspectedSuggestion = useCallback((card: DeckSuggestion) => {
     if (isAdCard(card)) return;
+    const epoch = sessionEpochRef.current;
+    collectSessionActivities([card], true);
     setHeartAnimIds((prev) => new Set([...prev, card.id]));
     actions.saveSuggestion({
       id: `saved_${card.id}_${Date.now()}`,
@@ -1006,11 +1126,14 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     Animated.sequence([
       Animated.spring(savedPopupAnim, { toValue: 1, tension: 100, friction: 9, useNativeDriver: true }),
       Animated.timing(savedPopupAnim, { toValue: 0, duration: 180, useNativeDriver: true }),
-    ]).start(() => setSavedPopupVisible(false));
-  }, [actions, savedPopupAnim, state.tagAffinities]);
+    ]).start(() => {
+      if (epoch === sessionEpochRef.current) setSavedPopupVisible(false);
+    });
+  }, [actions, savedPopupAnim, state.tagAffinities, collectSessionActivities]);
 
   const saveCurrentSuggestion = (source: SavedSuggestion['source'], moveToNext = false) => {
-    if (!current) return;
+    if (!current || current.mapDiscovery) return;
+    collectSessionActivities([current], true);
     actions.saveSuggestion({
       id: `saved_${current.id}_${Date.now()}`,
       savedAt: new Date().toISOString(),
@@ -1025,13 +1148,19 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
     logEvent('save_for_later', { suggestion_id: current.id, type: current.type, source });
     if (moveToNext) {
-      setIndex((prev) => prev + 1);
+      if (sessionMapOpen) setSelectedMapActivityId(null);
+      else setIndex((prev) => prev + 1);
     }
   };
 
   const handleSwipeLeft = () => {
     if (!current) return;
     if (swipeLockRef.current) return;
+    // Revisiting a passed activity is free and never rejects it a second time.
+    if (sessionMapOpen) {
+      setSelectedMapActivityId(null);
+      return;
+    }
     // Ad slides carry no cost and record no signals — just advance.
     if (isAdCard(current)) {
       swipeLockRef.current = true;
@@ -1046,7 +1175,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       return;
     }
 
-    // Advance index immediately — zero lag for the next card
+    collectSessionActivities([current]);
     setIndex((prev) => prev + 1);
 
     // Fire-and-forget: history, affinity, analytics in the background
@@ -1066,7 +1195,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const handleUndoSlide = () => {
-    if (!canUndoSlide || lastSlideIndex === null || confirming || swipeLockRef.current) return;
+    if (sessionMapOpen || !canUndoSlide || lastSlideIndex === null || confirming || swipeLockRef.current) return;
     const maxIndex = Math.max(deck.length - 1, 0);
     const targetIndex = Math.max(0, Math.min(lastSlideIndex, maxIndex));
     setIndex(targetIndex);
@@ -1076,8 +1205,9 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
   // Quick-save the current suggestion to the library and advance the deck
   const handleSaveQuick = () => {
-    if (!current) return;
+    if (!current || current.mapDiscovery) return;
     if (swipeLockRef.current) return;
+    if (selectedMapEntry?.saved) { setSelectedMapActivityId(null); return; }
     // Ad slides cannot be saved — just advance.
     if (isAdCard(current)) {
       swipeLockRef.current = true;
@@ -1085,6 +1215,8 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       return;
     }
     swipeLockRef.current = true;
+    const savedFromMap = sessionMapOpen;
+    const epoch = sessionEpochRef.current;
 
     // Show heart animation
     setHeartAnimIds((prev) => new Set([...prev, current.id]));
@@ -1099,8 +1231,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       Animated.spring(savedPopupAnim, { toValue: 1, tension: 100, friction: 9, useNativeDriver: true }),
       Animated.timing(savedPopupAnim, { toValue: 0, duration: 180, useNativeDriver: true }),
     ]).start(() => {
+      if (epoch !== sessionEpochRef.current) return;
       setSavedPopupVisible(false);
-      setIndex((prev) => prev + 1);
+      if (savedFromMap) setSelectedMapActivityId(null);
+      else setIndex((prev) => prev + 1);
       swipeLockRef.current = false;
     });
     
@@ -1112,20 +1246,30 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         .map((step) => `- ${step.label} (${step.minutes}m)`).join('\n')}`;
     }
     if (suggestion.type === 'GO_OUT') {
+      const mode = suggestion.meta?.travelMode;
+      const travelLabel = mode === 'walk' ? 'walking' : mode === 'car' ? 'by car' : 'public transport';
       return `${suggestion.description}\n${suggestion.place?.address ?? ''}\nLeave by: ${
         leaveBy ? formatTime(new Date(leaveBy)) : 'soon'
-      } (public transport)`;
+      } (${travelLabel})`;
     }
     if (suggestion.type === 'EVENT' && suggestion.event) {
-      return `${suggestion.event.venue}\nTickets: ${suggestion.event.ticketUrl}`;
+      return `${suggestion.event.venue}\n${suggestion.event.ticketUrl ? `Tickets: ${suggestion.event.ticketUrl}` : `Event: ${suggestion.event.sourceUrl ?? ''}`}`;
     }
     return suggestion.description;
   };
 
   const commitSuggestion = async (mode: 'now' | 'later', startOverride?: Date) => {
-    if (!current) return;
+    if (!current || current.mapDiscovery) return;
     if (confirming || swipeLockRef.current) return;
     const picked = current;
+    const pickedFromMap = sessionMapOpen;
+    const epoch = sessionEpochRef.current;
+    const pickedEventVisit = picked.type === 'EVENT' ? eventVisitWindow(picked, availability, new Date(), startOverride) : null;
+    if (picked.type === 'EVENT' && !pickedEventVisit) {
+      Alert.alert(isGerman ? 'Veranstaltung passt nicht mehr ins Zeitfenster' : 'This event no longer fits your available time',
+        isGerman ? 'Wähle eine andere Aktivität aus deiner Session.' : 'Choose another activity from your session.');
+      return;
+    }
     swipeLockRef.current = true;
     // consume swipe from bank (skipped for admin)
     if (!isAdmin && !actions.spendSwipe()) {
@@ -1137,6 +1281,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     setConfirming(true);
     if (commitWatchdogRef.current) clearTimeout(commitWatchdogRef.current);
     commitWatchdogRef.current = setTimeout(() => {
+      if (epoch !== sessionEpochRef.current) return;
       setConfirming(false);
       swipeLockRef.current = false;
       Alert.alert(t('deck_slow_title'), t('deck_slow_body'));
@@ -1156,6 +1301,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         void syncBusinessMetric(picked.businessId, 'clicks', 1);
       }
       await withTimeout(Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success), 1200, undefined);
+      if (epoch !== sessionEpochRef.current) return;
 
       const now = new Date();
       let startDate = startOverride ?? addMinutes(now, 2);
@@ -1182,7 +1328,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           let etaMin = picked.meta?.etaMin ?? 15;
           if (state.location.lat && state.location.lng && picked.place?.lat && picked.place?.lng) {
             const dist = haversineKm(state.location.lat, state.location.lng, picked.place.lat, picked.place.lng);
-            const mode = chooseTravelMode(dist);
+            const mode = picked.meta?.travelMode ?? chooseTravelMode(dist);
             etaMin = estimateEtaMinutes(dist, mode);
           }
           // Leave in 3 minutes (time to get ready), arrive after transit ETA
@@ -1195,13 +1341,16 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
       if (picked.type === 'EVENT' && picked.event) {
         title = `Event: ${picked.title}`;
-        startDate = new Date(picked.event.startAt);
-        endDate = addMinutes(startDate, picked.durationMin || 120);
+        const visit = pickedEventVisit!;
+        startDate = visit.start;
+        endDate = visit.end;
+        leaveBy = visit.departure.toISOString();
       }
 
       if (planDate === 'tomorrow' && mode === 'later') {
         await playSchedulePreview(picked, startDate, endDate);
       }
+      if (epoch !== sessionEpochRef.current) return;
 
       const notes = buildNotes(picked, leaveBy);
       let calendarEventId: string | undefined;
@@ -1235,6 +1384,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         calendarEventId,
         calendarWriteFailed,
       };
+      if (epoch !== sessionEpochRef.current) return;
 
       const updatedActivityHistory = recordActivityCompleted(picked.id, state.history);
       const updatedHistory = {
@@ -1300,8 +1450,12 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         };
         actions.addScheduledActivity(scheduled);
         // Skip to next card instead of leaving to Plan
-        setIndex((prev) => prev + 1);
+        setSessionMap(sessionMapRef.current.remove(picked));
+        if (pickedFromMap) setSelectedMapActivityId(null);
+        else setIndex((prev) => prev + 1);
       } else {
+        resetSessionMap();
+        if (!pickedFromMap) setIndex((prev) => prev + 1);
         if (navigation.canGoBack()) {
           navigation.navigate('Plan', { commitment, suggestion: picked, fromDoSomethingNow: planDate !== 'tomorrow', activityMode });
         } else {
@@ -1309,6 +1463,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         }
       }
     } catch (error) {
+      if (epoch !== sessionEpochRef.current) return;
       console.warn('[DeckScreen] commitSuggestion failed', error);
       if (commitWatchdogRef.current) {
         clearTimeout(commitWatchdogRef.current);
@@ -1322,6 +1477,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
   };
 
   const handleCommit = async () => {
+    if (current?.mapDiscovery) return;
     // Ad slides have no commit action — advance past them.
     if (isAdCard(current)) {
       setIndex((prev) => prev + 1);
@@ -1329,6 +1485,15 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     }
     if (planDate === 'tomorrow') {
       if (!current) return;
+      if (current.type === 'EVENT') {
+        const visit = eventVisitWindow(current, availability);
+        if (!visit) {
+          Alert.alert(t('deck_tomorrow_full_title'), t('deck_tomorrow_full_body'));
+          return;
+        }
+        await checkClashAndSchedule(visit.start);
+        return;
+      }
       const suggested = current.meta?.planStartAt ? new Date(current.meta.planStartAt) : null;
       const computed = findBestTomorrowFit(current.durationMin);
       const slot = computed?.slotStart ?? (suggested && !Number.isNaN(suggested.getTime()) ? suggested : null);
@@ -1363,13 +1528,21 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
 
   const checkClashAndSchedule = async (startDate: Date) => {
     if (!current) return;
-    const endDate = addMinutes(startDate, current.durationMin);
+    const visit = current.type === 'EVENT' ? eventVisitWindow(current, availability, new Date(), startDate) : null;
+    if (current.type === 'EVENT' && !visit) {
+      Alert.alert(t('deck_tomorrow_full_title'), t('deck_tomorrow_full_body'));
+      return;
+    }
+    const actualStart = visit?.start ?? startDate;
+    const endDate = visit?.end ?? addMinutes(actualStart, current.durationMin);
+    const conflictStart = visit?.departure ?? actualStart;
+    const conflictEnd = visit ? addMinutes(endDate, current.meta?.etaMin ?? 25) : endDate;
 
     // Also check against already-scheduled activities
     const localClash = state.scheduledActivities.find((sa) => {
       const saStart = new Date(sa.startAt).getTime();
       const saEnd = new Date(sa.endAt).getTime();
-      return startDate.getTime() < saEnd && endDate.getTime() > saStart;
+      return conflictStart.getTime() < saEnd && conflictEnd.getTime() > saStart;
     });
     if (localClash) {
       setClashInfo({
@@ -1377,14 +1550,14 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
         start: formatTime(new Date(localClash.startAt)),
         end: formatTime(new Date(localClash.endAt)),
       });
-      setPendingScheduleStart(startDate);
+      setPendingScheduleStart(actualStart);
       return;
     }
 
     // Check calendar events
     if (state.permissions.calendarGranted) {
       try {
-        const events = await getUpcomingEvents(startDate, endDate, state.disabledCalendars);
+        const events = await getUpcomingEvents(conflictStart, conflictEnd, state.disabledCalendars);
         if (events.length > 0) {
           const clash = events[0];
           setClashInfo({
@@ -1392,14 +1565,14 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             start: formatTime(clash.startDate),
             end: formatTime(clash.endDate),
           });
-          setPendingScheduleStart(startDate);
+          setPendingScheduleStart(actualStart);
           return;
         }
       } catch { /* proceed without clash check */ }
     }
 
     // No clash — proceed
-    await doScheduleLater(startDate);
+    await doScheduleLater(actualStart);
   };
 
   const doScheduleLater = async (startDate: Date) => {
@@ -1428,7 +1601,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
     await checkClashAndSchedule(startDate);
   };
 
-  if (loading) {
+  if (loading && !sessionMapOpen) {
     const deckTypeMap = {
       'today': 'do_now' as const,
       'tomorrow': 'plan_tomorrow' as const,
@@ -1449,6 +1622,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                 onPress={() => {
                   setLoading(false);
                   setShowLoadingBackButton(false);
+                  resetSessionMap();
                   navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
                 }}
                 variant="muted"
@@ -1456,50 +1630,17 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             </View>
           )}
         </View>
+        <View style={{ paddingBottom: insets.bottom + theme.spacing.md }}>{sessionMapControl}</View>
         <VideoAdModal ad={videoAd} onClose={closeVideoAd} />
       </LinearGradient>
     );
   }
 
-  // Map deck type to display colors (from HomeScreen)
-  const getDeckColors = () => {
-    const filter = route.params?.filter;
-    if (filter === 'productive') {
-      return theme.isDark
-        ? { bg: '#2A4A5E', text: '#D8F0FF' }
-        : { bg: '#A8D8EA', text: '#1A3A4A' };
-    }
-    if (filter === 'challenge_me') {
-      return theme.isDark
-        ? { bg: '#4D2E66', text: '#F0E3FF' }
-        : { bg: '#D7B9F1', text: '#3E2257' };
-    }
-    if (filter === 'at_home') {
-      return theme.isDark
-        ? { bg: '#54374A', text: '#F5DDED' }
-        : { bg: '#E2B6CF', text: '#3A1A2E' };
-    }
-    if (planDate === 'tomorrow') {
-      return theme.isDark
-        ? { bg: '#2E4F45', text: '#D9F6EA' }
-        : { bg: '#B5EAD7', text: '#1A4A3A' };
-    }
-    return { bg: theme.colors.accent, text: theme.colors.accentText };
-  };
-  const deckColors = getDeckColors();
   const bedtimeBadgeColor = deckColors.bg;
 
-  if (!current) {
-    const ranOutEarly = deck.length < DESIRED_SIZE;
-    
-    // Auto-trigger rebuild on Plan Tomorrow if empty
-    if (planDate === 'tomorrow' && !loading) {
-      return (
-        <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={styles.container}>
-          <DeckLoader />
-        </LinearGradient>
-      );
-    }
+  if (!current && !sessionMapOpen) {
+    const activityCount = deck.reduce((count, card) => count + (isAdCard(card) ? 0 : card.mapDiscovery?.activities.length ?? 1), 0);
+    const ranOutEarly = activityCount < DESIRED_SIZE;
     
     // Allow a first tap anywhere on the empty area to queue a fresh deck
     return (
@@ -1518,24 +1659,32 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                 {ranOutEarly ? '⚙️  Expand your interests' : 'Refine what to do'}
               </Text>
             </Pressable>
-            <Pressable onPress={() => navigation.reset({ index: 0, routes: [{ name: 'Home' }] })}>
+            <Pressable onPress={() => {
+              resetSessionMap();
+              navigation.reset({ index: 0, routes: [{ name: 'Home' }] });
+            }}>
               <Text style={styles.backLink}>{t('deck_back_home')}</Text>
             </Pressable>
           </View>
         </Pressable>
+        <View style={{ paddingBottom: insets.bottom + theme.spacing.md }}>{sessionMapControl}</View>
         <VideoAdModal ad={videoAd} onClose={closeVideoAd} deckColors={deckColors} />
       </LinearGradient>
     );
   }
 
   return (
-    <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={[styles.container, { paddingTop: insets.top + theme.spacing.sm }]}>
+    <LinearGradient colors={[theme.colors.background, theme.colors.background]} style={[styles.container, {
+      paddingTop: insets.top + theme.spacing.sm, paddingBottom: Math.max(insets.bottom, 8),
+    }]}>
+      <ScrollView style={styles.mainScroll} contentContainerStyle={styles.mainScrollContent}
+        showsVerticalScrollIndicator={false} nestedScrollEnabled keyboardShouldPersistTaps="handled">
       <Animated.View
         style={[{
-          opacity: uiAppear,
+          opacity: sessionMapOpen ? 1 : uiAppear,
           transform: [
             {
-              translateY: uiAppear.interpolate({
+              translateY: sessionMapOpen ? 0 : uiAppear.interpolate({
                 inputRange: [0, 1],
                 outputRange: [10, 0],
               }),
@@ -1543,7 +1692,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           ],
         }, styles.mainContent]}
       >
-      <View style={styles.header}>
+      <View style={[styles.header, compactLayout && styles.compactHeader]}>
         <View style={styles.headerLeft}>
           <Pressable
             onPress={() => {
@@ -1599,10 +1748,10 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
             <View style={styles.counterStack}>
               <Pressable
                 onPress={handleUndoSlide}
-                disabled={!canUndoSlide || confirming}
+                disabled={sessionMapOpen || !canUndoSlide || confirming}
                 style={({ pressed }) => [
                   styles.counterUndoButton,
-                  (!canUndoSlide || confirming) && styles.counterUndoButtonDisabled,
+                  (sessionMapOpen || !canUndoSlide || confirming) && styles.counterUndoButtonDisabled,
                   pressed && canUndoSlide && !confirming && styles.counterUndoPressed,
                 ]}
                 hitSlop={8}
@@ -1611,38 +1760,63 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
                   source={require('../../assets/backarrow.png')}
                   style={[
                     styles.counterUndoIcon,
-                    (!canUndoSlide || confirming) && styles.counterUndoIconDisabled,
+                    (sessionMapOpen || !canUndoSlide || confirming) && styles.counterUndoIconDisabled,
                   ]}
                 />
               </Pressable>
-              <Text style={styles.cardCounter}>{index + 1} / {deck.length}</Text>
+              <Text style={styles.cardCounter}>{sessionMapOpen
+                ? `${sessionMap.entries.length} ${isGerman ? 'Ideen' : 'ideas'}`
+                : `${index + 1} / ${deck.length}`}</Text>
             </View>
           </View>
         </View>
       </View>
 
-      <View style={styles.deckWrap}>
-        <SwipeDeck
+      <View style={[styles.deckWrap, compactLayout && {
+        paddingTop: sessionMapOpen ? 30 : 0,
+        paddingBottom: 8,
+        minHeight: 420 + (sessionMapOpen ? 30 : 0) + 8,
+      }]}>
+        {mapOverviewVisible ? <SessionMapPanel
+          entries={sessionMap.entries} activities={sessionMapOptions}
+          origin={hasMapCoordinates(state.location.lat, state.location.lng)
+            ? { latitude: state.location.lat!, longitude: state.location.lng! } : null}
+          onSelect={selectSessionMapActivity} deckColors={deckColors}
+        /> : <SwipeDeck
           ref={deckRef}
           current={current}
           next={next}
           onSwipeLeft={handleSwipeLeft}
           onSwipeRight={handleCommit}
-          disabled={controlsDisabled}
+          disabled={confirming || (!sessionMapOpen && controlsDisabled)}
           deckColors={deckColors}
           showSourceDebug={isAdmin}
-        />
+          rightSwipeEnabled={!controlsDisabled}
+        />}
+        {sessionMapOpen && (
+          <Pressable accessibilityRole="button" onPress={() => {
+            if (confirming || swipeLockRef.current) return;
+            if (selectedMapEntry) setSelectedMapActivityId(null);
+            else setSessionMapOpen(false);
+          }}
+            disabled={confirming} style={styles.mapBackButton}>
+            <Text style={styles.mapBackText}>{selectedMapEntry
+              ? (isGerman ? '← Zurück zur Karte' : '← Back to map')
+              : (isGerman ? '← Weiter swipen' : '← Back to swiping')}</Text>
+          </Pressable>
+        )}
       </View>
 
-      <View style={styles.controls}>
+      {sessionMapControl}
+      <View style={[styles.controls, compactLayout && styles.compactControls]}>
         <Pressable
-          onPress={handleSwipeLeft}
+          onPress={() => deckRef.current?.swipeLeft()}
           style={({ pressed }) => [
             styles.controlButton,
             !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
             pressed && styles.controlPressed,
           ]}
-          disabled={controlsDisabled}
+          disabled={confirming || mapOverviewVisible || (!sessionMapOpen && controlsDisabled)}
         >
           <Text style={[!isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled, styles.controlText]}>X</Text>
         </Pressable>
@@ -1650,17 +1824,18 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
           onPress={handleSaveQuick}
           style={({ pressed }) => [
             styles.controlButton,
+            mapOverviewVisible && styles.controlButtonDisabled,
             !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlButtonDisabled,
             pressed && styles.controlPressed,
           ]}
-          disabled={controlsDisabled}
+          disabled={controlsDisabled || mapOverviewVisible}
         >
           <Text style={[
             !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled,
             heartAnimIds.has(current?.id ?? '') && { color: theme.colors.danger },
             styles.controlText,
           ]}>
-            {heartAnimIds.has(current?.id ?? '') ? '❤️' : '♡'}
+            {selectedMapEntry?.saved || heartAnimIds.has(current?.id ?? '') ? '❤️' : '♡'}
           </Text>
         </Pressable>
         <View ref={commitButtonRef} onLayout={updateRippleLayout} collapsable={false} style={styles.controlSlot}>
@@ -1673,21 +1848,23 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlPrimaryDisabled,
               pressed && styles.controlPressed,
             ]}
-            disabled={controlsDisabled}
+            disabled={controlsDisabled || mapOverviewVisible}
           >
             <Text style={[
               styles.controlText,
               styles.controlTextPrimary,
+              mapOverviewVisible && styles.mapChooseText,
               !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextPrimaryDisabled,
               !isAdmin && (state.swipeBank?.current ?? 0) <= 0 && planDate !== 'tomorrow' && styles.controlTextDisabled,
             ]}>
-              {planDate === 'tomorrow' ? 'Add to calendar' : 'Do it'}
+              {mapOverviewVisible ? (isGerman ? 'Idee auswählen' : 'Choose an idea') : planDate === 'tomorrow' ? 'Add to calendar' : 'Do it'}
             </Text>
           </Pressable>
         </View>
       </View>
 
       </Animated.View>
+      </ScrollView>
 
       {confirming && (
         <View style={styles.confirmation}>
@@ -1713,13 +1890,14 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
       <EmojiConfetti visible={confirming} emojis={confettiEmojis} />
 
       {/* Empty swipes card picker - 2x2 grid */}
-      {outOfSwipesGridVisible && (
+      {outOfSwipesGridVisible && !sessionMapOpen && (
         <View style={styles.emptySwipesOverlay}>
           <View style={styles.emptySwipesContent}>
             <Text style={styles.emptySwipesTitle}>Out of swipes</Text>
             <Text style={styles.emptySwipesSubtitle}>Tap a card to inspect it, then decide whether to use it</Text>
             <View style={styles.cardsGrid}>
-              {deck.slice(index, index + 4).map((card) => {
+              {deck.slice(index).flatMap(card => card.mapDiscovery ? card.mapDiscovery.activities.map(option => option.suggestion) : [card])
+                .filter(card => card.source !== 'ad').slice(0, 4).map((card) => {
                 const isDeclined = declinedGridCardIds.has(card.id);
                 return (
                   <Pressable
@@ -1746,6 +1924,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               })}
             </View>
             <Text style={styles.emptySwipesHint}>Credits reset in a few minutes — gain bonus credits in the meantime</Text>
+            {sessionMapControl}
             <Pressable
               style={({ pressed }) => [
                 styles.homeButtonContainer,
@@ -1753,6 +1932,7 @@ export const DeckScreen: React.FC<Props> = ({ navigation, route }) => {
               ]}
               onPress={() => {
                 setGridUsed(false);
+                resetSessionMap();
                 navigation.navigate('Home');
               }}
             >
@@ -1991,8 +2171,12 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     padding: theme.spacing.lg,
   },
   mainContent: {
-    flex: 1,
+    flexGrow: 1,
   },
+  mainScroll: { flex: 1 },
+  mainScrollContent: { flexGrow: 1 },
+  compactHeader: { marginTop: 0, marginBottom: 8 },
+  compactControls: { marginBottom: 0 },
   header: {
     position: 'relative',
     flexDirection: 'row',
@@ -2101,10 +2285,24 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   },
   deckWrap: {
     flex: 1,
+    minHeight: 420 + theme.spacing.xl + theme.spacing.md,
     justifyContent: 'flex-start',
     paddingTop: theme.spacing.xl,
     paddingBottom: theme.spacing.md,
   },
+  mapBackButton: {
+    position: 'absolute',
+    top: 0,
+    alignSelf: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 16,
+    backgroundColor: theme.colors.card,
+    zIndex: 4,
+  },
+  mapChooseText: { fontSize: 12 },
+  mapBackText: { color: theme.colors.text, fontFamily: theme.fonts.semibold, fontSize: 12 },
+  sessionMapControl: { alignItems: 'center', justifyContent: 'center', marginBottom: 8 },
   topOverlayRow: {
     position: 'absolute',
     left: theme.spacing.lg,

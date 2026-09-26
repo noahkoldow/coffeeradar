@@ -55,8 +55,10 @@ import {
 import { getCalendarPermissionStatus, getUpcomingEvents } from '../services/calendar';
 import { getLocationPermissionStatus } from '../services/location';
 import { subscribeAuthState } from '../services/auth';
+import { addDebugMessage } from '../services/debug';
 import { auth, firebaseEnabled } from '../services/firebase';
 import { buildDeck } from '../services/suggestions';
+import { createSessionSuggestionLedger } from '../services/suggestionIdentity';
 import { recordComplete, recordTypeAccept, decayAffinities } from '../services/affinity';
 import { completeHabitEntry, uncompleteHabitEntry, migrateHabit } from '../utils/habits';
 import { rescheduleHabitReminders } from '../services/notifications';
@@ -145,7 +147,7 @@ type AppState = {
   availability: Availability | null;
   ignoredExternalEventKeys: string[];
   disabledCalendars: string[];
-  preloadedDeck: { deck: DeckSuggestion[]; usedFallback: boolean } | null;
+  preloadedDeck: { deck: DeckSuggestion[]; usedFallback: boolean; mapCandidates?: DeckSuggestion[] } | null;
   deckLoading: boolean;
   geminiPool: Suggestion[];
   deckIndex: number;
@@ -187,7 +189,10 @@ type AppActions = {
   completeOnboarding: () => void;
   resetOnboarding: () => void;
   preloadDeck: (availability: Availability, durationOverride?: number | null) => void;
-  consumeDeck: () => { deck: DeckSuggestion[]; usedFallback: boolean } | null;
+  consumeDeck: () => { deck: DeckSuggestion[]; usedFallback: boolean; mapCandidates?: DeckSuggestion[] } | null;
+  filterUnseenSuggestions: <T extends Suggestion>(candidates: readonly T[]) => T[];
+  reserveDeckSuggestions: <T extends Suggestion>(candidates: readonly T[]) => T[];
+  getSessionSuggestionExclusions: () => ReadonlySet<string>;
   consumeGeminiForDeck: () => { suggestions: Suggestion[]; max: number; isFirstDeck: boolean };
   initGeminiPool: (allGemini: Suggestion[], usedIds: Set<string>) => void;
   setTagAffinities: (value: TagAffinities) => void;
@@ -223,14 +228,19 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [permissions, setPermissions] = useState<PermissionsState>(defaultPermissions);
   const [prefs, setPrefsState] = useState<UserPrefs>(defaultPrefs);
-  const [history, setHistoryState] = useState<HistoryState>(defaultHistory);
+  const [history, setHistoryStateValue] = useState<HistoryState>(defaultHistory);
+  const historyRef = useRef(history);
+  const setHistoryState = useCallback((value: HistoryState) => {
+    historyRef.current = value;
+    setHistoryStateValue(value);
+  }, []);
   const [habits, setHabitsState] = useState<Habit[]>([]);
   const [activityLog, setActivityLogState] = useState<ActivityLog[]>([]);
   const [location, setLocationState] = useState<LocationState>(defaultLocation);
   const [availability, setAvailabilityState] = useState<Availability | null>(null);
   const [ignoredExternalEventKeys, setIgnoredExternalEventKeysState] = useState<string[]>([]);
   const [disabledCalendars, setDisabledCalendarsState] = useState<string[]>([]);
-  const [preloadedDeck, setPreloadedDeck] = useState<{ deck: DeckSuggestion[]; usedFallback: boolean } | null>(null);
+  const [preloadedDeck, setPreloadedDeckValue] = useState<{ deck: DeckSuggestion[]; usedFallback: boolean; mapCandidates?: DeckSuggestion[] } | null>(null);
   const [deckLoading, setDeckLoading] = useState(false);
   const [tagAffinities, setTagAffinitiesState] = useState<TagAffinities>({});
   const [locationProfile, setLocationProfileState] = useState<LocationProfile | null>(null);
@@ -263,13 +273,36 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }, [prefs.language]);
 
   const preloadedDeckRef = useRef(preloadedDeck);
-  useEffect(() => { preloadedDeckRef.current = preloadedDeck; }, [preloadedDeck]);
+  const setPreloadedDeck = useCallback((value: typeof preloadedDeck) => {
+    preloadedDeckRef.current = value;
+    setPreloadedDeckValue(value);
+  }, []);
+  const sessionSuggestionsRef = useRef(createSessionSuggestionLedger(null));
   const geminiPoolRef = useRef<Suggestion[]>([]);
   const deckIndexRef = useRef(0);
   useEffect(() => { geminiPoolRef.current = geminiPool; }, [geminiPool]);
   useEffect(() => { deckIndexRef.current = deckIndex; }, [deckIndex]);
   const deckBuildId = useRef(0);
   const deckBuildKeyRef = useRef<string | null>(null);
+  // DO SOMETHING NOW ("all" mode) prequeue buffer bookkeeping — see computeAllModeGeminiTarget below.
+  const swipeBankRef = useRef(swipeBank);
+  useEffect(() => { swipeBankRef.current = swipeBank; }, [swipeBank]);
+  const lastAllModeFallbackUsedRef = useRef<boolean | null>(null);
+
+  /**
+   * How many Gemini suggestions should the next "DO SOMETHING NOW" deck build request?
+   * Goal: only pay for Gemini generation while it is actually needed to keep pace with
+   * remaining swipes, instead of always asking for a full deck's worth.
+   * - No swipes left → 0 (nothing to prequeue for).
+   * - Unknown yet, or the last deck had to fall back to the static fallback pool → treat this
+   *   as a deficit versus remaining swipes and keep a buffer of 2 Gemini cards ready.
+   * - Last deck was fully covered by non-fallback sources (db/community/campaigns/gemini) → that
+   *   already means non-fallback supply is keeping up with remaining swipes, so stop generating more.
+   */
+  const computeAllModeGeminiTarget = useCallback((): number => {
+    if (swipeBankRef.current.current <= 0) return 0;
+    return lastAllModeFallbackUsedRef.current === false ? 0 : 2;
+  }, []);
 
   const buildDeckRequestKey = useCallback((avail: Availability) => JSON.stringify({
     start: avail.start,
@@ -285,8 +318,9 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   }), [sessionActivityIntent]);
 
   const runDeckPreload = useCallback((avail: Availability) => {
+    if (!sessionSuggestionsRef.current.isForUser(userId)) return;
     const requestKey = buildDeckRequestKey(avail);
-    if (deckLoading && deckBuildKeyRef.current === requestKey) {
+    if (deckBuildKeyRef.current === requestKey) {
       return;
     }
     deckBuildKeyRef.current = requestKey;
@@ -297,18 +331,21 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const {
       location: loc,
       prefs: p,
-      history: h,
       habits: hb,
       smartTodos: todos,
       tagAffinities: ta,
       locationProfile: lp,
       savedSuggestions: ss,
     } = preloadRef.current;
-    buildDeck(avail, loc, p, h, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId)
+    buildDeck(avail, loc, p, historyRef.current, hb, todos, 15000, ta, lp, undefined, ss, sessionActivityIntent, userId,
+      undefined, undefined, computeAllModeGeminiTarget(), sessionSuggestionsRef.current.snapshot())
       .then((result) => {
-        if (deckBuildId.current === id) {
-          setPreloadedDeck(result);
-          savePreloadedDeck(result, userId).catch(() => undefined);
+        if (deckBuildId.current === id && sessionSuggestionsRef.current.isForUser(userId)) {
+          lastAllModeFallbackUsedRef.current = result.usedFallback;
+          const freshResult = { ...result, deck: sessionSuggestionsRef.current.filter(result.deck),
+            mapCandidates: sessionSuggestionsRef.current.filter(result.mapCandidates ?? []) };
+          setPreloadedDeck(freshResult);
+          savePreloadedDeck(freshResult, userId).catch(() => undefined);
         }
       })
       .catch(() => {
@@ -318,10 +355,12 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         }
       })
       .finally(() => {
-        if (deckBuildId.current === id) setDeckLoading(false);
-        if (deckBuildKeyRef.current === requestKey) deckBuildKeyRef.current = null;
+        if (deckBuildId.current === id) {
+          setDeckLoading(false);
+          if (deckBuildKeyRef.current === requestKey) deckBuildKeyRef.current = null;
+        }
       });
-  }, [buildDeckRequestKey, deckLoading, sessionActivityIntent, userId]);
+  }, [buildDeckRequestKey, sessionActivityIntent, userId, computeAllModeGeminiTarget]);
 
   const invalidatePreloadedDeck = useCallback(() => {
     deckBuildId.current += 1;
@@ -337,13 +376,14 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
    * Distribution: deck1 ≈ 2/3 of pool, deck2 = rest, deck3+ = none (e.g. 5 total → 2,2,1,0).
    */
   const computeGeminiForDeck = useCallback((): { suggestions: Suggestion[]; max: number; isFirstDeck: boolean } => {
+    if (!sessionSuggestionsRef.current.isForUser(userId)) return { suggestions: [], max: 0, isFirstDeck: false };
     const idx = deckIndexRef.current;
     if (idx === 0) {
       deckIndexRef.current = 1;
       setDeckIndex(1);
       return { suggestions: [], max: 2, isFirstDeck: true };
     }
-    const pool = geminiPoolRef.current;
+    const pool = sessionSuggestionsRef.current.filter(geminiPoolRef.current);
     const n = idx === 1
       ? Math.ceil(pool.length * 2 / 3)
       : (idx === 2 ? pool.length : 0);
@@ -354,14 +394,15 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     setGeminiPool(remaining);
     setDeckIndex(idx + 1);
     return { suggestions: toUse, max: n, isFirstDeck: false };
-  }, []);
+  }, [userId]);
 
   /** Store unused Gemini suggestions after deck 0 for distribution across later decks. */
   const storeGeminiPool = useCallback((allGemini: Suggestion[], usedIds: Set<string>) => {
-    const unused = allGemini.filter((g) => !usedIds.has(g.id));
+    if (!sessionSuggestionsRef.current.isForUser(userId)) return;
+    const unused = sessionSuggestionsRef.current.filter(allGemini.filter((g) => !usedIds.has(g.id)));
     geminiPoolRef.current = unused;
     setGeminiPool(unused);
-  }, []);
+  }, [userId]);
   // Swipe bank timing refs
   const lastUpdatedRef = useRef<number>(Date.now());
   const bankTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -374,12 +415,27 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
   useEffect(() => {
     if (!firebaseEnabled) {
       setAuthChecked(true);
+      addDebugMessage('auth', 'Firebase disabled - no config. Gemini will never run without a userId.');
       return undefined;
     }
     return subscribeAuthState((user) => {
+      if (sessionSuggestionsRef.current.resetForUser(user?.uid ?? null)) {
+        setLoading(true);
+        setHistoryState(defaultHistory);
+        deckBuildId.current += 1;
+        deckBuildKeyRef.current = null;
+        setPreloadedDeck(null);
+        setDeckLoading(false);
+        geminiPoolRef.current = [];
+        deckIndexRef.current = 0;
+        setGeminiPool([]);
+        setDeckIndex(0);
+        lastAllModeFallbackUsedRef.current = null;
+      }
       setUserId(user?.uid ?? null);
       setUserEmail(user?.email ?? null);
       setAuthChecked(true);
+      addDebugMessage('auth', user ? `Signed in as ${user.uid.slice(0, 8)}... (anonymous=${user.isAnonymous})` : 'No signed-in user - Gemini calls are skipped until sign-in completes.');
     });
   }, []);
 
@@ -564,14 +620,16 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setIsBusinessOnlyState(isBusinessOnly);
 
         // Restore queued deck (if still fresh) so Home can reuse it without a new Gemini call.
+        if (!active || !sessionSuggestionsRef.current.isForUser(userId)) return;
         const restoredPreloadedDeck = storedPreloadedDeck ?? guestPreloadedDeck;
-        if (restoredPreloadedDeck?.deck?.length) {
+        if (restoredPreloadedDeck && (restoredPreloadedDeck.deck?.length || restoredPreloadedDeck.mapCandidates?.length)) {
           const savedAt = new Date(restoredPreloadedDeck.savedAt).getTime();
           const isFresh = Number.isFinite(savedAt) && (Date.now() - savedAt) <= PRELOADED_DECK_TTL_MS;
           if (isFresh) {
             setPreloadedDeck({
-              deck: restoredPreloadedDeck.deck,
+              deck: sessionSuggestionsRef.current.filter(restoredPreloadedDeck.deck),
               usedFallback: restoredPreloadedDeck.usedFallback,
+              mapCandidates: sessionSuggestionsRef.current.filter(restoredPreloadedDeck.mapCandidates ?? []),
             });
           } else {
             savePreloadedDeck(null, userId).catch(() => undefined);
@@ -897,12 +955,21 @@ export const AppStateProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         runDeckPreload(sanitizedAvail);
     },
     consumeDeck: () => {
+      if (!sessionSuggestionsRef.current.isForUser(userId)) return null;
       const result = preloadedDeckRef.current;
       preloadedDeckRef.current = null;
       setPreloadedDeck(null);
       savePreloadedDeck(null, userId).catch(() => undefined);
-      return result;
+      if (!result) return null;
+      return { ...result, deck: sessionSuggestionsRef.current.filter(result.deck),
+        mapCandidates: sessionSuggestionsRef.current.filter(result.mapCandidates ?? []) };
     },
+    filterUnseenSuggestions: (candidates) => sessionSuggestionsRef.current.isForUser(userId)
+      ? sessionSuggestionsRef.current.filter(candidates) : [],
+    reserveDeckSuggestions: (candidates) => sessionSuggestionsRef.current.isForUser(userId)
+      ? sessionSuggestionsRef.current.reserve(candidates) : [],
+    getSessionSuggestionExclusions: () => sessionSuggestionsRef.current.isForUser(userId)
+      ? sessionSuggestionsRef.current.snapshot() : new Set<string>(),
     consumeGeminiForDeck: computeGeminiForDeck,
     initGeminiPool: (allGemini, usedIds) => storeGeminiPool(allGemini, usedIds),
     setTagAffinities: (value) => {

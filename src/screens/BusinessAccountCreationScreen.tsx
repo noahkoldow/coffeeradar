@@ -6,10 +6,10 @@ import {
   ScrollView,
   TextInput,
   Pressable,
-  ActivityIndicator,
   Alert,
   Image,
 } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import * as ImagePicker from 'expo-image-picker';
 import { useTheme } from '../theme/ThemeProvider';
 import { BusinessProfile, BusinessCategory } from '../types/business';
@@ -363,7 +363,7 @@ export const BusinessAccountCreationScreen: React.FC<BusinessAccountCreationProp
           disabled={loading}
         >
           {loading ? (
-            <ActivityIndicator color="#FFFFFF" />
+            <BrandLoader color="#FFFFFF" />
           ) : (
             <Text style={styles.submitButtonText}>Create Account</Text>
           )}

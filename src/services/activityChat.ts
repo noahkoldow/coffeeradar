@@ -22,6 +22,26 @@ export type ActivityChatMessage = {
 };
 
 const THREADS = 'activity_chats';
+export const ACTIVITY_CHAT_MESSAGE_MAX_LENGTH = 1000;
+
+export class ActivityChatError extends Error {
+  constructor(public readonly code: string) {
+    super(code);
+    this.name = 'ActivityChatError';
+  }
+}
+
+export const normalizeActivityChatDisplayName = (value: string): string =>
+  value.trim().replace(/\s+/g, ' ').slice(0, 32);
+
+const requireActivityChatUser = async () => {
+  if (!firebaseEnabled || !db || !auth) throw new ActivityChatError('activity-chat/unavailable');
+  // A restored session may still be loading when the chat is opened.
+  await auth.authStateReady();
+  const user = auth.currentUser;
+  if (!user || user.isAnonymous) throw new ActivityChatError('activity-chat/unauthenticated');
+  return user;
+};
 
 const canUseActivityChat = (): boolean => {
   if (!firebaseEnabled || !db || !auth) return false;
@@ -40,7 +60,7 @@ export const getActivityChatRegionLabel = (regionLabel?: string | null): string 
 };
 
 export const ensureActivityChatThread = async (thread: { threadId: string; suggestionId: string; title: string; expiresAt: string; regionLabel?: string | null }) => {
-  if (!canUseActivityChat()) return;
+  await requireActivityChatUser();
   const threadRef = doc(db, THREADS, thread.threadId);
   const snap = await getDoc(threadRef);
   if (snap.exists()) {
@@ -65,11 +85,9 @@ export const ensureActivityChatThread = async (thread: { threadId: string; sugge
 };
 
 export const markActivityChatParticipant = async (threadId: string, displayName: string) => {
-  if (!canUseActivityChat()) return;
-  const user = auth?.currentUser;
-  if (!user || user.isAnonymous) return;
-  const cleanName = displayName.trim();
-  if (!cleanName) return;
+  const user = await requireActivityChatUser();
+  const cleanName = normalizeActivityChatDisplayName(displayName);
+  if (!cleanName) throw new ActivityChatError('activity-chat/display-name-required');
 
   const participantRef = doc(db, THREADS, threadId, 'participants', user.uid);
   const participantSnap = await getDoc(participantRef).catch(() => null);
@@ -106,7 +124,7 @@ export const loadActivityChatSocialProofCounts = async (
 };
 
 export const loadActivityChatThread = async (threadId: string): Promise<ActivityChatThread | null> => {
-  if (!canUseActivityChat()) return null;
+  await requireActivityChatUser();
   const snap = await getDoc(doc(db, THREADS, threadId));
   if (!snap.exists()) return null;
   return { id: snap.id, ...(snap.data() as Omit<ActivityChatThread, 'id'>) };
@@ -115,9 +133,12 @@ export const loadActivityChatThread = async (threadId: string): Promise<Activity
 export const subscribeActivityChatMessages = (
   threadId: string,
   onChange: (messages: ActivityChatMessage[]) => void,
+  onError?: (error: Error) => void,
 ) => {
   if (!canUseActivityChat()) {
-    onChange([]);
+    onError?.(new ActivityChatError(!firebaseEnabled || !db || !auth
+      ? 'activity-chat/unavailable'
+      : 'activity-chat/unauthenticated'));
     return () => undefined;
   }
   return onSnapshot(
@@ -125,23 +146,26 @@ export const subscribeActivityChatMessages = (
     (snap) => {
       onChange(snap.docs.map((item) => ({ id: item.id, ...(item.data() as Omit<ActivityChatMessage, 'id'>) })));
     },
-    () => onChange([]),
+    (error) => onError?.(error),
   );
 };
 
 export const sendActivityChatMessage = async (threadId: string, body: string, authorName: string) => {
-  if (!canUseActivityChat()) return;
-  const user = auth?.currentUser;
+  const user = await requireActivityChatUser();
   const message = body.trim();
-  const cleanAuthorName = authorName.trim();
-  if (!user || user.isAnonymous || !message) return;
+  const cleanAuthorName = normalizeActivityChatDisplayName(authorName);
+  if (!message) throw new ActivityChatError('activity-chat/empty-message');
+  if (message.length > ACTIVITY_CHAT_MESSAGE_MAX_LENGTH) throw new ActivityChatError('activity-chat/message-too-long');
+  if (!cleanAuthorName) throw new ActivityChatError('activity-chat/display-name-required');
   await addDoc(collection(db, THREADS, threadId, 'messages'), {
-    authorId: user?.uid ?? null,
-    authorName: cleanAuthorName || 'CoffeeRadar user',
+    authorId: user.uid,
+    authorName: cleanAuthorName,
     body: message,
     createdAt: serverTimestamp(),
   });
-  await updateDoc(doc(db, THREADS, threadId), {
+  // Delivery is complete once the message is saved; optional metadata must not
+  // keep the composer waiting (or cause the same message to be sent twice).
+  void updateDoc(doc(db, THREADS, threadId), {
     updatedAt: serverTimestamp(),
   }).catch(() => undefined);
 };

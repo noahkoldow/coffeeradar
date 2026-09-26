@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Animated, Linking, PanResponder, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,19 +18,31 @@ import { getConfirmedSocialProofCount } from '../utils/social';
 import { buildPlanSessionKey } from '../utils/planSession';
 import { useI18n } from '../i18n/I18nProvider';
 import { getActivityChatRegionLabel, makeActivityChatThreadId } from '../services/activityChat';
+import { generateActivityGuide } from '../services/geminiSuggestions';
 
 const sameTime = (a: Date, b: Date): boolean => a.getTime() === b.getTime();
 
-export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> = ({ navigation, route }) => {
+type PlanScreenProps = StackScreenProps<RootStackParamList, 'Plan'>;
+
+export const PlanScreen: React.FC<PlanScreenProps> = (props) => {
+  const { state } = useAppState();
+  const key = `${state.userId ?? 'guest'}:${buildPlanSessionKey(props.route.params.commitment, props.route.params.suggestion)}`;
+  return <PlanSessionScreen key={key} {...props} />;
+};
+
+const PlanSessionScreen: React.FC<PlanScreenProps> = ({ navigation, route }) => {
   const theme = useTheme();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const { t, language } = useI18n();
   const { commitment, suggestion } = route.params;
+  const { state, actions } = useAppState();
+  const sessionKey = useMemo(() => buildPlanSessionKey(commitment, suggestion), [commitment, suggestion]);
   const fromDoSomethingNow = route.params?.fromDoSomethingNow === true;
-  const activityMode = route.params?.activityMode ?? (suggestion.type === 'AT_HOME' ? 'at_home' : 'all');
+  const activityMode = route.params?.activityMode
+    ?? (state.inProgressPlanSession?.key === sessionKey ? state.inProgressPlanSession.activityMode : undefined)
+    ?? (suggestion.type === 'AT_HOME' ? 'at_home' : 'all');
   const isChallengeMode = activityMode === 'challenge_me';
   const isGerman = language === 'de';
-  const { state, actions } = useAppState();
   const insets = useSafeAreaInsets();
 
   const [now, setNow] = useState(new Date());
@@ -42,6 +55,14 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const [challengeRemainingSec, setChallengeRemainingSec] = useState(challengeDurationSec);
   const [challengeFailed, setChallengeFailed] = useState(false);
   const [challengeFailedAt, setChallengeFailedAt] = useState<string | null>(null);
+  const [aiGuideSteps, setAiGuideSteps] = useState<string[] | null>(() => {
+    const session = state.inProgressPlanSession;
+    return session?.key === sessionKey && session.aiGuideSteps?.length ? session.aiGuideSteps : null;
+  });
+  const [aiGuideLoading, setAiGuideLoading] = useState(false);
+  const [aiGuideError, setAiGuideError] = useState(false);
+  const aiGuideRequestedRef = useRef(false);
+  const aiGuideMountedRef = useRef(true);
 
   const cancelledRef = useRef(false);
   const finishingRef = useRef(false);
@@ -49,9 +70,14 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   const checklistLockOpacity = useRef(new Animated.Value(1)).current;
   const checklistLockScale = useRef(new Animated.Value(1)).current;
   const sessionHydratedRef = useRef(false);
+  const sessionHydratingRef = useRef(false);
   const sessionCreatedAtRef = useRef(new Date().toISOString());
   const lastPersistedSessionSnapshotRef = useRef<string | null>(null);
-  const sessionKey = useMemo(() => buildPlanSessionKey(commitment, suggestion), [commitment, suggestion]);
+
+  useEffect(() => {
+    aiGuideMountedRef.current = true;
+    return () => { aiGuideMountedRef.current = false; };
+  }, []);
 
   const isSocialActivity = useMemo(() => {
     const hasFixedPlace = !!suggestion.place?.name?.trim() || !!suggestion.event?.venue?.trim();
@@ -75,7 +101,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const scheduledStartAt = useMemo(() => {
     if (fromDoSomethingNow) return null;
-    const raw = suggestion.event?.startAt || commitment.startAt || suggestion.meta?.planStartAt;
+    const raw = commitment.startAt || suggestion.meta?.planStartAt || suggestion.event?.startAt;
     if (!raw) return null;
     const parsed = new Date(raw);
     return Number.isNaN(parsed.getTime()) ? null : parsed;
@@ -112,10 +138,9 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const hasActivityLocation = !!activityLocation.name || !!activityLocation.address || (activityLocation.lat != null && activityLocation.lng != null);
   const ticketmasterTicketUrl = useMemo(() => {
-    if (suggestion.source !== 'ticketmaster') return null;
-    const url = suggestion.event?.ticketUrl?.trim();
-    return url ? url : null;
-  }, [suggestion.event?.ticketUrl, suggestion.source]);
+    const url = suggestion.event?.sourceUrl?.trim() || suggestion.event?.ticketUrl?.trim();
+    return url && /^https?:\/\//i.test(url) ? url : null;
+  }, [suggestion.event?.sourceUrl, suggestion.event?.ticketUrl]);
 
   const openActivityLocation = useCallback(async () => {
     const coords = activityLocation.lat != null && activityLocation.lng != null ? `${activityLocation.lat},${activityLocation.lng}` : null;
@@ -149,8 +174,12 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`;
   }, []);
 
-  const guideSteps = useMemo(() => {
-    const isTodoActivity = (suggestion.tags ?? []).includes('todo') || /(^|\s)to-?do(\s|$)/i.test(suggestion.hook ?? '');
+  const isTodoActivity = useMemo(
+    () => (suggestion.tags ?? []).includes('todo') || /(^|\s)to-?do(\s|$)/i.test(suggestion.hook ?? ''),
+    [suggestion.hook, suggestion.tags],
+  );
+
+  const heuristicGuideSteps = useMemo(() => {
     if (isTodoActivity) {
       return [suggestion.title];
     }
@@ -170,19 +199,65 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     }
 
     return [
-      'Open tickets and confirm details.',
+      suggestion.event?.ticketUrl ? 'Open tickets and confirm details.' : 'Open the event page and confirm details.',
       'Get ready to leave on time.',
-      `Arrive by ${formatTime(new Date(suggestion.event?.startAt || commitment.startAt))}.`,
+      `Arrive by ${formatTime(new Date(commitment.startAt || suggestion.meta?.planStartAt || suggestion.event?.startAt || ''))}.`,
     ];
-  }, [commitment.startAt, commitment.type, suggestion.durationMin, suggestion.event?.startAt, suggestion.hook, suggestion.instructions, suggestion.place?.name, suggestion.steps, suggestion.tags, suggestion.title]);
+  }, [commitment.startAt, commitment.type, isTodoActivity, suggestion.durationMin, suggestion.event?.startAt, suggestion.event?.ticketUrl, suggestion.meta?.planStartAt, suggestion.instructions, suggestion.place?.name, suggestion.steps, suggestion.title]);
+
+  const guideSteps = aiGuideSteps ?? heuristicGuideSteps;
+
+  /** Fetch a detailed, activity-specific guide once the user actually starts — kept out of the
+   *  initial deck-generation call so that call stays short and less prone to max-token truncation. */
+  const fetchActivityGuide = useCallback(async () => {
+    if (!aiGuideMountedRef.current || cancelledRef.current || finishingRef.current
+      || isTodoActivity || aiGuideSteps?.length || aiGuideRequestedRef.current) return;
+    aiGuideRequestedRef.current = true;
+    setAiGuideLoading(true);
+    setAiGuideError(false);
+    try {
+      const steps = await generateActivityGuide({
+        title: suggestion.title,
+        hook: suggestion.hook,
+        description: suggestion.description,
+        type: suggestion.type,
+        durationMin: suggestion.durationMin,
+        tags: suggestion.tags,
+        placeName: suggestion.place?.name ?? null,
+        placeAddress: suggestion.place?.address ?? null,
+        eventStartAt: suggestion.type === 'EVENT' ? commitment.startAt || suggestion.meta?.planStartAt || suggestion.event?.startAt || null : null,
+        eventVenue: suggestion.event?.venue ?? null,
+        isChallenge: isChallengeMode,
+        language: isGerman ? 'de' : 'en',
+      }, state.userId);
+      if (!steps?.length) throw new Error('Activity guide unavailable');
+      if (!aiGuideMountedRef.current || cancelledRef.current || finishingRef.current) return;
+      setAiGuideSteps(steps);
+      // Generated steps replace the provisional guide; its checkmarks do not apply.
+      setGuideChecks(steps.map(() => false));
+    } catch {
+      aiGuideRequestedRef.current = false;
+      if (aiGuideMountedRef.current && !cancelledRef.current && !finishingRef.current) {
+        setAiGuideError(true);
+      }
+    } finally {
+      if (aiGuideMountedRef.current && !cancelledRef.current && !finishingRef.current) {
+        setAiGuideLoading(false);
+      }
+    }
+  }, [aiGuideSteps, commitment.startAt, isChallengeMode, isGerman, isTodoActivity, state.userId, suggestion.description, suggestion.durationMin, suggestion.event?.startAt, suggestion.event?.venue, suggestion.meta?.planStartAt, suggestion.hook, suggestion.place?.address, suggestion.place?.name, suggestion.tags, suggestion.title, suggestion.type]);
 
   useEffect(() => {
     const session = state.inProgressPlanSession;
     if (!session || session.key !== sessionKey || sessionHydratedRef.current) return;
     sessionHydratedRef.current = true;
+    sessionHydratingRef.current = true;
     sessionCreatedAtRef.current = session.createdAt || new Date().toISOString();
 
     const restoredStartAt = session.manualStartAt ? new Date(session.manualStartAt) : null;
+    const restoredGuideSteps = session.aiGuideSteps?.length ? session.aiGuideSteps : null;
+    if (restoredGuideSteps) setAiGuideSteps(restoredGuideSteps);
+    const restoredChecks = (restoredGuideSteps ?? guideSteps).map((_, index) => !!session.guideChecks?.[index]);
     setManualStartAt(restoredStartAt);
     setActivityLogged(!!session.activityLogged);
     setMovementKm(typeof session.movementKm === 'number' ? session.movementKm : 0);
@@ -192,13 +267,15 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       const elapsed = Math.max(0, Math.floor((Date.now() - restoredStartAt.getTime()) / 1000));
       setChallengeRemainingSec(Math.max(0, challengeDurationSec - elapsed));
     }
-    setGuideChecks(guideSteps.map((_, index) => !!session.guideChecks?.[index]));
+    setGuideChecks(restoredChecks);
     lastPersistedSessionSnapshotRef.current = JSON.stringify({
       key: session.key,
       commitment: session.commitment,
       suggestion: session.suggestion,
       manualStartAt: session.manualStartAt,
-      guideChecks: guideSteps.map((_, index) => !!session.guideChecks?.[index]),
+      guideChecks: restoredChecks,
+      aiGuideSteps: restoredGuideSteps,
+      activityMode,
       activityLogged: !!session.activityLogged,
       movementKm: typeof session.movementKm === 'number' ? session.movementKm : 0,
       challengeFailed: !!session.challengeFailed,
@@ -211,7 +288,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       checklistLockOpacity.setValue(0);
       checklistLockScale.setValue(1);
     }
-  }, [challengeDurationSec, checklistLockOpacity, checklistLockScale, guideSteps, isChallengeMode, sessionKey, state.inProgressPlanSession]);
+  }, [activityMode, challengeDurationSec, checklistLockOpacity, checklistLockScale, guideSteps, isChallengeMode, sessionKey, state.inProgressPlanSession]);
 
   useEffect(() => {
     setGuideChecks((prev) => {
@@ -221,6 +298,17 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
   }, [guideSteps]);
 
   useEffect(() => {
+    if (!manualStartAt) return;
+    void fetchActivityGuide();
+  }, [fetchActivityGuide, manualStartAt]);
+
+  useEffect(() => {
+    if (cancelledRef.current || finishingRef.current) return;
+    // Hydration state updates apply on the next render. Do not save this render's defaults.
+    if (sessionHydratingRef.current) {
+      sessionHydratingRef.current = false;
+      return;
+    }
     if (!sessionHydratedRef.current && state.inProgressPlanSession?.key === sessionKey) {
       return;
     }
@@ -243,6 +331,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       suggestion,
       manualStartAt: manualStartAt.toISOString(),
       guideChecks: guideSteps.map((_, index) => !!guideChecks[index]),
+      aiGuideSteps,
+      activityMode,
       activityLogged,
       movementKm,
       challengeFailed,
@@ -258,7 +348,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
       ...nextSessionBase,
       updatedAt: new Date().toISOString(),
     });
-  }, [actions, activityLogged, challengeFailed, challengeFailedAt, commitment, guideChecks, guideSteps, manualStartAt, movementKm, sessionKey, state.inProgressPlanSession, suggestion]);
+  }, [actions, activityLogged, activityMode, aiGuideSteps, challengeFailed, challengeFailedAt, commitment, guideChecks, guideSteps, manualStartAt, movementKm, sessionKey, state.inProgressPlanSession, suggestion]);
 
   useEffect(() => {
     if (!isChallengeMode || !manualStartAt || challengeFailed) return;
@@ -301,7 +391,9 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
   const startActivityNow = useCallback(async () => {
     if (manualStartAt) return;
-    await logEvent('activity_started', { type: commitment.type, suggestion_id: suggestion.id });
+    void logEvent('activity_started', { type: commitment.type, suggestion_id: suggestion.id });
+    // This session starts locally; only a resumed session needs hydration.
+    sessionHydratedRef.current = true;
 
     if (showChecklistLock) {
       checklistLockOpacity.setValue(1);
@@ -375,7 +467,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
     return guideChecks.findIndex((checked) => !checked);
   }, [guideChecks, manualStartAt]);
 
-  const canFinish = manualStartAt !== null && guideChecks.every(Boolean) && !challengeFailed;
+  const canFinish = manualStartAt !== null && !aiGuideLoading
+    && guideSteps.length > 0 && guideSteps.every((_, index) => !!guideChecks[index]) && !challengeFailed;
   const finishOpacity = useMemo(() => {
     if (guideSteps.length === 0) return 1;
     const checkedCount = guideChecks.filter(Boolean).length;
@@ -599,6 +692,24 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
 
           <View style={styles.guideBlock}>
             <Text style={styles.sectionTitle}>{`✅ ${t('plan_checklist_title')}`}</Text>
+            {aiGuideLoading && (
+              <View style={styles.guideStatus} accessibilityLiveRegion="polite">
+                <BrandLoader size="small" />
+                <Text style={styles.guideStatusText}>{t('plan_checklist_loading')}</Text>
+              </View>
+            )}
+            {aiGuideError && (
+              <View style={styles.guideError} accessibilityLiveRegion="polite">
+                <Text style={styles.guideStatusText}>{t('plan_checklist_error')}</Text>
+                <Pressable
+                  accessibilityRole="button"
+                  onPress={() => { void fetchActivityGuide(); }}
+                  style={styles.guideRetry}
+                >
+                  <Text style={styles.guideRetryText}>{t('plan_checklist_retry')}</Text>
+                </Pressable>
+              </View>
+            )}
             {!!ticketmasterTicketUrl && (
               <Pressable
                 style={({ pressed }) => [
@@ -607,8 +718,8 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
                 ]}
                 onPress={openTicketmasterTickets}
               >
-                <Text style={styles.ticketLinkLabel}>{t('plan_tickets')}</Text>
-                <Text style={styles.ticketLinkText}>{t('plan_open_ticketmaster')}</Text>
+                <Text style={styles.ticketLinkLabel}>{t(suggestion.event?.sourceUrl ? 'plan_event_details' : 'plan_tickets')}</Text>
+                <Text style={styles.ticketLinkText}>{t(suggestion.event?.sourceUrl ? 'plan_open_event_source' : 'plan_open_ticketmaster')}</Text>
               </Pressable>
             )}
             {guideSteps.map((step, index) => {
@@ -618,7 +729,7 @@ export const PlanScreen: React.FC<StackScreenProps<RootStackParamList, 'Plan'>> 
                 <Pressable
                   key={`guide_${index}`}
                   onPress={() => setGuideChecks((prev) => { const next = [...prev]; next[index] = !next[index]; return next; })}
-                  disabled={!manualStartAt || showChecklistLock}
+                  disabled={!manualStartAt || showChecklistLock || aiGuideLoading}
                   style={[styles.guideRow, isActive && styles.guideRowActive]}
                 >
                   <Text style={[styles.guideCheck, isChecked && styles.guideCheckOn, isActive && !isChecked && styles.guideCheckActive]}>{isChecked ? '☑' : '☐'}</Text>
@@ -728,6 +839,11 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     gap: theme.spacing.sm,
   },
   ticketLinkRowPressed: { opacity: 0.82 },
+  guideStatus: { flexDirection: 'row', alignItems: 'center', gap: theme.spacing.sm },
+  guideStatusText: { fontFamily: theme.fonts.body, color: theme.colors.textMuted, fontSize: 13, flexShrink: 1 },
+  guideError: { gap: theme.spacing.xs },
+  guideRetry: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start', paddingHorizontal: theme.spacing.sm },
+  guideRetryText: { fontFamily: theme.fonts.semibold, color: theme.colors.accent, fontSize: 14 },
   ticketLinkLabel: { fontFamily: theme.fonts.semibold, color: theme.colors.textMuted, fontSize: 13 },
   ticketLinkText: {
     fontFamily: theme.fonts.semibold,

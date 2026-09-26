@@ -3,6 +3,7 @@ import { View, Text, StyleSheet, Pressable, Image } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTheme } from '../theme/ThemeProvider';
 import { useAppState } from '../state/AppState';
+import { BrandLogo } from './BrandLogo';
 
 interface BusinessHeaderProps {
   onSettingsPress?: () => void;
@@ -15,19 +16,12 @@ export const BusinessHeader: React.FC<BusinessHeaderProps> = ({ onSettingsPress,
   const { state } = useAppState();
   const styles = useMemo(() => createStyles(theme), [theme]);
   const businessLogoUrl = state.businessProfile?.logo?.url;
-  const appLogoSource = state.isPremium
-    ? require('../../assets/logo_premium.png')
-    : require('../../assets/logo.png');
 
   return (
     <View style={[styles.container, { paddingTop: insets.top }]}>
       <View style={styles.content}>
         <View style={styles.logoSection}>
-          <Image
-            source={appLogoSource}
-            style={styles.logo}
-            resizeMode="contain"
-          />
+          <BrandLogo premium={state.isPremium} height={32} onDarkBackground={theme.isDark} style={styles.logo} />
           {businessLogoUrl ? (
             <>
               <Text style={styles.collabDivider}>X</Text>
@@ -64,15 +58,16 @@ const createStyles = (theme: any) =>
       flexDirection: 'row',
       justifyContent: 'space-between',
       alignItems: 'center',
+      gap: theme.spacing.sm,
     },
     logoSection: {
       flexDirection: 'row',
       alignItems: 'center',
       gap: theme.spacing.sm,
+      flexShrink: 1,
     },
     logo: {
-      width: 32,
-      height: 32,
+      flexShrink: 1,
     },
     collabDivider: {
       fontSize: 12,

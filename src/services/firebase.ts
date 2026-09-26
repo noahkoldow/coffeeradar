@@ -1,7 +1,7 @@
 // Import the functions you need from the SDKs you need
 import { initializeApp } from "firebase/app";
 import { getAnalytics } from "firebase/analytics";
-import { getAuth } from "firebase/auth";
+import { getFirebaseAuth } from './firebaseAuth';
 import { getFirestore } from "firebase/firestore"; // Added getFirestore
 import { getFunctions, httpsCallable } from "firebase/functions"; // Added getFunctions and httpsCallable
 import { getStorage } from "firebase/storage"; // Added getStorage
@@ -28,7 +28,7 @@ export const firebaseEnabled = hasRequiredFirebaseConfig;
 // Initialize Firebase
 export const app = initializeApp(firebaseConfig);
 // export const analytics = getAnalytics(app); // Analytics might not be needed in all environments
-export const auth = getAuth(app);
+export const auth = getFirebaseAuth(app);
 export const db = getFirestore(app); // Initialized Firestore
 export const functions = getFunctions(app); // Initialized Functions
 export const storage = getStorage(app); // Initialized Storage

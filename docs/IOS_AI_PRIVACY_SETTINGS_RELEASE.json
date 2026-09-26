@@ -1,0 +1,89 @@
+{
+  "publishedAt": "2026-09-25T20:00:58.227Z",
+  "channel": "production",
+  "platform": "ios",
+  "runtimeVersion": "1.0.0",
+  "delivery": "OTA update for existing compatible TestFlight installations",
+  "compatibleBuilds": [
+    "11",
+    "12"
+  ],
+  "supersedesGroup": "4424f90b-26dc-49bd-bae2-f061a35b464e",
+  "previousReleaseRecord": "IOS_PREMIUM_CANCELLATION_RELEASE.json",
+  "sourceBase": "72d522eee5cf276aea1718c215719ec98ceb0c23",
+  "scope": "Six AI privacy UI, navigation, and consent files; previously released app features preserved",
+  "reason": "The released TestFlight Settings screen still showed the standalone AI privacy explanation and controls.",
+  "behavior": "Settings > Privacy contains only a clickable AI privacy link. The separate page contains the explanation, consent controls, and confirmation warning before disabling AI.",
+  "bundleSha256": "af64728b43840402c4e3e307021b87451d468251108dae68764327ad5041d985",
+  "lockedDependencies": true,
+  "runtimeDependenciesVerified": 37,
+  "nativeBuildCreated": false,
+  "backendDeployed": false,
+  "updates": [
+    {
+      "id": "01a0da28-2173-786a-9aa2-ff0fbeb37e08",
+      "createdAt": "2026-09-25T20:00:58.227Z",
+      "group": "e377c798-ffdf-4118-9df8-91aef9f02ead",
+      "branch": "production",
+      "message": "Move AI privacy controls into Privacy settings",
+      "runtimeVersion": "1.0.0",
+      "platform": "ios",
+      "manifestPermalink": "https://u.expo.dev/update/01a0da28-2173-786a-9aa2-ff0fbeb37e08",
+      "isRollBackToEmbedded": false,
+      "gitCommitHash": "72d522eee5cf276aea1718c215719ec98ceb0c23"
+    }
+  ],
+  "dashboardUrl": "https://expo.dev/accounts/noehxpo/projects/bits/updates/e377c798-ffdf-4118-9df8-91aef9f02ead",
+  "validation": {
+    "consentAndPrivacyAndPremiumTestsPassed": 35,
+    "workspaceTypeCheckPassed": true,
+    "releaseEntrypointTypeCheckPassed": true,
+    "nativeIosExportPassed": true,
+    "settingsLinkNavigationVerified": true,
+    "settingsHasNoAiExplanationOrControls": true,
+    "mobileVisualChecksPassed": true,
+    "nativeDeviceVerified": false
+  },
+  "verification": {
+    "verifiedAt": "2026-09-25T20:01:05.627Z",
+    "manifestStatus": 200,
+    "servedUpdateId": "01a0da28-2173-786a-9aa2-ff0fbeb37e08",
+    "servedRuntimeVersion": "1.0.0",
+    "manifestBundleSha256Matches": true,
+    "assetsDownloadedAndHashVerified": 28,
+    "allAssetsVerified": true,
+    "deviceApplicationVerified": false
+  },
+  "changedFiles": [
+    {
+      "file": "App.tsx",
+      "sha256": "51dac10a550210cc407685a5370cfb411314c515aa6779c3c242a7fc2a441aca",
+      "newFile": false
+    },
+    {
+      "file": "src/navigation/types.ts",
+      "sha256": "fca36430c1bd791688d0587c4b5d8a0f11ba3c55ea576de953c63e8bc44f35ad",
+      "newFile": false
+    },
+    {
+      "file": "src/screens/SettingsScreen.tsx",
+      "sha256": "e2d750825f20cade971cd1bc7f01865afee462a9fb56672258ddd4df8700f3df",
+      "newFile": false
+    },
+    {
+      "file": "src/screens/LegalPrivacyScreen.tsx",
+      "sha256": "6b40973f0f110d9e89dbfdf542327277e2bf306b55c3472778b01025235356ea",
+      "newFile": false
+    },
+    {
+      "file": "src/screens/AIPrivacyScreen.tsx",
+      "sha256": "af40cb5298905d0c50c625660b93cce52ec4e1325ad4be13beea53c8b4e6875f",
+      "newFile": true
+    },
+    {
+      "file": "src/services/aiConsent.ts",
+      "sha256": "393f5dd72f820d7db5bf3233c51d9a8d6fb4dcec00ec5a5602ca306dbc4a0c87",
+      "newFile": false
+    }
+  ]
+}

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Image, StyleSheet, Text, View } from 'react-native';
+import { Image, StyleSheet, Text, View } from 'react-native';
+import { BrandLoader } from '../BrandLoader';
 import { DeckSuggestion } from '../../types';
 import { useTheme } from '../../theme/ThemeProvider';
 import { CARD_HEIGHT } from '../cardConstants';
@@ -25,6 +26,9 @@ export const NativeAdSlide: React.FC<Props> = ({ suggestion, preview, deckColors
   const adRef = useRef<any>(null);
 
   useEffect(() => {
+    // A preserved card can return to the preview stack after undo. Its previous
+    // request was destroyed by cleanup, so never reuse that ad on promotion.
+    setNativeAd(null);
     // Never load a real ad for the background "next" preview card.
     if (preview || !isAdsAvailable) return undefined;
 
@@ -61,7 +65,7 @@ export const NativeAdSlide: React.FC<Props> = ({ suggestion, preview, deckColors
   );
 
   // Placeholder while loading, in preview, or when the SDK is unavailable.
-  if (!nativeAd || !isAdsAvailable) {
+  if (preview || !nativeAd || !isAdsAvailable) {
     return (
       <View style={styles.card}>
         <View style={styles.topRow}>
@@ -70,7 +74,7 @@ export const NativeAdSlide: React.FC<Props> = ({ suggestion, preview, deckColors
         </View>
         <View style={styles.placeholderMedia}>
           {!preview && isAdsAvailable ? (
-            <ActivityIndicator color={deckColors?.bg ?? theme.colors.accent} />
+            <BrandLoader />
           ) : null}
         </View>
         <View style={styles.bottom}>

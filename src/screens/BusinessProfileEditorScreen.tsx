@@ -8,7 +8,6 @@ import {
   Pressable,
   Alert,
   Image,
-  ActivityIndicator,
 } from 'react-native';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';

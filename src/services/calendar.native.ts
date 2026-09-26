@@ -262,6 +262,14 @@ export const createPlanEvent = async (payload: {
   });
 };
 
+/** Update to-do text without changing its scheduled calendar time. */
+export const updatePlanEventDetails = async (
+  eventId: string,
+  details: { title: string; notes?: string },
+): Promise<void> => {
+  await Calendar.updateEventAsync(eventId, details);
+};
+
 /** Shorten an existing calendar event so it ends at `newEndDate`. */
 export const updatePlanEventEnd = async (eventId: string, newEndDate: Date): Promise<void> => {
   await Calendar.updateEventAsync(eventId, {

@@ -162,8 +162,11 @@ service cloud.firestore {
         && request.auth.uid == userId;
 
       match /{subcollection}/{document} {
-        allow read, write: if isSignedIn()
+        allow read: if isSignedIn()
           && request.auth.uid == userId;
+        allow write: if isSignedIn()
+          && request.auth.uid == userId
+          && subcollection != 'consents';
       }
     }
 

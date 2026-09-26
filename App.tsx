@@ -1,5 +1,5 @@
 import React, { useEffect } from 'react';
-import { ActivityIndicator, Platform, StyleSheet, View } from 'react-native';
+import { Platform, StyleSheet, View } from 'react-native';
 import { DefaultTheme, NavigationContainer } from '@react-navigation/native';
 import { createStackNavigator } from '@react-navigation/stack';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -11,6 +11,7 @@ import { AppStateProvider, useAppState } from './src/state/AppState';
 import { RootStackParamList } from './src/navigation/types';
 import { AuthScreen } from './src/screens/AuthScreen';
 import { PrivacyPolicyScreen } from './src/screens/LegalPrivacyScreen';
+import { AIPrivacyScreen } from './src/screens/AIPrivacyScreen';
 import { TermsOfServiceScreen } from './src/screens/LegalTermsScreen';
 import { WelcomeScreen } from './src/screens/WelcomeScreen';
 import { CalendarPermissionScreen } from './src/screens/CalendarPermissionScreen';
@@ -47,6 +48,7 @@ import { logEvent } from './src/services/analytics';
 import { firebaseEnabled } from './src/services/firebase';
 import { initializeAdsCompliance } from './src/services/ads/consent';
 import { I18nProvider } from './src/i18n/I18nProvider';
+import { BrandLoader } from './src/components/BrandLoader';
 
 const Stack = createStackNavigator<RootStackParamList>();
 
@@ -70,7 +72,7 @@ const AppNavigator = () => {
   if (state.loading || !state.authChecked) {
     return (
       <View style={[styles.loading, { backgroundColor: theme.colors.background }]}>
-        <ActivityIndicator color={theme.colors.accent} />
+        <BrandLoader size="large" />
       </View>
     );
   }
@@ -81,6 +83,7 @@ const AppNavigator = () => {
         <Stack.Navigator screenOptions={{ headerShown: false }}>
           <Stack.Screen name="Auth" component={AuthScreen} />
           <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+          <Stack.Screen name="AIPrivacy" component={AIPrivacyScreen} />
           <Stack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
         </Stack.Navigator>
       </NavigationContainer>
@@ -130,6 +133,7 @@ const AppNavigator = () => {
         >
           <Stack.Screen name="Welcome" component={WelcomeScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="PrivacyPolicy" component={PrivacyPolicyScreen} />
+          <Stack.Screen name="AIPrivacy" component={AIPrivacyScreen} />
           <Stack.Screen name="TermsOfService" component={TermsOfServiceScreen} />
           <Stack.Screen name="CalendarPermission" component={CalendarPermissionScreen} options={{ gestureEnabled: false }} />
           <Stack.Screen name="CalendarSelect" component={CalendarSelectScreen} options={{ gestureEnabled: false }} />
@@ -175,7 +179,7 @@ export default function App() {
   if (!fontsLoaded) {
     return (
       <View style={[styles.loading, { backgroundColor: lightTheme.colors.background }]}>
-        <ActivityIndicator color={lightTheme.colors.accent} />
+        <BrandLoader size="large" />
       </View>
     );
   }

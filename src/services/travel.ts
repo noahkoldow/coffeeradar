@@ -1,4 +1,5 @@
 import { clamp } from '../utils/time';
+import type { LocationProfile } from '../types';
 
 const EARTH_RADIUS_KM = 6371;
 
@@ -13,7 +14,7 @@ export const haversineKm = (lat1: number, lon1: number, lat2: number, lon2: numb
   return EARTH_RADIUS_KM * c;
 };
 
-export type TravelMode = 'walk' | 'transit';
+export type TravelMode = 'walk' | 'transit' | 'car';
 
 /**
  * Choose travel mode based on distance.
@@ -21,6 +22,17 @@ export type TravelMode = 'walk' | 'transit';
  */
 export const chooseTravelMode = (distanceKm: number): TravelMode => {
   return distanceKm <= 1.5 ? 'walk' : 'transit';
+};
+
+/** Distance/context heuristic, not a route, traffic, service, or car-access check. */
+export const selectMapTravelMode = (
+  distanceKm: number,
+  profile?: Pick<LocationProfile, 'label'> | null,
+): TravelMode => {
+  if (distanceKm <= 1.5) return 'walk';
+  if (profile?.label === 'urban' && distanceKm <= 12) return 'transit';
+  if ((!profile || profile.label === 'unknown') && distanceKm <= 5) return 'transit';
+  return 'car';
 };
 
 /**
@@ -36,6 +48,11 @@ export const estimateEtaMinutes = (distanceKm: number, mode: TravelMode): number
     const walkSpeedKmh = 4.5;
     const minutes = (distanceKm / walkSpeedKmh) * 60;
     return Math.round(clamp(minutes, 1, 240));
+  }
+
+  if (mode === 'car') {
+    // Generic local driving plus parking; no live traffic or routing service.
+    return Math.round(clamp((distanceKm / 35) * 60 + 5, 5, 240));
   }
 
   // Public transport model
@@ -67,5 +84,6 @@ export const travelDescription = (distanceKm: number, etaMin: number, mode: Trav
   if (mode === 'walk') {
     return `${distanceKm.toFixed(1)} km · ${etaMin} min walk`;
   }
+  if (mode === 'car') return `${distanceKm.toFixed(1)} km · ~${etaMin} min by car`;
   return `${distanceKm.toFixed(1)} km · ~${etaMin} min by public transport`;
 };

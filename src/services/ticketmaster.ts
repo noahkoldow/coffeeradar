@@ -1,6 +1,7 @@
 import { Availability, LocationState, Suggestion, UserPrefs } from '../types';
 import { addMinutes, fromISO } from '../utils/time';
 import { addDebugMessage } from './debug';
+import { discoveryReferenceTime, eventSearchRadiusKm, isPlanningAhead } from './discoveryTiming';
 
 const BASE_URL = 'https://app.ticketmaster.com/discovery/v2/events.json';
 
@@ -92,7 +93,7 @@ const buildDescription = (event: any): string => {
   const templates: Record<string, string[]> = {
     music: [
       `Catch ${event.name} live${venueName ? ` at ${venueName}` : ''}. Grab tickets and go.`,
-      `Live music${venueName ? ` at ${venueName}` : ''} — ${event.name} is playing tonight.`,
+      `Live music${venueName ? ` at ${venueName}` : ''} — ${event.name} is performing live.`,
       `${event.name}${venueName ? ` at ${venueName}` : ''} — a live show worth catching.`,
     ],
     sports: [
@@ -104,7 +105,7 @@ const buildDescription = (event: any): string => {
       `See ${event.name} live${venueName ? `. Playing at ${venueName}` : ''}. A great way to spend the evening.`,
     ],
     film: [
-      `${event.name}${venueName ? ` at ${venueName}` : ''} — on the big screen now.`,
+      `${event.name}${venueName ? ` at ${venueName}` : ''} — on the big screen.`,
       `Catch a screening of ${event.name}${venueName ? ` at ${venueName}` : ''}.`,
     ],
   };
@@ -194,31 +195,26 @@ export const fetchTicketmasterSuggestions = async (
     return [];
   }
 
-  if (!location.lat || !location.lng) {
+  if (location.lat == null || location.lng == null || !Number.isFinite(location.lat) || !Number.isFinite(location.lng)) {
     addDebugMessage('ticketmaster', 'No location — skipping.');
     return [];
   }
 
-  const now = new Date();
-  const end = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
-
-  // Widen the search window — events starting within the next 6 hours
-  // (the feasibility check in suggestions.ts will filter out unreachable ones)
-  const searchEnd = new Date(Math.max(
-    end.getTime(),
-    now.getTime() + 6 * 60 * 60 * 1000,
-  ));
+  const start = discoveryReferenceTime(availability);
+  const end = fromISO(availability.end) ?? addMinutes(start, availability.durationMin);
+  if (end <= start) return [];
+  const planningAhead = isPlanningAhead(availability);
 
   // Build query params
   const params: Record<string, string> = {
     apikey: key,
     geoPoint: encodeGeohash(location.lat, location.lng),
-    radius: String(Math.min(prefs.radiusKm || 25, 50)),
+    radius: String(Math.round(eventSearchRadiusKm(prefs, availability))),
     unit: 'km',
-    startDateTime: formatTmDateTime(now),
-    endDateTime: formatTmDateTime(searchEnd),
-    size: '15',
-    sort: 'distance,asc',
+    startDateTime: formatTmDateTime(start),
+    endDateTime: formatTmDateTime(end),
+    size: planningAhead ? '40' : '15',
+    sort: planningAhead ? 'date,asc' : 'distance,asc',
   };
 
   // Use classificationName for interest-based filtering instead of keyword
@@ -260,6 +256,7 @@ export const fetchTicketmasterSuggestions = async (
     const suggestions: Suggestion[] = [];
 
     for (const event of events) {
+      if (['cancelled', 'postponed', 'offsale'].includes(event.dates?.status?.code)) continue;
       const venue = event._embedded?.venues?.[0];
       const lat = venue?.location?.latitude ? Number(venue.location.latitude) : undefined;
       const lng = venue?.location?.longitude ? Number(venue.location.longitude) : undefined;
@@ -309,6 +306,9 @@ export const fetchTicketmasterSuggestions = async (
         ],
         event: {
           startAt,
+          endAt: event.dates?.end?.dateTime,
+          sourceUrl: ticketUrl,
+          attendanceMode: 'fixed',
           venue: venue?.name ?? 'Venue',
           ticketUrl,
           priceRange,

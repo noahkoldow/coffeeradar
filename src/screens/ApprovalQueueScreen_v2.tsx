@@ -5,9 +5,9 @@ import {
   View,
   Pressable,
   Alert,
-  ActivityIndicator,
   FlatList,
 } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -258,7 +258,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
             disabled={reviewing === item.campaign.id}
           >
             {reviewing === item.campaign.id ? (
-              <ActivityIndicator size="small" color={theme.colors.error} />
+              <BrandLoader size="small" />
             ) : (
               <Text style={styles.rejectButtonText}>{isGerman ? 'Ablehnen' : 'Reject'}</Text>
             )}
@@ -269,7 +269,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
             disabled={reviewing === item.campaign.id}
           >
             {reviewing === item.campaign.id ? (
-              <ActivityIndicator size="small" color={theme.colors.accent} />
+              <BrandLoader size="small" />
             ) : (
               <Text style={styles.approveButtonText}>{isGerman ? 'Freigeben' : 'Approve'}</Text>
             )}
@@ -286,7 +286,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
         style={[styles.container, { paddingTop: insets.top }]}
       >
         <View style={styles.centerContent}>
-          <ActivityIndicator size="large" color={theme.colors.accent} />
+          <BrandLoader size="large" />
         </View>
       </LinearGradient>
     );

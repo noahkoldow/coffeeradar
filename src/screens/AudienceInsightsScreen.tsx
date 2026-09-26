@@ -1,12 +1,12 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  ActivityIndicator,
   ScrollView,
   StyleSheet,
   Text,
   View,
   Pressable,
 } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -45,7 +45,7 @@ export const AudienceInsightsScreen: React.FC<AudienceInsightsScreenProps> = ({
         style={[styles.container, { paddingTop: insets.top }]}
       >
         <View style={styles.centerContent}>
-          <ActivityIndicator color={theme.colors.accent} size="large" />
+          <BrandLoader size="large" />
         </View>
       </LinearGradient>
     );

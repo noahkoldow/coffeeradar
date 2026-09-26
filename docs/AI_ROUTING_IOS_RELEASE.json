@@ -1,0 +1,31 @@
+{
+  "publishedAt": "2026-09-24T10:37:41.901Z",
+  "channel": "production",
+  "platform": "ios",
+  "runtimeVersion": "1.0.0",
+  "bundleSha256": "219c6234948e4566f9c76f5294d7a3f8f48654cad995b9874b865fada449f9b1",
+  "sourceBase": "72d522eee5cf276aea1718c215719ec98ceb0c23",
+  "updates": [
+    {
+      "id": "01a0d2fe-10d8-7e21-a49d-6319bbdada81",
+      "group": "71b6c154-368e-4e62-bbdc-610bd4847f95",
+      "platform": "ios",
+      "runtimeVersion": "1.0.0",
+      "createdAt": "2026-09-24T10:37:40.952Z",
+      "message": "Restore AI with authenticated backend routing and privacy controls"
+    }
+  ],
+  "verification": {
+    "verifiedAt": "2026-09-24T10:41:54.424Z",
+    "manifestStatus": 200,
+    "servedUpdateId": "01a0d2fe-10d8-7e21-a49d-6319bbdada81",
+    "servedRuntimeVersion": "1.0.0",
+    "manifestBundleSha256Matches": true,
+    "assetsDownloadedAndHashVerified": 28,
+    "allAssetsVerified": true,
+    "productionChannelBranch": "production",
+    "productionChannelBranchPercent": 100,
+    "deviceApplicationVerified": false
+  },
+  "dashboardUrl": "https://expo.dev/accounts/noehxpo/projects/bits/updates/71b6c154-368e-4e62-bbdc-610bd4847f95"
+}

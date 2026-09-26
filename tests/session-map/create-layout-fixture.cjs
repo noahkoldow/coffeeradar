@@ -1,0 +1,13 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const source = fs.readFileSync(path.join(__dirname, '../../src/screens/DeckScreen.tsx'), 'utf8');
+const scrollStart = source.indexOf('<ScrollView style={styles.mainScroll}');
+const mainStart = source.lastIndexOf('<LinearGradient', scrollStart);
+const mainEnd = source.indexOf('</ScrollView>', scrollStart) + '</ScrollView>'.length;
+if (scrollStart < 0 || mainEnd < 0) throw new Error('DeckScreen main layout changed; update extraction.');
+const main = source.slice(mainStart, mainEnd) + '\n</LinearGradient>';
+const branches = source.slice(source.indexOf('  if (loading && !sessionMapOpen)'), source.lastIndexOf('  return (', mainStart));
+const styles = source.slice(source.indexOf('const createStyles ='));
+const prefix = fs.readFileSync(path.join(__dirname, 'layout-fixture-prefix.txt'), 'utf8');
+fs.writeFileSync(path.join(__dirname, 'DeckLayout.generated.tsx'), `${prefix}\n${branches}\nreturn (${main});\n}\n${styles}`, 'utf8');
+console.log('Generated actual DeckScreen main/loading/empty markup and styles.');

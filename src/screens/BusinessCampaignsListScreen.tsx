@@ -5,10 +5,10 @@ import {
   StyleSheet,
   ScrollView,
   Pressable,
-  ActivityIndicator,
   Alert,
   FlatList,
 } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { RootStackParamList } from '../navigation/types';
@@ -245,7 +245,7 @@ export const BusinessCampaignsListScreen: React.FC<Props> = ({ navigation }) => 
 
       {loading ? (
         <View style={styles.centerContainer}>
-          <ActivityIndicator color={theme.colors.accent} size="large" />
+          <BrandLoader size="large" />
         </View>
       ) : filteredCampaigns.length === 0 ? (
         <View style={styles.emptyContainer}>

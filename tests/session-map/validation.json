@@ -1,0 +1,29 @@
+{
+  "date": "2026-09-25",
+  "nativeComponentChecks": { "passed": 5, "failed": 0, "command": "node --test tests/session-map/native-check.cjs" },
+  "browserPanelChecks": {
+    "passedScenarios": 16,
+    "pageErrors": [],
+    "widths": [320, 390],
+    "languages": ["en", "de"],
+    "collections": ["empty", "all home/unlocated", "three activities", "seventeen activities"],
+    "checks": ["420px card", "no horizontal overflow", "all entries accessible", "saved labels", "walk/transit/car estimates", "pin and grouped-pin selection", "normal card return", "long labels", "badge clears on opening", "99+ badge", "dark theme"]
+  },
+  "browserDeckLayoutChecks": {
+    "passedScenarios": 16,
+    "pageErrors": [],
+    "viewports": [[375, 667], [390, 844]],
+    "languages": ["en", "de"],
+    "states": ["deck", "map", "loading", "empty"],
+    "fixture": "Actual DeckScreen main/loading/empty JSX and createStyles extracted with create-layout-fixture.cjs; data and action callbacks are local fixtures.",
+    "releaseSwipeDeckSource": "C:/Users/nlkot/AppData/Local/Temp/coffeeradar-session-map-20260925-2003/src/components/SwipeDeck.tsx",
+    "releaseSwipeDeckResolution": "SESSION_MAP_RELEASE_ROOT Metro resolver override; relative SuggestionCard imports resolve in the same release checkout.",
+    "mapButtonCenteredAboveHeart": true,
+    "noMapPanelButtonOverlap": true,
+    "horizontalSwipeInsideVerticalScroll": true,
+    "zeroCreditMapBrowsing": true,
+    "shortScreensScrollToControls": true
+  },
+  "screenshots": "tests/artifacts/session-map",
+  "limitations": "Native map rendering and physical iPhone pan/zoom gestures remain device tests. Native component tests use mocked platform elements; browser tests use React Native Web."
+}

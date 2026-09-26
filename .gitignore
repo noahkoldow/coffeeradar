@@ -22,6 +22,7 @@ expo-env.d.ts
 .metro-health-check*
 
 # debug
+firebase-debug*.log
 npm-debug.*
 yarn-debug.*
 yarn-error.*
@@ -40,3 +41,10 @@ yarn-error.*
 # generated native folders
 /ios
 /android
+
+# Local test output and browser profiles
+/tests/artifacts/
+/test-results/
+/playwright-report/
+/.expo-export-check/
+/.expo-start*.log

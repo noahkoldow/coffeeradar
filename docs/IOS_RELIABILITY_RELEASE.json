@@ -1,0 +1,36 @@
+{
+  "publishedAt": "2026-09-24T11:14:27.853Z",
+  "channel": "production",
+  "platform": "ios",
+  "runtimeVersion": "1.0.0",
+  "bundleSha256": "1df46d4b8abd74b4e12b82aa2d2e7482bdaeaa2265eb64274a27670f39d1ce55",
+  "sourceBase": "72d522eee5cf276aea1718c215719ec98ceb0c23",
+  "supersedesGroup": "71b6c154-368e-4e62-bbdc-610bd4847f95",
+  "lockedDependencies": true,
+  "accountPermissionsChanged": false,
+  "updates": [
+    {
+      "id": "01a0d31f-ba27-7399-8d84-e2bc7e7518bf",
+      "group": "d2e1125b-fc6a-4cd0-84e1-2c269d27b090",
+      "platform": "ios",
+      "runtimeVersion": "1.0.0",
+      "createdAt": "2026-09-24T11:14:26.983Z",
+      "message": "Fix login persistence, admin refresh and planner request loop"
+    }
+  ],
+  "dashboardUrl": "https://expo.dev/accounts/noehxpo/projects/bits/updates/d2e1125b-fc6a-4cd0-84e1-2c269d27b090",
+  "verification": {
+    "verifiedAt": "2026-09-24T11:15:05.842Z",
+    "manifestStatus": 200,
+    "servedUpdateId": "01a0d31f-ba27-7399-8d84-e2bc7e7518bf",
+    "servedRuntimeVersion": "1.0.0",
+    "manifestBundleSha256Matches": true,
+    "assetsDownloadedAndHashVerified": 28,
+    "allAssetsVerified": true,
+    "deviceApplicationVerified": false,
+    "productionChannelBranch": "production",
+    "productionChannelBranchPercent": 100,
+    "testflightCrashReportsAvailable": 0,
+    "correctiveRegressionTestsPassed": 18
+  }
+}

@@ -62,9 +62,6 @@ const MIN_GAP_MINUTES = 20;
 export const DAY_START_HOUR = 7;
 export const DAY_END_HOUR = 22;
 const env = typeof globalThis !== 'undefined' ? (globalThis as any).process?.env ?? {} : {};
-const isDevBuild = typeof __DEV__ !== 'undefined' ? __DEV__ : false;
-const allowDirectModelCalls = isDevBuild
-  || String(env.EXPO_PUBLIC_ALLOW_DIRECT_MODEL_CALLS ?? '').toLowerCase() === 'true';
 const GEMINI_MODEL = (env.EXPO_PUBLIC_GEMINI_MODEL as string | undefined) || 'gemini-3.6-flash';
 const TRANSIT_RISK_MULTIPLIER = 1.2;
 const TRANSIT_MIN_SAFETY_MIN = 4;
@@ -417,8 +414,6 @@ const requestGeminiGapSuggestions = async (
   todos: SmartTodoItem[],
   options?: BuildGapOptions,
 ): Promise<SmartCalendarSuggestion[]> => {
-  if (!allowDirectModelCalls) return [];
-
   const speedFactor = Math.max(0.5, Math.min(1, options?.generationSpeedFactor ?? 1));
   const timeoutMs = Math.round(12000 * speedFactor);
   const prompt = buildGapPrompt(gap, habits, todos, options);
@@ -1097,11 +1092,6 @@ export const planWeekWithGemini = async (
   days: WeekPlanDayInput[],
   context: WeekPlanContext,
 ): Promise<WeekPlanResult> => {
-  if (!allowDirectModelCalls) {
-    const heuristicItems = buildHeuristicWeekPlan(days, context);
-    return { items: addAnimatorSmartTopUps(days, context, heuristicItems), usedAi: false };
-  }
-
   const prompt = buildWeekPlanPrompt(days, context);
   const { maxOutputTokens } = estimateWeekPlanTokenCost(days, context);
 

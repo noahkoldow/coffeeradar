@@ -18,12 +18,12 @@ import {
   TagAffinities,
   UserPrefs,
 } from '../types';
-import { addMinutes, clamp, dateFromLocalClockTime, extractClockLabelFromText, fromISO, minutesBetween, isSameCalendarDayInTimeZone, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
+import { addMinutes, clamp, dateFromLocalClockTime, extractClockLabelFromText, fromISO, minutesBetween, getTimeZoneParts, getPreferredTimeZone } from '../utils/time';
 import { chooseTravelMode, estimateDeparture, estimateEtaMinutes, haversineKm } from './travel';
 import { fetchTicketmasterSuggestions } from './ticketmaster';
 import { habitToSuggestion, isHabitDue, matchesTimeOfDay } from '../utils/habits';
 import { fetchWeather, WeatherInfo } from './weather';
-import { fetchGeminiSuggestions, GeminiLearningContext } from './geminiSuggestions';
+import { fetchGeminiSuggestions, GeminiLearningContext, adaptHabitForToday } from './geminiSuggestions';
 import { generateWhyNow } from './whyNow';
 import { affinityScore, typeAffinityScore } from './affinity';
 import { logEvent } from './analytics';
@@ -41,10 +41,17 @@ import { evaluateTodoWindowFit, estimateTodoDurationMin, getTodoAtomizedProgress
 import { selectChallengeCandidates } from '../utils/challengeMode';
 import { getTodoDeadlineAt, getTodoDueDate, getTodoUrgencyScore, isTodoEligibleForWindow } from '../utils/todos';
 import { loadActivityChatSocialProofCounts } from './activityChat';
+import { loadHabitAdaptation, saveHabitAdaptation } from '../utils/storage';
+import { filterUnseenSuggestions, getExcludedActivityTitles, getSuggestionIdentityKeys } from './suggestionIdentity';
+import { fetchMapDiscoveryCandidates } from './mapDiscoveryCandidates';
+import { fetchCityEventSuggestions } from './cityEvents';
+import { resolveSuggestionPlaces } from './suggestionPlaces';
+import { discoveryReferenceTime, eventSearchRadiusKm, eventVisitWindow, isPlanningAhead } from './discoveryTiming';
+import { hasProviderDestination } from './mapDiscovery';
 
 const BUFFER_MIN = 10;
 const GEMINI_SOURCE_BOOST = 0.08;
-const MIN_GEMINI_IN_DECK = 5; // More aggressive during permissive phase to force Gemini through
+const MIN_GEMINI_IN_DECK = 2;
 const EPSILON_MIN = 0.08;
 const EPSILON_MAX = 0.22;
 const EPSILON_NEW_USER_BONUS = 0.06;
@@ -720,7 +727,7 @@ const enrichSuggestion = (
   location: LocationState,
 ): DeckSuggestion => {
   const meta: SuggestionMeta = { ...(suggestion as DeckSuggestion).meta, timeZone: location.timeZone ?? getPreferredTimeZone() };
-  const now = new Date();
+  const now = discoveryReferenceTime(availability);
   const availabilityStart = fromISO(availability.start) ?? now;
   const availabilityEnd = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
   const normalizedSuggestion = suggestion;
@@ -763,6 +770,15 @@ const enrichSuggestion = (
     const startAt = new Date(suggestion.event.startAt);
     meta.startInMin = minutesBetween(now, startAt);
   }
+  if (suggestion.type === 'EVENT') {
+    const visit = eventVisitWindow({ ...suggestion, meta }, availability, now);
+    if (visit) {
+      meta.startInMin = minutesBetween(now, visit.start);
+      meta.leaveBy = visit.departure.toISOString();
+      meta.planStartAt = visit.start.toISOString();
+      meta.planEndAt = visit.end.toISOString();
+    }
+  }
   if (suggestion.openStatus) {
     meta.openStatus = suggestion.openStatus;
   }
@@ -782,7 +798,6 @@ const isFeasible = (
   location: LocationState,
   now: Date = new Date(),
 ): boolean => {
-  const availabilityEnd = fromISO(availability.end) ?? addMinutes(now, availability.durationMin);
   
   // Check for upcoming event within next 10 minutes
   let effectiveDurationMin = availability.durationMin;
@@ -803,13 +818,14 @@ const isFeasible = (
     return durationMin <= effectiveDurationMin;
   }
 
+  if (suggestion.type === 'EVENT') {
+    if (!suggestion.event?.sourceUrl && !suggestion.event?.ticketUrl) return false;
+    return eventVisitWindow(suggestion, availability, now) !== null;
+  }
+
   if (!location.lat || !location.lng) {
     if (suggestion.type === 'GO_OUT') {
       return durationMin <= effectiveDurationMin;
-    }
-    if (suggestion.type === 'EVENT' && suggestion.event?.startAt) {
-      const startAt = new Date(suggestion.event.startAt);
-      return startAt <= availabilityEnd && startAt >= now && !!suggestion.event.ticketUrl;
     }
     return false;
   }
@@ -821,7 +837,7 @@ const isFeasible = (
       ? suggestion.meta.opensInMin
       : 0;
     const arrivalDelay = Math.max(eta, openDelay);
-    const required = arrivalDelay + durationMin + BUFFER_MIN;
+    const required = arrivalDelay + durationMin + eta + BUFFER_MIN;
     if (required > effectiveDurationMin) return false;
     if (suggestion.meta?.closesInMin !== undefined) {
       const closingBuffer = computeClosingBuffer(arrivalDelay, durationMin);
@@ -830,25 +846,6 @@ const isFeasible = (
     return true;
   }
 
-  if (suggestion.type === 'EVENT' && suggestion.event?.startAt) {
-    const startAt = new Date(suggestion.event.startAt);
-    const earliest = addMinutes(now, eta + BUFFER_MIN);
-    
-    // STRICT CHECK: Event must start in FUTURE, allow enough travel time, and end before availability
-    if (startAt < earliest) return false; // Can't reach in time
-    if (startAt > availabilityEnd) return false; // Event starts after available window
-    if (!suggestion.event.ticketUrl) return false; // Must have booking link
-    
-    // Additional validation: event must be within the next 3 hours to feel "urgent"
-    // unless user has a lot of time (>120 min) in which case we're more flexible
-    const minutesUntilStart = minutesBetween(now, startAt);
-    if (minutesUntilStart > Math.min(180, availability.durationMin + 30)) {
-      // Event is too far away unless user specifically has time
-      return availability.durationMin > 120;
-    }
-    
-    return true;
-  }
 
   return false;
 };
@@ -950,7 +947,7 @@ const scoreSuggestion = (
     : 0;
 
   // ── Late-night penalty for outdoor / go-out activities ──
-  const now = new Date();
+  const now = discoveryReferenceTime(availability);
   let nightPenalty = 0;
   if (isLateNight(now)) {
     if (suggestion.type === 'GO_OUT' || suggestion.type === 'EVENT') {
@@ -1085,11 +1082,11 @@ const primaryTag = (s: DeckSuggestion): string =>
 /**
  * Build a variety-maximised deck by:
  * 1. Grouping scored candidates by their primary interest tag
- * 2. Within each group, sorting nearest → farthest (closeness first)
+ * 2. Within each group, prefer fit score and use distance for near-equal scores
  * 3. Round-robin picking across groups so no single category dominates
  *
  * This ensures e.g. with interests [coffee, art, nature] you get:
- *   nearest café → nearest museum → nearest park → 2nd café → 2nd museum
+ *   best-fitting café → best-fitting museum → best-fitting park → next café
  * instead of 5 cafés.
  */
 const buildInterleavedDeck = (
@@ -1104,13 +1101,13 @@ const buildInterleavedDeck = (
     groups.get(tag)!.push(entry);
   }
 
-  // ── 2. Within each group: sort by distance (nearest first), break ties by score ──
+  // Prefer activity fit; distance breaks near-ties.
   for (const [, group] of groups) {
     group.sort((a, b) => {
       const distA = a.item.meta?.distanceKm ?? 999;
       const distB = b.item.meta?.distanceKm ?? 999;
-      if (Math.abs(distA - distB) > 0.05) return distA - distB; // nearest first
-      return b.score - a.score; // tie-break by score
+      if (Math.abs(a.score - b.score) > 0.03) return b.score - a.score;
+      return distA - distB;
     });
   }
 
@@ -1125,7 +1122,7 @@ const buildInterleavedDeck = (
   const cursors = new Map<string, number>();
   sortedGroups.forEach((g) => cursors.set(g.tag, 0));
 
-  // Also enforce max 2 of same type (AT_HOME/GO_OUT/EVENT) for type variety
+  // Cap each type (AT_HOME/GO_OUT/EVENT) for variety.
   const typeCounts = new Map<string, number>();
   const maxPerType = Math.min(3, deckSize);
   let routineSourceCount = 0;
@@ -1175,6 +1172,48 @@ const withTimeout = <T>(promise: Promise<T>, ms: number, fallback: T): Promise<T
 
 const API_TIMEOUT_MS = 5000; // allow enough time for Gemini (was 2500, too tight)
 
+/**
+ * Adapt a due, AI-generalized habit ("Try a new noodle spot") for today's context
+ * (weekday/weekend, time of day) — cached once per habit per calendar day so this
+ * costs at most one extra Gemini call/day/habit, never one per deck build or swipe.
+ * Habits without `adaptationGuidance` (not generalized, or fixed by design) are
+ * returned unchanged with no Gemini call at all.
+ */
+const maybeAdaptHabitForToday = async (
+  habit: Habit,
+  base: Suggestion,
+  location: LocationState,
+  now: Date,
+  prefs: UserPrefs,
+  userId?: string | null,
+): Promise<Suggestion> => {
+  if (!habit.adaptationGuidance?.trim() || !userId) return base;
+
+  const dateKey = now.toISOString().slice(0, 10);
+  const cached = await loadHabitAdaptation(habit.id, dateKey, userId).catch(() => null);
+  if (cached) {
+    return { ...base, title: cached.title, description: cached.description };
+  }
+
+  const tzParts = getTimeZoneParts(now, location.timeZone);
+  const localHour = tzParts.hour;
+  const timeOfDay = localHour < 12 ? 'morning' : localHour < 17 ? 'afternoon' : localHour < 21 ? 'evening' : 'night';
+  const adapted = await adaptHabitForToday({
+    name: habit.name,
+    description: habit.description,
+    adaptationGuidance: habit.adaptationGuidance,
+    type: habit.type,
+    dayOfWeek: tzParts.weekday || 'Unknown',
+    timeOfDay,
+    areaLabel: location.areaLabel,
+    language: prefs.language === 'de' ? 'de' : 'en',
+  }, userId).catch(() => null);
+
+  if (!adapted) return base;
+  await saveHabitAdaptation(habit.id, dateKey, adapted, userId).catch(() => undefined);
+  return { ...base, title: adapted.title, description: adapted.description };
+};
+
 const seedSuggestions = async (
   availability: Availability,
   location: LocationState,
@@ -1182,24 +1221,36 @@ const seedSuggestions = async (
   habits: Habit[],
   apiTimeoutMs = API_TIMEOUT_MS,
   nowOverride?: Date,
+  userId?: string | null,
+  filter?: string,
 ): Promise<Suggestion[]> => {
-  const now = nowOverride ?? new Date();
-  const habitSuggestions = habits
+  const now = nowOverride ?? discoveryReferenceTime(availability);
+  const canDiscoverPlaces = prefs.openToGoingOut && filter !== 'at_home'
+    && typeof location.lat === 'number' && Number.isFinite(location.lat)
+    && typeof location.lng === 'number' && Number.isFinite(location.lng);
+  const venueCandidatesPromise = canDiscoverPlaces
+    ? Promise.all([
+      withTimeout(fetchTicketmasterSuggestions(location, prefs, availability).catch(() => []), apiTimeoutMs, []),
+      fetchMapDiscoveryCandidates(location, prefs, availability).catch(() => []),
+      withTimeout(fetchCityEventSuggestions(location, prefs, availability).catch(() => []), 16000, []),
+    ])
+    : Promise.resolve([[], [], []] as Suggestion[][]);
+  const dueHabits = habits
     .filter((habit) => matchesTimeOfDay(habit, now, location.timeZone))
     .sort((a, b) => Number(isHabitDue(b, now, location.timeZone)) - Number(isHabitDue(a, now, location.timeZone)))
-    .slice(0, SMART_HABIT_MAX_CANDIDATES)
-    .map((habit) => {
-      const due = isHabitDue(habit, now, location.timeZone);
-      const base = habitToSuggestion(habit);
-      if (due) return attachEmojis(base);
-      return attachEmojis({
-        ...base,
-        hook: base.hook ?? 'Habit momentum',
-        confidence: Math.min(base.confidence ?? 0.8, 0.8),
-        whyNow: 'Fits your current time-of-day. A short repeat keeps momentum.',
-      });
-    })
-    .map((item) => markRepetitionFriendly(item)); // Mark habits as repetition-friendly
+    .slice(0, SMART_HABIT_MAX_CANDIDATES);
+  const habitSuggestions = (await Promise.all(dueHabits.map(async (habit) => {
+    const due = isHabitDue(habit, now, location.timeZone);
+    const rawBase = habitToSuggestion(habit);
+    const base = due ? rawBase : {
+      ...rawBase,
+      hook: rawBase.hook ?? 'Habit momentum',
+      confidence: Math.min(rawBase.confidence ?? 0.8, 0.8),
+      whyNow: 'Fits your current time-of-day. A short repeat keeps momentum.',
+    };
+    const adapted = await maybeAdaptHabitForToday(habit, base, location, now, prefs, userId);
+    return attachEmojis(adapted);
+  }))).map((item) => markRepetitionFriendly(item)); // Mark habits as repetition-friendly
 
   const curated = prefs.openToGoingOut
     ? [...atHomeSuggestions, ...goOutSuggestions]
@@ -1215,32 +1266,17 @@ const seedSuggestions = async (
   const filteredCurated = inferredCurated.filter((item) => matchesInterest(item, prefs));
   const curatedResult = filteredCurated.length ? filteredCurated : inferredCurated;
   
-  if (prefs.openToGoingOut && location.lat && location.lng) {
-    // Fetch events from Ticketmaster only
-    const ticketmaster = await withTimeout(
-      fetchTicketmasterSuggestions(location, prefs, availability).catch(() => []),
-      apiTimeoutMs,
-      []
-    );
-    let inferredEvents = ticketmaster.map((item) => attachEmojis(inferTags(item)));
+  if (canDiscoverPlaces) {
+    const [ticketmaster, mapPlaces, cityEvents] = await venueCandidatesPromise;
+    let inferredEvents = [...ticketmaster, ...cityEvents].map((item) => attachEmojis(inferTags(item)));
     const filteredEvents = inferredEvents.filter((item) => matchesInterest(item, prefs));
     let eventResult = filteredEvents.length ? filteredEvents : inferredEvents;
-
-    // If the requested availability is for another calendar day (e.g., 'tomorrow'),
-    // enforce strict day-locking: only include events that start on that same day.
-    const planningForOtherDay = !isSameCalendarDayInTimeZone(now, new Date(), location.timeZone);
-    if (planningForOtherDay) {
-      eventResult = eventResult.filter((e) => {
-        const start = e.event?.startAt ? new Date(e.event.startAt) : null;
-        if (!start) return false;
-        return isSameCalendarDayInTimeZone(start, now, location.timeZone);
-      });
-    }
 
     return [
       ...habitSuggestions,
       ...curatedResult,
       ...eventResult,
+      ...mapPlaces.map((item) => attachEmojis(inferTags(item))),
     ];
   }
   return [...habitSuggestions, ...curatedResult];
@@ -1274,11 +1310,12 @@ export const buildDeck = async (
   nowOverride?: Date,
   geminiOverride?: Suggestion[],
   maxGeminiCards?: number,
-): Promise<{ deck: DeckSuggestion[]; usedFallback: boolean; allGemini?: Suggestion[] }> => {
+  sessionExclusions: ReadonlySet<string> = new Set<string>(),
+): Promise<{ deck: DeckSuggestion[]; usedFallback: boolean; allGemini?: Suggestion[]; mapCandidates?: DeckSuggestion[] }> => {
   console.log('[buildDeck] START', { durationMin: availability.durationMin, apiTimeoutMs, filter });
-  const now = nowOverride ?? new Date();
+  const now = nowOverride ?? discoveryReferenceTime(availability);
   // Fetch weather in parallel with suggestions (non-blocking, with timeout)
-  const weatherPromise = location.lat && location.lng
+  const weatherPromise = !isPlanningAhead(availability) && location.lat && location.lng
     ? withTimeout(fetchWeather(location.lat, location.lng).catch(() => null), apiTimeoutMs, null)
     : Promise.resolve(null);
   const businessCatalogPromise = location.lat && location.lng
@@ -1289,7 +1326,8 @@ export const buildDeck = async (
   );
   const communityIdeasPromise = withTimeout(loadApprovedCommunityIdeas().catch(() => []), Math.min(apiTimeoutMs, 1800), []);
 
-  const baseCandidatesPromise = seedSuggestions(availability, location, prefs, habits, apiTimeoutMs, now);
+  const baseCandidatesPromise = seedSuggestions(availability, location, prefs, habits, apiTimeoutMs, now, userId, filter)
+    .then(items => resolveSuggestionPlaces(items, location, items));
   const todoCandidates = smartTodos
     .map((todo) => ({ todo, suggestion: buildSmartTodoSuggestion(todo, availability) }))
     .filter((entry) => !!entry.suggestion)
@@ -1310,19 +1348,23 @@ export const buildDeck = async (
     sessionActivityIntent,
     topPositiveTags,
     topSavedTitles,
+    excludedActivityTitles: getExcludedActivityTitles(sessionExclusions),
   };
 
-  // If a pre-fetched pool is supplied, skip the Gemini API call entirely.
+  // Reuse a supplied pool; an explicit zero budget must also avoid a new AI call.
   let allFetchedGemini: Suggestion[] | undefined;
+  const shouldFetchGemini = geminiOverride === undefined && maxGeminiCards !== 0;
   const geminiCandidatesPromise: Promise<Suggestion[]> = geminiOverride !== undefined
     ? Promise.resolve(geminiOverride)
-    : weatherPromise.then((weather) => withTimeout(
-        fetchGeminiSuggestions(location, prefs, availability, weather, learning, userId).catch(() => []),
-        apiTimeoutMs,
-        [],
-      ));
+    : !shouldFetchGemini ? Promise.resolve([])
+    // The authenticated AI callable owns its deadline. A separate venue timeout
+    // would discard an in-flight paid result before generation can finish.
+    : Promise.all([weatherPromise, baseCandidatesPromise]).then(([weather, base]) =>
+        fetchGeminiSuggestions(location, prefs, availability, weather, { ...learning,
+          eventCandidates: base.filter(item => item.type === 'EVENT').slice(0, 12),
+        }, userId).catch(() => []));
 
-  const [baseCandidates, weather, geminiCandidates, firebaseBusinesses, activeCampaigns, approvedCommunityIdeas] = await Promise.all([
+  const [baseCandidates, weather, rawGeminiCandidates, firebaseBusinesses, activeCampaigns, approvedCommunityIdeas] = await Promise.all([
     baseCandidatesPromise,
     weatherPromise,
     geminiCandidatesPromise,
@@ -1331,13 +1373,15 @@ export const buildDeck = async (
     communityIdeasPromise,
   ]);
 
+  const geminiCandidates = await resolveSuggestionPlaces(rawGeminiCandidates, location, baseCandidates);
+
   // Capture all Gemini returned by the API so the caller can cache them for later decks
-  if (geminiOverride === undefined) {
+  if (shouldFetchGemini) {
     allFetchedGemini = geminiCandidates;
   }
   console.log('[buildDeck] gemini candidates:', geminiCandidates.length, '| override?', geminiOverride !== undefined);
   const communityCandidates = approvedCommunityIdeas.map((idea) => communityIdeaToSuggestion(idea));
-  const candidates = [...baseCandidates, ...geminiCandidates, ...communityCandidates, ...todoCandidates];
+  const candidates = [...geminiCandidates, ...baseCandidates, ...communityCandidates, ...todoCandidates];
   console.log('[buildDeck] candidates:', candidates.length, 'weather:', weather ? 'yes' : 'no');
 
   const enrichedBase = candidates.map((item) => enrichSuggestion(item, availability, location));
@@ -1357,26 +1401,24 @@ export const buildDeck = async (
       },
     };
   });
-  const uniqueMap = new Map<string, DeckSuggestion>();
-  const normalize = (value?: string) => (value ?? '').trim().toLowerCase();
-  for (const item of enriched) {
-    let key = item.id;
-    if (item.type === 'EVENT' && item.event?.startAt) {
-      key = `${normalize(item.title)}_${normalize(item.event.venue)}_${item.event.startAt}`;
-    } else if (item.place?.lat && item.place?.lng) {
-      key = `${normalize(item.title)}_${item.place.lat.toFixed(4)}_${item.place.lng.toFixed(4)}`;
-    }
-    if (!uniqueMap.has(key)) {
-      uniqueMap.set(key, item);
-    }
-  }
-  const unique = Array.from(uniqueMap.values());
-  const feasible = unique.filter((item) => isFeasible(item, availability, location, now));
+  const unique = filterUnseenSuggestions(enriched, sessionExclusions);
+  const eventRadiusKm = eventSearchRadiusKm(prefs, availability);
+  const feasible = unique.filter((item) => (item.type !== 'EVENT'
+    || item.meta?.distanceKm == null || item.meta.distanceKm <= eventRadiusKm)
+    && isFeasible(item, availability, location, now));
   console.log('[buildDeck] unique:', unique.length, 'feasible:', feasible.length);
 
   // Smart repetition filter: allows habit-friendly activities to repeat every 72+ hours
   // This enables actual habit formation (was impossible with hard "never repeat" filter)
-  const fresh = filterForHabitRepetition(feasible, history, now);
+  const fresh: DeckSuggestion[] = filterForHabitRepetition(feasible, history, now);
+  // Keep real provider places available before the five-card ranking/cap. A map
+  // card reuses this pool; it never triggers an extra venue request.
+  const mapCandidates = fresh.filter(item => hasProviderDestination(item)
+    && !!item.place?.name?.trim()
+    && typeof item.place?.lat === 'number' && Number.isFinite(item.place.lat)
+    && typeof item.place?.lng === 'number' && Number.isFinite(item.place.lng))
+    .sort((a, b) => (a.meta?.distanceKm ?? Infinity) - (b.meta?.distanceKm ?? Infinity))
+    .slice(0, 20);
   console.log('[buildDeck] after repetition filter:', fresh.length);
 
   // Track originally-seen IDs for fallback pass (after smart filter is applied)
@@ -1390,7 +1432,7 @@ export const buildDeck = async (
     .map((item) => ({ item, score: scoreSuggestion(item, prefs, availability, history, weather, tagAff, locProfile) }));
 
   // Build deck with category interleaving: groups by primary tag,
-  // sorts nearest→farthest within each group, then round-robins
+  // ranks by fit within each group, then round-robins
   // across categories for maximum variety.
   const { deck, epsilon, exploratorySlots } = buildEpsilonGreedyDeck(scored, DECK_SIZE, prefs, history, tagAff);
 
@@ -1429,6 +1471,14 @@ export const buildDeck = async (
     }
   };
   ensureMinGemini(deck, scored);
+  // A worthwhile city event survives the source quota and distance tie-breaks.
+  if (isPlanningAhead(availability) && !deck.some(item => item.type === 'EVENT')) {
+    const event = scored.filter(entry => entry.item.type === 'EVENT').sort((a, b) => b.score - a.score)[0]?.item;
+    if (event) {
+      if (deck.length < DECK_SIZE) deck.push(event);
+      else deck[deck.length - 1] = event;
+    }
+  }
   let usedFallback = false;
   console.log('[buildDeck] after interleaved build:', deck.length);
 
@@ -1445,11 +1495,12 @@ export const buildDeck = async (
   if (deck.length < DECK_SIZE) {
     const deckIds = new Set(deck.map((item) => item.id));
     const allExcluded = new Set([...originallySeenIds, ...deckIds]);
-    const fallbackPool = fallbackSuggestions
+    const fallbackPool = filterUnseenSuggestions(fallbackSuggestions
       .map((item) => attachEmojis(inferTags(item)))
       .map((item) => enrichSuggestion(item, availability, location))
       .filter((item) => isFeasible(item, availability, location, now))
-      .filter((item) => !allExcluded.has(item.id));
+      .filter((item) => !allExcluded.has(item.id)),
+    new Set([...sessionExclusions, ...deck.flatMap(getSuggestionIdentityKeys)]));
     console.log('[buildDeck] fallback pool size (pass 3):', fallbackPool.length);
     for (const candidate of fallbackPool) {
       if (deck.length >= DECK_SIZE) break;
@@ -1459,40 +1510,8 @@ export const buildDeck = async (
   }
   console.log('[buildDeck] after pass 3:', deck.length);
 
-  // Pass 4: if STILL under DECK_SIZE, allow previously-seen fallback cards
-  // (absolute last resort — the pool is exhausted)
-  if (deck.length < DECK_SIZE) {
-    const deckIds = new Set(deck.map((item) => item.id));
-    const lastResort = fallbackSuggestions
-      .map((item) => attachEmojis(inferTags(item)))
-      .map((item) => enrichSuggestion(item, availability, location))
-      .filter((item) => isFeasible(item, availability, location, now))
-      .filter((item) => !deckIds.has(item.id));
-    console.log('[buildDeck] last resort pool (pass 4):', lastResort.length);
-    for (const candidate of lastResort) {
-      if (deck.length >= DECK_SIZE) break;
-      deck.push(candidate);
-      usedFallback = true;
-    }
-  }
-  console.log('[buildDeck] after pass 4:', deck.length);
-
-  // Pass 5: NUCLEAR fallback — skip feasibility entirely.
-  // This guarantees the user ALWAYS gets a full deck.
-  if (deck.length < DECK_SIZE) {
-    const deckIds = new Set(deck.map((item) => item.id));
-    const nuclear = fallbackSuggestions
-      .filter((item) => item.type === 'AT_HOME') // AT_HOME never needs location/travel
-      .map((item) => attachEmojis(inferTags(item)))
-      .map((item) => enrichSuggestion(item, availability, location))
-      .filter((item) => !deckIds.has(item.id));
-    console.log('[buildDeck] nuclear fallback pool (pass 5):', nuclear.length);
-    for (const candidate of nuclear) {
-      if (deck.length >= DECK_SIZE) break;
-      deck.push(candidate);
-      usedFallback = true;
-    }
-  }
+  // Exhaustion produces a smaller deck. Reusing seen activities or bypassing
+  // feasibility merely to fill five slots would undo the freshness guarantees.
   console.log('[buildDeck] final deck size:', deck.length);
 
   // ── Campaign injection ──
@@ -1531,10 +1550,10 @@ export const buildDeck = async (
           availability,
           location,
         );
-        const insertAt = Math.min(3, Math.max(1, deck.length - 1));
-        deck.splice(insertAt, 0, promoted);
-        if (deck.length > DECK_SIZE) {
-          deck.length = DECK_SIZE;
+        if (filterUnseenSuggestions([promoted], new Set([...sessionExclusions, ...deck.flatMap(getSuggestionIdentityKeys)])).length) {
+          const insertAt = Math.min(3, Math.max(1, deck.length - 1));
+          deck.splice(insertAt, 0, promoted);
+          if (deck.length > DECK_SIZE) deck.length = DECK_SIZE;
         }
       }
     } else {
@@ -1574,10 +1593,10 @@ export const buildDeck = async (
             availability,
             location,
           );
-          const insertAt = Math.min(3, Math.max(1, deck.length - 1));
-          deck.splice(insertAt, 0, promoted);
-          if (deck.length > DECK_SIZE) {
-            deck.length = DECK_SIZE;
+          if (filterUnseenSuggestions([promoted], new Set([...sessionExclusions, ...deck.flatMap(getSuggestionIdentityKeys)])).length) {
+            const insertAt = Math.min(3, Math.max(1, deck.length - 1));
+            deck.splice(insertAt, 0, promoted);
+            if (deck.length > DECK_SIZE) deck.length = DECK_SIZE;
           }
         }
       }
@@ -1586,13 +1605,13 @@ export const buildDeck = async (
 
   // Apply dynamic whyNow and auto-generate CTA for every card in the final deck
   const whyNowCtx = { availability, weather, now, habits, timeZone: location.timeZone };
-  const finalDeck = deck.slice(0, DECK_SIZE).map((item) => ({
+  const finalDeck = filterUnseenSuggestions(deck, sessionExclusions).slice(0, DECK_SIZE).map((item) => ({
     ...item,
     cta: item.cta ?? generateCta(item),
     whyNow: item.source === 'gemini' ? generateWhyNow(item, whyNowCtx) : item.whyNow ?? generateWhyNow(item, whyNowCtx),
   }));
 
-  return { deck: finalDeck, usedFallback, ...(allFetchedGemini !== undefined && { allGemini: allFetchedGemini }) };
+  return { deck: finalDeck, usedFallback, mapCandidates, ...(allFetchedGemini !== undefined && { allGemini: allFetchedGemini }) };
 };
 
 /**
@@ -1605,18 +1624,20 @@ export const buildFilteredFallbacks = (
   availability: Availability,
   location: LocationState,
   excludeIds: Set<string>,
+  sessionExclusions: ReadonlySet<string> = new Set<string>(),
 ): DeckSuggestion[] => {
+  const now = new Date();
   const allPools: Suggestion[] = [
     ...atHomeSuggestions,
     ...goOutSuggestions,
     ...fallbackSuggestions,
   ];
 
-  const enrichedPool = allPools
+  const enrichedPool = filterUnseenSuggestions(allPools
     .map((item) => attachEmojis(inferTags(item)))
     .map((item) => enrichSuggestion(item, availability, location))
     .filter((item) => !excludeIds.has(item.id))
-    .filter((item) => isFeasible(item, availability, location, now));
+    .filter((item) => isFeasible(item, availability, location, now)), sessionExclusions);
 
   // Apply the same filter logic as DeckScreen.filterDeck
   let filtered: DeckSuggestion[];
@@ -1640,7 +1661,6 @@ export const buildFilteredFallbacks = (
     [filtered[i], filtered[j]] = [filtered[j], filtered[i]];
   }
 
-  const now = new Date();
   return filtered.slice(0, DECK_SIZE).map((item) => ({
     ...item,
     cta: generateCta(item),

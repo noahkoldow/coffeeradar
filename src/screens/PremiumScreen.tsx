@@ -1,9 +1,10 @@
-import React, { useMemo } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import React, { useMemo, useRef, useState } from 'react';
+import { Linking, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { StackScreenProps } from '@react-navigation/stack';
 import { PrimaryButton } from '../components/PrimaryButton';
+import { BrandLogo } from '../components/BrandLogo';
 import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
@@ -15,6 +16,14 @@ type ComparisonRow = {
   feature: string;
   free: string;
   premium: string;
+};
+
+type SubscriptionStore = 'apple' | 'google';
+
+// Official subscription centers; the store confirms cancellation and its effective date.
+const SUBSCRIPTION_URLS: Record<SubscriptionStore, string> = {
+  apple: 'https://apps.apple.com/account/subscriptions',
+  google: 'https://play.google.com/store/account/subscriptions',
 };
 
 const COMPARISON_ROWS: ComparisonRow[] = [
@@ -33,15 +42,27 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
   const { state } = useAppState();
   const isGerman = language === 'de';
   const purchaseTemporarilyDisabled = true;
-  const nextRenewalDate = useMemo(() => {
-    const renewal = new Date();
-    renewal.setMonth(renewal.getMonth() + 1);
-    return new Intl.DateTimeFormat('en-GB', {
-      day: 'numeric',
-      month: 'long',
-      year: 'numeric',
-    }).format(renewal);
-  }, []);
+  const openingStoreRef = useRef(false);
+  const [openingStore, setOpeningStore] = useState<SubscriptionStore | null>(null);
+  const [managementError, setManagementError] = useState<SubscriptionStore | null>(null);
+  const preferredStore: SubscriptionStore | null = Platform.OS === 'ios'
+    ? 'apple'
+    : Platform.OS === 'android' ? 'google' : null;
+
+  const openSubscriptionManagement = async (store: SubscriptionStore) => {
+    if (openingStoreRef.current) return;
+    openingStoreRef.current = true;
+    setOpeningStore(store);
+    setManagementError(null);
+    try {
+      await Linking.openURL(SUBSCRIPTION_URLS[store]);
+    } catch {
+      setManagementError(store);
+    } finally {
+      openingStoreRef.current = false;
+      setOpeningStore(null);
+    }
+  };
 
   const PREMIUM_BENEFITS = [
     isGerman ? 'Smart Calendar Auto-Planung' : 'Smart Calendar auto-planning',
@@ -59,18 +80,84 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
           { paddingTop: insets.top + theme.spacing.lg, paddingBottom: insets.bottom + theme.spacing.xl },
         ]}
       >
+        <View style={[styles.heroCard, state.isPremium && styles.activeHeroCard]}>
+          <BrandLogo premium height={40} onDarkBackground={theme.isDark && !state.isPremium} />
+          <Text style={styles.title}>{state.isPremium
+            ? (isGerman ? 'Du nutzt Premium' : 'You are Premium')
+            : (isGerman ? 'Mehr aus deiner Zeit machen' : 'Upgrade your momentum')}</Text>
+          <Text style={styles.subtitle}>{state.isPremium
+            ? (isGerman ? 'Dein Konto ist aktiv und alle Premium-Planungsfunktionen sind freigeschaltet.' : 'Your account is active and all premium planning features are unlocked.')
+            : (isGerman ? 'Schalte smartere Planung frei und hol mehr aus deiner freien Zeit.' : 'Unlock smarter planning and get more from your free time.')}</Text>
+        </View>
+
+        <View style={styles.renewalCard}>
+          <Text style={styles.renewalLabel}>{isGerman ? 'Abo verwalten' : 'Manage subscription'}</Text>
+          {preferredStore ? (
+            <>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityState={{ disabled: openingStore !== null, busy: openingStore !== null }}
+                disabled={openingStore !== null}
+                onPress={() => { void openSubscriptionManagement(preferredStore); }}
+                style={[styles.cancelButton, openingStore !== null && { opacity: 0.6 }]}
+              >
+                <Text style={styles.cancelButtonText}>{openingStore
+                  ? (isGerman ? 'Store wird geöffnet…' : 'Opening store…')
+                  : (isGerman ? 'Premium kündigen' : 'Cancel Premium')}</Text>
+              </Pressable>
+              <Text style={styles.renewalMeta}>
+                {preferredStore === 'apple'
+                  ? (isGerman ? 'Öffnet deine App-Store-Abos.' : 'Opens your App Store subscriptions.')
+                  : (isGerman ? 'Öffnet deine Google-Play-Abos.' : 'Opens your Google Play subscriptions.')}
+              </Text>
+              <Pressable
+                accessibilityRole="link"
+                disabled={openingStore !== null}
+                onPress={() => { void openSubscriptionManagement(preferredStore === 'apple' ? 'google' : 'apple'); }}
+                style={styles.otherStoreLink}
+              >
+                <Text style={styles.otherStoreText}>
+                  {preferredStore === 'apple'
+                    ? (isGerman ? 'Über Google Play abonniert? Dort verwalten' : 'Subscribed on Google Play? Manage there')
+                    : (isGerman ? 'Über den App Store abonniert? Dort verwalten' : 'Subscribed on the App Store? Manage there')}
+                </Text>
+              </Pressable>
+            </>
+          ) : (
+            <View style={styles.storeActions}>
+              <PrimaryButton
+                label={isGerman ? 'Premium im App Store kündigen' : 'Cancel Premium in App Store'}
+                disabled={openingStore !== null}
+                onPress={() => { void openSubscriptionManagement('apple'); }}
+              />
+              <PrimaryButton
+                label={isGerman ? 'Premium in Google Play kündigen' : 'Cancel Premium in Google Play'}
+                variant="muted"
+                disabled={openingStore !== null}
+                onPress={() => { void openSubscriptionManagement('google'); }}
+              />
+            </View>
+          )}
+          <Text style={styles.renewalMeta}>
+            {isGerman
+              ? 'Wähle Bits im Store und bestätige die Kündigung der nächsten Verlängerung. Premium bleibt bis zum Ende des bezahlten Zeitraums verfügbar. Nutze das Konto, mit dem du das Abo abgeschlossen hast.'
+              : 'Select Bits in the store and confirm cancellation of the next renewal. Premium stays available until the end of your paid period. Use the account you subscribed with.'}
+          </Text>
+          {managementError && (
+            <Text accessibilityRole="alert" accessibilityLiveRegion="assertive" style={styles.renewalMeta}>
+              {managementError === 'apple'
+                ? (isGerman
+                  ? 'Der App Store konnte nicht geöffnet werden. Öffne auf deinem iPhone oder iPad Einstellungen > deinen Namen > Abonnements > Bits, um die Verlängerung zu kündigen.'
+                  : 'Could not open the App Store. On your iPhone or iPad, open Settings > your name > Subscriptions > Bits to cancel renewal.')
+                : (isGerman
+                  ? 'Google Play konnte nicht geöffnet werden. Öffne im Play Store dein Profil > Zahlungen & Abos > Abos > Bits, um die Verlängerung zu kündigen.'
+                  : 'Could not open Google Play. Open your Play Store profile > Payments & subscriptions > Subscriptions > Bits to cancel renewal.')}
+            </Text>
+          )}
+        </View>
+
         {state.isPremium ? (
           <>
-            <View style={[styles.heroCard, styles.activeHeroCard]}>
-              <Text style={styles.heroEyebrow}>BITS PREMIUM</Text>
-              <Text style={styles.title}>{isGerman ? 'Du nutzt Premium' : 'You are Premium'}</Text>
-              <Text style={styles.subtitle}>
-                {isGerman
-                  ? 'Dein Konto ist aktiv und alle Premium-Planungsfunktionen sind freigeschaltet.'
-                  : 'Your account is active and all premium planning features are unlocked.'}
-              </Text>
-            </View>
-
             <View style={styles.activeBenefitsCard}>
               <Text style={styles.activeBenefitsTitle}>{isGerman ? 'Deine Vorteile' : 'Your benefits'}</Text>
               {PREMIUM_BENEFITS.map((benefit) => (
@@ -81,26 +168,12 @@ export const PremiumScreen: React.FC<Props> = ({ navigation }) => {
               ))}
             </View>
 
-            <View style={styles.renewalCard}>
-              <Text style={styles.renewalLabel}>{isGerman ? 'Nächstes Verlängerungsdatum' : 'Next renewal date'}</Text>
-              <Text style={styles.renewalDate}>{nextRenewalDate}</Text>
-              <Text style={styles.renewalMeta}>{isGerman ? 'Deine Mitgliedschaft verlängert sich an diesem Datum automatisch.' : 'Your membership renews automatically on this date.'}</Text>
-            </View>
-
             <View style={styles.secondaryAction}>
               <PrimaryButton label={isGerman ? 'Zuruck' : 'Back'} variant="muted" onPress={() => navigation.goBack()} />
             </View>
           </>
         ) : (
           <>
-            <View style={styles.heroCard}>
-              <Text style={styles.heroEyebrow}>BITS PREMIUM</Text>
-              <Text style={styles.title}>{isGerman ? 'Mehr aus deiner Zeit machen' : 'Upgrade your momentum'}</Text>
-              <Text style={styles.subtitle}>
-                {isGerman ? 'Schalte smartere Planung frei und hol mehr aus deiner freien Zeit.' : 'Unlock smarter planning and get more from your free time.'}
-              </Text>
-            </View>
-
             <View style={styles.tableCard}>
               <View style={[styles.tableRow, styles.headerRow]}>
                 <Text style={[styles.headerCell, styles.featureCell]}>Feature</Text>
@@ -163,12 +236,6 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
   activeHeroCard: {
     borderColor: '#E8D889',
     backgroundColor: '#FFF9E6',
-  },
-  heroEyebrow: {
-    fontFamily: theme.fonts.semibold,
-    fontSize: 12,
-    letterSpacing: 1,
-    color: '#C89A00',
   },
   title: {
     fontFamily: theme.fonts.heading,
@@ -286,7 +353,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     backgroundColor: '#FFF9E6',
     borderWidth: 1,
     borderColor: '#E8D889',
-    gap: theme.spacing.xs,
+    gap: theme.spacing.sm,
   },
   renewalLabel: {
     fontFamily: theme.fonts.semibold,
@@ -295,15 +362,40 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 0.5,
   },
-  renewalDate: {
-    fontFamily: theme.fonts.heading,
-    color: '#5B4200',
-    fontSize: 28,
+  cancelButton: {
+    minHeight: 52,
+    padding: theme.spacing.md,
+    borderRadius: theme.radius.md,
+    backgroundColor: theme.colors.accent,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  cancelButtonText: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accentText,
+    fontSize: 18,
+    textAlign: 'center',
   },
   renewalMeta: {
     fontFamily: theme.fonts.body,
     color: '#7A5A00',
     fontSize: 13,
+    lineHeight: 20,
+  },
+  storeActions: {
+    gap: theme.spacing.sm,
+    marginTop: theme.spacing.sm,
+  },
+  otherStoreLink: {
+    minHeight: 44,
+    justifyContent: 'center',
+  },
+  otherStoreText: {
+    fontFamily: theme.fonts.semibold,
+    color: '#7A5A00',
+    fontSize: 13,
+    lineHeight: 20,
+    textDecorationLine: 'underline',
   },
   infoCard: {
     borderRadius: theme.radius.lg,

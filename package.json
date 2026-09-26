@@ -7,6 +7,7 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "test:swipe": "node --test scripts/deck-screen-animation.test.cjs scripts/native-ad-slide.test.cjs tests/map-discovery/native-check.cjs && playwright test --config tests/swipe-deck/playwright.config.cjs",
     "security:preflight": "powershell -ExecutionPolicy Bypass -File ./scripts/security-preflight.ps1"
   },
   "dependencies": {
@@ -49,6 +50,7 @@
     "react-native-web": "^0.21.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/react": "~19.1.0",
     "babel-preset-expo": "^54.0.10",
     "typescript": "~5.9.2"

@@ -1,0 +1,13 @@
+const { chromium }=require('@playwright/test');const assert=require('node:assert/strict');const path=require('node:path');
+(async()=>{const browser=await chromium.launch({headless:true});const page=await browser.newPage({viewport:{width:390,height:740}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+const open=async()=>{await page.goto('http://localhost:8099/?deck=1&count=3');await page.getByTestId('selection').waitFor();};
+const selected=()=>page.getByTestId('selection').textContent();
+const counts=async()=>JSON.parse(await page.getByTestId('swipe-counts').textContent());
+const swipe=async(direction)=>{const box=await page.getByTestId('swipe-deck').boundingBox();const start=direction==='left'?box.x+box.width*.78:box.x+box.width*.2;await page.mouse.move(start,box.y+45);await page.mouse.down();await page.mouse.move(start+(direction==='left'?-1:1)*box.width*.65,box.y+50,{steps:12});await page.mouse.up();await page.waitForTimeout(700);};
+await open();await swipe('right');assert.equal(await selected(),'Selected: map');assert.deepEqual(await counts(),{left:0,right:0});
+await page.getByTestId('imperative-right').click();await page.waitForTimeout(700);assert.deepEqual(await counts(),{left:0,right:0});
+await swipe('left');assert.equal(await selected(),'Selected: after-map');assert.deepEqual(await counts(),{left:1,right:0});
+await open();await page.getByRole('button',{name:/Find your new favourite coffee, about/}).first().click();assert.equal(await selected(),'Selected: coffee');await swipe('left');assert.equal(await selected(),'Selected: map');assert.deepEqual(await counts(),{left:1,right:0});assert.equal(await page.getByRole('button',{name:/minutes (on foot|by transit|by car)/}).count(),4);
+await page.getByRole('button',{name:/A little green escape, about/}).first().click();await swipe('right');assert.equal(await selected(),'Selected: after-map');assert.deepEqual(await counts(),{left:1,right:1});
+await open();await page.getByRole('button',{name:/Meet your next favourite artwork, about/}).first().click();await page.getByRole('button',{name:'Back to map',exact:true}).click();assert.equal(await selected(),'Selected: map');assert.deepEqual(await counts(),{left:0,right:0});
+await page.screenshot({path:path.join(__dirname,'../artifacts/map-discovery','swipe-deck-map-390.png')});assert.deepEqual(errors,[]);console.log('PASS actual SwipeDeck: map right gesture + imperative right disabled; map left skip; pin tap; selected card left returns map with two options; selected card right callback; explicit back; no page errors.');await browser.close();})().catch(e=>{console.error(e);process.exit(1)});

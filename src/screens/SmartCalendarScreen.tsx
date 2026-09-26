@@ -1,6 +1,7 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Alert, Animated, Image, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { Alert, Animated, Image, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { PanGestureHandler, State } from 'react-native-gesture-handler';
@@ -12,7 +13,7 @@ import { SwipeDeck, SwipeDeckHandle } from '../components/SwipeDeck';
 import { RootStackParamList } from '../navigation/types';
 import { useAppState } from '../state/AppState';
 import { useTheme } from '../theme/ThemeProvider';
-import { createPlanEvent, deletePlanEvent, getUpcomingEvents } from '../services/calendar';
+import { createPlanEvent, deletePlanEvent, getUpcomingEvents, updatePlanEventDetails } from '../services/calendar';
 import { CalendarBlock, CalendarGap, DAY_END_HOUR, DAY_START_HOUR, SmartCalendarSuggestion, WeekPlanContext, WeekPlanDayInput, WeekPlanItem, buildGapSuggestions, computeTravelBufferMin, findCalendarGaps, planWeekWithGemini } from '../services/smartCalendar';
 import { importTodosFromPhoto } from '../services/todoPhotoImport';
 import { generateJsonWithFirebaseAiLogic } from '../services/firebaseAiLogic';
@@ -20,7 +21,7 @@ import { buildAdKeywords } from '../services/ads/adConfig';
 import { consumeVideoAd, preloadVideoAd } from '../services/ads/videoAd';
 import { isAdPlaceholderMode, isAdsAvailable } from '../services/ads/mobileAds';
 import { useAdsCompliance } from '../services/ads/consent';
-import { isAdminUser as resolveAdminAccess, isBusinessAdmin } from '../services/user';
+import { useAdminAccess } from '../services/useAdminAccess';
 import { VideoAdModal } from '../components/ads/VideoAdModal';
 import { Commitment, DeckSuggestion, ScheduledActivity, SmartTodoItem } from '../types';
 import { formatClockMinutes, formatTime } from '../utils/time';
@@ -69,6 +70,12 @@ const WEEK_PLAN_COOLDOWN_MS = 7 * 24 * 60 * 60 * 1000;
 type SmartSuggestionDeckEntry = {
   suggestion: SmartCalendarSuggestion;
   deck: DeckSuggestion;
+};
+
+type SuggestionPlacement = {
+  activity: ScheduledActivity;
+  gap: CalendarGap;
+  entry: SmartSuggestionDeckEntry;
 };
 
 type StoredGapCache = Record<string, Array<Omit<SmartCalendarSuggestion, 'id'> & { id?: string }>>;
@@ -865,13 +872,32 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const [suggestionsLoading, setSuggestionsLoading] = useState(false);
   const [gapSuggestionCache, setGapSuggestionCache] = useState<Record<string, SmartCalendarSuggestion[]>>({});
   const [gapBatchIndexByKey, setGapBatchIndexByKey] = useState<Record<string, number>>({});
+  const gapSuggestionRequestRef = useRef({ pending: new Set<string>(), activeKey: '', mounted: true });
+  gapSuggestionRequestRef.current.activeKey = selectedGap
+    ? `${state.userId ?? ''}::${gapBatchCacheKey(selectedGap, gapBatchIndexByKey[gapCacheKey(selectedGap)] ?? 0)}`
+    : '';
+  useEffect(() => {
+    gapSuggestionRequestRef.current.mounted = true;
+    return () => {
+      gapSuggestionRequestRef.current.mounted = false;
+      gapSuggestionRequestRef.current.pending.clear();
+    };
+  }, []);
   const [suggestionIndex, setSuggestionIndex] = useState(0);
   const [lastSuggestionIndex, setLastSuggestionIndex] = useState<number | null>(null);
   const [canUndoSuggestion, setCanUndoSuggestion] = useState(false);
   const [deckExhausted, setDeckExhausted] = useState(false);
   const [todoModalOpen, setTodoModalOpen] = useState(false);
   const [todoFormModalOpen, setTodoFormModalOpen] = useState(false);
+  const [editingTodoId, setEditingTodoId] = useState<string | null>(null);
   const [todoTitle, setTodoTitle] = useState('');
+  const [todoNotes, setTodoNotes] = useState('');
+  const [todoDateChanged, setTodoDateChanged] = useState(false);
+  const [todoFormError, setTodoFormError] = useState('');
+  const [todoSaving, setTodoSaving] = useState(false);
+  const todoSavingRef = useRef(false);
+  const todoEditorStateRef = useRef(state);
+  todoEditorStateRef.current = state;
   const [todoDeadlineAt, setTodoDeadlineAt] = useState<Date | null>(null);
   const [todoHasExplicitTime, setTodoHasExplicitTime] = useState(false);
   const [todoDatePickerVisible, setTodoDatePickerVisible] = useState(false);
@@ -894,6 +920,15 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const [calendarMinimized, setCalendarMinimized] = useState(false);
   const [editMode, setEditMode] = useState(false);
   const [editHasChanges, setEditHasChanges] = useState(false);
+  const [suggestionPlacement, setSuggestionPlacement] = useState<SuggestionPlacement | null>(null);
+  const [editSaving, setEditSaving] = useState(false);
+  const editSavingRef = useRef(false);
+  const calendarActivities = useMemo(
+    () => suggestionPlacement
+      ? [...state.scheduledActivities, suggestionPlacement.activity]
+      : state.scheduledActivities,
+    [state.scheduledActivities, suggestionPlacement],
+  );
   const [planningWeek, setPlanningWeek] = useState(false);
   const [draggingBlockId, setDraggingBlockId] = useState<string | null>(null);
   const [weekPlanLastUsedAt, setWeekPlanLastUsedAt] = useState<number | null>(null);
@@ -929,6 +964,24 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   const hasLoadedCalendarRef = useRef(false);
   const pendingViewportFocusRef = useRef<{ dayId: string; minute: number } | null>(null);
 
+  const updateCalendarActivity = (activity: ScheduledActivity) => {
+    if (suggestionPlacement?.activity.id === activity.id) {
+      if (editSavingRef.current) return;
+      setSuggestionPlacement((prev) => prev ? { ...prev, activity } : null);
+    } else {
+      actions.updateScheduledActivity(activity.id, activity);
+    }
+  };
+
+  const removeCalendarActivity = (id: string) => {
+    if (suggestionPlacement?.activity.id === id) {
+      if (editSavingRef.current) return;
+      setSuggestionPlacement(null);
+    } else {
+      actions.removeScheduledActivity(id);
+    }
+  };
+
   useEffect(() => {
     const prevIndex = previousSuggestionIndexRef.current;
     if (suggestionIndex > prevIndex) {
@@ -945,7 +998,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   }, [gapSuggestions, selectedGap]);
 
   const premiumEnabled = state.isPremium;
-  const [isAdminUser, setIsAdminUser] = useState(() => isBusinessAdmin(state.userEmail));
+  const isAdminUser = useAdminAccess(state.userId, state.userEmail);
   const hasSwipesRemaining = (state.swipeBank?.current ?? 0) > 0;
   // Non-premium users see a short video ad while the week planner works.
   const adsFreeUser = !premiumEnabled
@@ -955,22 +1008,6 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     [state.prefs, state.location],
   );
   // The "plan my whole week" button can be used once per 7 days (bool, no stacking).
-  useEffect(() => {
-    let active = true;
-    setIsAdminUser(isBusinessAdmin(state.userEmail));
-    resolveAdminAccess()
-      .then((value) => {
-        if (active) setIsAdminUser(value);
-      })
-      .catch(() => {
-        if (active) setIsAdminUser(isBusinessAdmin(state.userEmail));
-      });
-
-    return () => {
-      active = false;
-    };
-  }, [state.userEmail, state.userId]);
-
   const weekPlanAvailable = isAdminUser
     || !weekPlanLastUsedAt
     || (Date.now() - weekPlanLastUsedAt >= WEEK_PLAN_COOLDOWN_MS);
@@ -1074,11 +1111,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
   const smartCalendarScheduledIds = useMemo(
     () => new Set(
-      state.scheduledActivities
+      calendarActivities
         .filter((item) => (item.tags ?? []).includes('smart_calendar'))
         .map((item) => item.id),
     ),
-    [state.scheduledActivities],
+    [calendarActivities],
   );
 
   const eventTintAlphaByDay = useMemo(() => {
@@ -1403,7 +1440,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           dayEnd.setHours(23, 59, 59, 999);
 
           const calendarEvents = await getUpcomingEvents(dayStart, dayEnd, state.disabledCalendars).catch(() => []);
-          const scheduled = state.scheduledActivities
+          const scheduled = calendarActivities
             .filter((item) => {
               const at = new Date(item.startAt);
               return at.getFullYear() === day.getFullYear()
@@ -1421,7 +1458,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             }));
 
           const linkedCalendarEventIds = new Set(
-            state.scheduledActivities
+            calendarActivities
               .map((item) => item.calendarEventId)
               .filter((value): value is string => !!value),
           );
@@ -1516,7 +1553,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
     load();
     return () => { active = false; };
-  }, [state.disabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, state.scheduledActivities]);
+  }, [state.disabledCalendars, state.prefs.wakeStartTime, state.prefs.wakeEndTime, calendarActivities]);
 
   const toDeckEntries = (gap: CalendarGap, suggestions: SmartCalendarSuggestion[]): SmartSuggestionDeckEntry[] => {
     return suggestions.slice(0, 3).map((suggestion, idx) => {
@@ -1566,23 +1603,31 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return;
     }
     const cacheKey = gapBatchCacheKey(gap, batchIndex);
+    const requestKey = `${state.userId ?? ''}::${cacheKey}`;
+    const isCurrentRequest = () => gapSuggestionRequestRef.current.mounted
+      && gapSuggestionRequestRef.current.activeKey === requestKey;
     const scheduledTitleKeys = new Set(
       state.scheduledActivities.map((item) => normalizeSuggestionTitleKey(item.title)),
     );
     const cached = !forceRefresh ? gapSuggestionCache[cacheKey] : undefined;
-    if (cached?.length) {
+    // An empty result is a completed request too. Treating [] as a miss makes
+    // the cache-dependent effect regenerate forever when no ideas are available.
+    if (cached !== undefined) {
       const filteredCached = cached.filter(
         (item) => !scheduledTitleKeys.has(normalizeSuggestionTitleKey(item.title)),
       );
       setGapSuggestions(toDeckEntries(gap, filteredCached));
       setSuggestionIndex(0);
       setDeckExhausted(false);
+      setSuggestionsLoading(false);
       return;
     }
 
     setSuggestionsLoading(true);
+    if (gapSuggestionRequestRef.current.pending.has(requestKey)) return;
+    gapSuggestionRequestRef.current.pending.add(requestKey);
     const aiSuggestionCount = aiCountForBatch(batchIndex);
-    buildGapSuggestions(gap, state.habits, state.smartTodos.filter((t) => !t.done && !t.linkedScheduledActivityId && !t.scheduledAt), {
+    Promise.resolve().then(() => buildGapSuggestions(gap, state.habits, state.smartTodos.filter((t) => !t.done && !t.linkedScheduledActivityId && !t.scheduledAt), {
       defaultLocation: {
         lat: state.location.lat ?? undefined,
         lng: state.location.lng ?? undefined,
@@ -1594,8 +1639,9 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       generationSpeedFactor: premiumEnabled ? PREMIUM_GENERATION_SPEED_FACTOR : 1,
       aiTargetCount: aiSuggestionCount,
       activityLog: state.activityLog,
-    })
+    }))
       .then((result) => {
+        if (!isCurrentRequest()) return;
         const nextSuggestions = result
           .filter((item) => !scheduledTitleKeys.has(normalizeSuggestionTitleKey(item.title)))
           .slice(0, 3);
@@ -1609,11 +1655,13 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         });
       })
       .catch(() => {
+        if (!isCurrentRequest()) return;
         setGapSuggestions([]);
         setDeckExhausted(false);
       })
       .finally(() => {
-        setSuggestionsLoading(false);
+        gapSuggestionRequestRef.current.pending.delete(requestKey);
+        if (isCurrentRequest()) setSuggestionsLoading(false);
       });
   };
 
@@ -1622,6 +1670,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       setGapSuggestions([]);
       setSuggestionIndex(0);
       setDeckExhausted(false);
+      setSuggestionsLoading(false);
       return;
     }
     if (!premiumEnabled) {
@@ -1691,6 +1740,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     value.setHours(hour, minute, 0, 0);
     setTodoDeadlineAt(value);
     setTodoHasExplicitTime(true);
+    setTodoDateChanged(true);
   };
 
   const handleTodoDateChange = (event: DateTimePickerEvent, selectedDate?: Date) => {
@@ -1701,6 +1751,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     const next = new Date(base);
     next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
     setTodoDeadlineAt(next);
+    setTodoDateChanged(true);
   };
 
   const handleTodoTimeChange = (event: DateTimePickerEvent, selectedTime?: Date) => {
@@ -1712,6 +1763,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
     setTodoDeadlineAt(next);
     setTodoHasExplicitTime(true);
+    setTodoDateChanged(true);
   };
 
   const openTodoDatePicker = () => {
@@ -1725,6 +1777,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           const next = new Date(base);
           next.setFullYear(selectedDate.getFullYear(), selectedDate.getMonth(), selectedDate.getDate());
           setTodoDeadlineAt(next);
+          setTodoDateChanged(true);
         },
       });
       return;
@@ -1750,6 +1803,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           next.setHours(selectedTime.getHours(), selectedTime.getMinutes(), 0, 0);
           setTodoDeadlineAt(next);
           setTodoHasExplicitTime(true);
+          setTodoDateChanged(true);
         },
       });
       return;
@@ -1789,22 +1843,71 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     return titleMatched ?? null;
   };
 
-  const addTodo = () => {
+  const openTodoForm = (todo?: SmartTodoItem) => {
+    const deadlineAt = todo ? getTodoDeadlineAt(todo) : null;
+    const dueDate = todo ? getTodoDueDate(todo, timeZone) : null;
+    // Date-only values must keep their calendar day rather than parse as UTC.
+    const date = deadlineAt ? new Date(deadlineAt)
+      : dueDate ? new Date(`${dueDate}T12:00:00`) : null;
+    setEditingTodoId(todo?.id ?? null);
+    setTodoTitle(todo?.title ?? '');
+    setTodoNotes(todo?.notes ?? '');
+    setTodoDeadlineAt(date);
+    setTodoHasExplicitTime(!!deadlineAt);
+    setTodoDateChanged(false);
+    setTodoFormError('');
+    setTodoDatePickerVisible(false);
+    setTodoTimePickerVisible(false);
+    setTodoModalOpen(false);
+    setTodoFormModalOpen(true);
+  };
+
+  const closeTodoForm = () => {
+    if (todoSavingRef.current) return;
+    setTodoFormModalOpen(false);
+    setTodoDatePickerVisible(false);
+    setTodoTimePickerVisible(false);
+    setEditingTodoId(null);
+    setTodoFormError('');
+    setTodoModalOpen(true);
+  };
+
+  const saveTodo = async () => {
+    if (todoSavingRef.current) return;
     const title = todoTitle.trim();
     if (!title) {
-      Alert.alert(isGerman ? 'Titel fehlt' : 'Missing title', isGerman ? 'Bitte gib einen To-do-Titel ein.' : 'Please enter a to-do title.');
+      setTodoFormError(isGerman ? 'Bitte gib einen To-do-Titel ein.' : 'Please enter a to-do title.');
       return;
     }
-
-    const todo: SmartTodoItem = {
+    if (todoDeadlineAt && Number.isNaN(todoDeadlineAt.getTime())) {
+      setTodoFormError(isGerman ? 'Bitte wähle ein gültiges Datum.' : 'Please choose a valid date.');
+      return;
+    }
+    const existing = editingTodoId ? state.smartTodos.find(todo => todo.id === editingTodoId) : undefined;
+    if (editingTodoId && !existing) {
+      setTodoFormError(isGerman ? 'Dieses To-do wurde entfernt. Schließe den Editor und versuche es erneut.' : 'This to-do was removed. Close the editor and try again.');
+      return;
+    }
+    const notes = todoNotes.trim() || undefined;
+    const dateFields = {
+      deadlineAt: todoDeadlineAt && todoHasExplicitTime ? todoDeadlineAt.toISOString() : null,
+      // The picker displays device-local dates. Store exactly the day it shows.
+      dueDate: todoDeadlineAt && !todoHasExplicitTime
+        ? getLocalDateKey(todoDeadlineAt, Intl.DateTimeFormat().resolvedOptions().timeZone) : null,
+      hasFixedSchedule: !!todoDeadlineAt && todoHasExplicitTime,
+    };
+    const todo: SmartTodoItem = existing ? {
+      ...existing,
+      title,
+      notes,
+      ...(todoDateChanged ? dateFields : {}),
+    } : {
       id: `todo_${Date.now()}`,
       title,
-      notes: undefined,
+      notes,
       atomizedTotalMin: null,
       atomizedProgressMin: 0,
-      deadlineAt: todoDeadlineAt && todoHasExplicitTime ? todoDeadlineAt.toISOString() : null,
-      dueDate: todoDeadlineAt && !todoHasExplicitTime ? getLocalDateKey(todoDeadlineAt, timeZone) : null,
-      hasFixedSchedule: !!todoDeadlineAt && todoHasExplicitTime,
+      ...dateFields,
       scheduledAt: null,
       scheduledEndAt: null,
       scheduledMode: null,
@@ -1814,19 +1917,66 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       createdAt: new Date().toISOString(),
     };
 
-    actions.addSmartTodo(todo);
-    if (todo.hasFixedSchedule && todo.deadlineAt && hasClearTodoDateTime(todo.deadlineAt)) {
-      const fixedStart = new Date(todo.deadlineAt);
-      if (!Number.isNaN(fixedStart.getTime())) {
-        void scheduleTodoAt(todo, fixedStart, 'fixed', SMART_TODO_DEFAULT_DURATION_MIN);
+    const userId = state.userId;
+    todoSavingRef.current = true;
+    setTodoSaving(true);
+    setTodoFormError('');
+    try {
+      if (existing) {
+        const linkedActivity = state.scheduledActivities.find(activity => activity.id === existing.linkedScheduledActivityId);
+        const contentChanged = title !== existing.title || notes !== existing.notes;
+        if (linkedActivity && contentChanged) {
+          const eventId = linkedActivity.calendarEventId ?? linkedActivity.commitment.calendarEventId;
+          if (eventId) await updatePlanEventDetails(eventId, { title: `To-do: ${title}`, notes: notes ?? '' });
+        }
+        // A calendar write can finish after other task state has changed.
+        if (todoEditorStateRef.current.userId !== userId) return;
+        const latest = todoEditorStateRef.current.smartTodos.find(item => item.id === existing.id);
+        if (!latest) {
+          setTodoFormError(isGerman ? 'Dieses To-do wurde entfernt.' : 'This to-do was removed.');
+          return;
+        }
+        const updatedTodo = { ...latest, title, notes, ...(todoDateChanged ? dateFields : {}) };
+        actions.updateSmartTodo(updatedTodo);
+        const latestActivity = todoEditorStateRef.current.scheduledActivities.find(activity => activity.id === latest.linkedScheduledActivityId);
+        if (latestActivity && latestActivity.id === linkedActivity?.id) {
+          const description = notes ?? '';
+          actions.updateScheduledActivity(latestActivity.id, {
+            ...latestActivity,
+            title,
+            description,
+            suggestion: {
+              ...latestActivity.suggestion, title, description,
+              meta: { ...latestActivity.suggestion.meta, todoDeadlineAt: getTodoDeadlineAt(updatedTodo), todoDueDate: getTodoDueDate(updatedTodo, timeZone) },
+            },
+            commitment: { ...latestActivity.commitment, title },
+          });
+        }
+      } else {
+        actions.addSmartTodo(todo);
+        if (todo.hasFixedSchedule && todo.deadlineAt && hasClearTodoDateTime(todo.deadlineAt)) {
+          const fixedStart = new Date(todo.deadlineAt);
+          if (!Number.isNaN(fixedStart.getTime())) {
+            void scheduleTodoAt(todo, fixedStart, 'fixed', SMART_TODO_DEFAULT_DURATION_MIN);
+          }
+        }
       }
+      setTodoTitle('');
+      setTodoNotes('');
+      setTodoDeadlineAt(null);
+      setTodoHasExplicitTime(false);
+      todoSavingRef.current = false;
+      closeTodoForm();
+    } catch {
+      if (todoEditorStateRef.current.userId === userId) {
+        setTodoFormError(isGerman
+          ? 'Der verknüpfte Kalendereintrag konnte nicht aktualisiert werden. Deine Änderungen wurden nicht gespeichert. Prüfe den Kalenderzugriff und versuche es erneut.'
+          : 'Could not update the linked calendar event. Your changes have not been saved. Check calendar access and try again.');
+      }
+    } finally {
+      todoSavingRef.current = false;
+      setTodoSaving(false);
     }
-    setTodoTitle('');
-    setTodoDeadlineAt(null);
-    setTodoHasExplicitTime(false);
-    setTodoDatePickerVisible(false);
-    setTodoTimePickerVisible(false);
-    setTodoFormModalOpen(false);
   };
 
   const importTodosViaPhoto = async () => {
@@ -2385,9 +2535,15 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         >
           <Text style={styles.todoCheck}>{todo.done ? '☑' : '☐'}</Text>
         </Pressable>
-        <View style={{ flex: 1 }}>
+        <Pressable
+          style={{ flex: 1 }}
+          accessibilityRole="button"
+          accessibilityLabel={`${isGerman ? 'To-do bearbeiten' : 'Edit to-do'}: ${todo.title}`}
+          onPress={() => openTodoForm(todo)}
+        >
           <View style={styles.todoTitleRow}>
             <Text style={[styles.todoTitle, todo.done && styles.todoDone]}>{todo.title}</Text>
+            <Text style={styles.todoEdit}>{isGerman ? 'Bearbeiten' : 'Edit'}</Text>
             {overdue && (
               <View style={styles.overdueBadge}>
                 <Text style={styles.overdueBadgeText}>Overdue</Text>
@@ -2418,7 +2574,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           {!!atomizedProgressLabel && (
             <Text style={styles.todoAtomizedProgress}>{atomizedProgressLabel}</Text>
           )}
-        </View>
+        </Pressable>
         {isScheduled ? (
           <Pressable onPress={() => openTodoScheduledActivity(linkedActivity)}>
             <Text style={styles.todoScheduledAction}>Scheduled</Text>
@@ -2440,8 +2596,16 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       <Pressable onPress={() => actions.updateSmartTodo({ ...todo, done: false })}>
         <Text style={styles.todoCheck}>☑</Text>
       </Pressable>
-      <View style={{ flex: 1 }}>
-        <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
+      <Pressable
+        style={{ flex: 1 }}
+        accessibilityRole="button"
+        accessibilityLabel={`${isGerman ? 'To-do bearbeiten' : 'Edit to-do'}: ${todo.title}`}
+        onPress={() => openTodoForm(todo)}
+      >
+        <View style={styles.todoTitleRow}>
+          <Text style={[styles.todoTitle, styles.todoDone]}>{todo.title}</Text>
+          <Text style={styles.todoEdit}>{isGerman ? 'Bearbeiten' : 'Edit'}</Text>
+        </View>
         {(() => {
           const atomized = getTodoAtomizedProgress(todo);
           if (!atomized.isAtomized || atomized.totalMin == null) return null;
@@ -2451,7 +2615,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             </Text>
           );
         })()}
-      </View>
+      </Pressable>
       <Pressable onPress={() => actions.removeSmartTodo(todo.id)}>
         <Text style={styles.todoDelete}>Delete</Text>
       </Pressable>
@@ -2474,33 +2638,91 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     }, 90);
   };
 
-  const scheduleSuggestion = async (gap: CalendarGap, entry: SmartSuggestionDeckEntry) => {
+  const scheduleSuggestion = (gap: CalendarGap, entry: SmartSuggestionDeckEntry) => {
+    if (suggestionPlacement || editSavingRef.current) return;
     if (!premiumEnabled) {
       showPremiumInfo();
       return;
     }
-    const suggestion = entry.suggestion;
-    const deckSuggestion = entry.deck;
-
-    if (!actions.spendSwipe()) {
+    if (!hasSwipesRemaining) {
       Alert.alert(isGerman ? 'Keine Swipes mehr' : 'No swipes left', isGerman ? 'Du hast keine Swipes mehr. SchlieSSe Aktivitaten ab oder warte auf Aufladung.' : 'You have no swipes remaining. Complete activities or wait for recharge.');
       return;
     }
 
+    const { suggestion, deck: deckSuggestion } = entry;
     const startAt = gap.startAt;
     const endAt = new Date(startAt.getTime() + suggestion.durationMin * 60000);
-    let title = deckSuggestion.title;
+    // Keep placement local until Save so discarded suggestions never create
+    // a device calendar event or consume a swipe.
+    if (!editMode) enterEditMode();
+    else setSelectedGap(null);
+    setSuggestionPlacement({
+      gap,
+      entry,
+      activity: {
+        id: `sched_smart_${Date.now()}`,
+        suggestionId: deckSuggestion.id,
+        title: deckSuggestion.title,
+        description: deckSuggestion.description,
+        durationMin: suggestion.durationMin,
+        startAt: startAt.toISOString(),
+        endAt: endAt.toISOString(),
+        type: deckSuggestion.type,
+        tags: deckSuggestion.tags,
+        suggestion: deckSuggestion,
+        commitment: {
+          suggestionId: deckSuggestion.id,
+          type: deckSuggestion.type,
+          title: deckSuggestion.title,
+          startAt: startAt.toISOString(),
+          endAt: endAt.toISOString(),
+        },
+        planReason: suggestion.reason,
+        planSource: suggestion.source,
+      },
+    });
+    setCalendarMinimized(false);
+    const dayStart = new Date(startAt);
+    dayStart.setHours(0, 0, 0, 0);
+    pendingViewportFocusRef.current = {
+      dayId: columns.find((column) => isSameDay(column.date, startAt))?.id ?? dayStart.toISOString().slice(0, 10),
+      minute: minuteOfDay(startAt),
+    };
+    setEditHasChanges(true);
+  };
 
-    if (deckSuggestion.type === 'AT_HOME') {
-      title = `Plan: ${deckSuggestion.title}`;
+  const saveSuggestionPlacement = async (): Promise<boolean> => {
+    if (!suggestionPlacement) return true;
+    const { activity, gap, entry } = suggestionPlacement;
+    const startAt = new Date(activity.startAt);
+    const endAt = new Date(activity.endAt);
+    const linkedTodo = resolveTodoFromSuggestion(entry.suggestion);
+    if (linkedTodo && !isTodoEligibleForWindow(linkedTodo, startAt, endAt, timeZone)) {
+      Alert.alert(
+        isGerman ? 'Ungültige Planungszeit' : 'Invalid scheduling time',
+        isGerman
+          ? 'Wähle eine Zeit, die zum Fälligkeitsdatum oder zur Deadline dieses To-dos passt.'
+          : 'Choose a time that fits this to-do’s due date or deadline.',
+      );
+      return false;
+    }
+    if (!actions.spendSwipe()) {
+      Alert.alert(isGerman ? 'Keine Swipes mehr' : 'No swipes left', isGerman ? 'Du hast keine Swipes mehr. SchlieSSe Aktivitaten ab oder warte auf Aufladung.' : 'You have no swipes remaining. Complete activities or wait for recharge.');
+      return false;
     }
 
-    if (deckSuggestion.type === 'GO_OUT') {
-      title = `Plan: ${deckSuggestion.place?.name ?? deckSuggestion.title}`;
+    let title = activity.title;
+
+    if (activity.type === 'AT_HOME') {
+      title = `Plan: ${activity.title}`;
     }
 
-    if (deckSuggestion.type === 'EVENT') {
-      title = `Event: ${deckSuggestion.title}`;
+    if (activity.type === 'GO_OUT') {
+      title = `Plan: ${activity.suggestion.place?.name ?? activity.title}`;
+    }
+
+    if (activity.type === 'EVENT') {
+      title = `Event: ${activity.title}`;
     }
 
     let calendarEventId: string | undefined;
@@ -2512,7 +2734,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
           title,
           startDate: startAt,
           endDate: endAt,
-          notes: deckSuggestion.description,
+          notes: activity.description,
         });
         calendarWriteFailed = false;
       } catch (error) {
@@ -2521,38 +2743,15 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       }
     }
 
-    const commitment: Commitment = {
-      suggestionId: deckSuggestion.id,
-      type: deckSuggestion.type,
-      title: deckSuggestion.title,
-      startAt: startAt.toISOString(),
-      endAt: endAt.toISOString(),
-      calendarEventId,
-      calendarWriteFailed,
-    };
-
-    const scheduledId = `sched_smart_${Date.now()}`;
     actions.addScheduledActivity({
-      id: scheduledId,
-      suggestionId: deckSuggestion.id,
-      title: deckSuggestion.title,
-      description: deckSuggestion.description,
-      durationMin: deckSuggestion.durationMin,
-      startAt: startAt.toISOString(),
-      endAt: endAt.toISOString(),
-      type: deckSuggestion.type,
-      tags: deckSuggestion.tags,
-      suggestion: deckSuggestion,
-      commitment,
+      ...activity,
+      commitment: { ...activity.commitment, calendarEventId, calendarWriteFailed },
       calendarEventId,
       calendarWriteFailed,
-      planReason: suggestion.reason,
-      planSource: suggestion.source,
     });
 
-    const linkedTodo = resolveTodoFromSuggestion(suggestion);
     if (linkedTodo) {
-      updateTodoAfterSchedule(linkedTodo, scheduledId, startAt, endAt, 'smart');
+      updateTodoAfterSchedule(linkedTodo, activity.id, startAt, endAt, 'smart');
     }
 
     const consumedSuggestionTitleKey = normalizeSuggestionTitleKey(entry.suggestion.title);
@@ -2574,35 +2773,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       return next;
     });
 
-    // A free slot can hold MORE than one activity. If usable time remains after
-    // this booking, keep the modal open on the leftover sub-slot so the user can
-    // stack another activity; otherwise close.
-    const remainingMin = Math.round((gap.endAt.getTime() - endAt.getTime()) / 60000);
-    if (remainingMin >= 20) {
-      const continuationGap: CalendarGap = {
-        ...gap,
-        id: `${gap.id}_cont_${endAt.getTime()}`,
-        startAt: endAt,
-        durationMin: remainingMin,
-        before: {
-          id: `just_scheduled_${endAt.getTime()}`,
-          title: deckSuggestion.title,
-          startAt,
-          endAt,
-          source: 'scheduled',
-        },
-      };
-      setSelectedGap(continuationGap);
-      Alert.alert(isGerman ? 'Hinzugefugt - fulle diesen Slot weiter' : 'Added — keep filling this slot', isGerman ? `${remainingMin} Min sind noch frei. Wahlen eine weitere Aktivitat oder tippe auf SchlieSen.` : `${remainingMin} min still free. Pick another activity or tap Close.`);
-      return;
-    }
-
-    setSelectedGap(null);
     if (calendarWriteFailed && state.permissions.calendarGranted) {
       Alert.alert(isGerman ? 'Zum Plan hinzugefugt' : 'Added to plan', isGerman ? 'Der Vorschlag wurde hinzugefugt, aber die Synchronisierung mit deinem Kalender ist fehlgeschlagen.' : 'The suggestion was added, but syncing to your device calendar failed.');
-      return;
     }
-    Alert.alert(isGerman ? 'Zum Plan hinzugefugt' : 'Added to plan', isGerman ? 'Der Vorschlag wurde zu deinen geplanten Aktivitaten und deinem Kalender hinzugefugt.' : 'The suggestion was added to your scheduled activities and your device calendar.');
+    return true;
   };
 
   const handleSuggestionSkip = () => {
@@ -2776,7 +2950,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       dayId: nextStart.toISOString().slice(0, 10),
       minute: minuteOfDay(nextStart),
     };
-    actions.updateScheduledActivity(updated.id, updated);
+    updateCalendarActivity(updated);
     if (editMode) setEditHasChanges(true);
     setSelectedScheduledActivity(null);
   };
@@ -2794,7 +2968,8 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       }
     }
 
-    actions.removeScheduledActivity(selectedScheduledActivity.id);
+    removeCalendarActivity(selectedScheduledActivity.id);
+    if (editMode) setEditHasChanges(true);
     setSelectedScheduledActivity(null);
   };
 
@@ -2814,7 +2989,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             }
           }
           if (editMode) setEditHasChanges(true);
-          actions.removeScheduledActivity(activity.id);
+          removeCalendarActivity(activity.id);
         },
       },
     ]);
@@ -2840,7 +3015,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       }
     }
 
-    actions.updateScheduledActivity(activity.id, {
+    updateCalendarActivity({
       ...activity,
       startAt: newStartAt.toISOString(),
       endAt: newEndAt.toISOString(),
@@ -2967,8 +3142,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     }
     const newEnd = new Date(newStart.getTime() + durationMin * 60000);
 
-    const movedAcrossDay = !isSameDay(origStart, newStart);
-    if (snappedDelta === 0 && !movedAcrossDay) return;
+    if (newStart.getTime() === origStart.getTime()) return;
 
     const others = (column?.blocks ?? []).filter((block) => block.id !== activity.id);
     const overlap = others.find((block) =>
@@ -2980,7 +3154,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         Alert.alert('Locked slot', `"${overlap.title}" comes from your external calendar and can't be moved or overlapped.`);
         return;
       }
-      const other = state.scheduledActivities.find((item) => item.id === overlap.id);
+      const other = calendarActivities.find((item) => item.id === overlap.id);
       if (other) {
         Alert.alert(
           'Swap activities?',
@@ -3107,7 +3281,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       // Snap the visual block back to origin; the (possibly) new position comes
       // from re-deriving the timeline after commitEventDrag updates state.
       Animated.timing(dragTranslateY, { toValue: 0, duration: 140, useNativeDriver: false }).start();
-      if (act) {
+      if (act && gestureState === State.END) {
         const targetIndex = dragTargetColumnIndexRef.current;
         const fromLiveTarget = targetIndex != null && targetIndex >= 0 && targetIndex < columns.length
           ? columns[targetIndex].id
@@ -3142,15 +3316,26 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
     setDraggingBlockId(null);
     dragTranslateY.setValue(0);
     setEditHasChanges(false);
+    setSuggestionPlacement(null);
+    setSelectedScheduledActivity(null);
     editSnapshotRef.current = null;
     setEditMode(false);
   };
 
-  const saveEditModeChanges = () => {
-    closeEditSession();
+  const saveEditModeChanges = async () => {
+    if (editSavingRef.current || draggingBlockId) return;
+    editSavingRef.current = true;
+    setEditSaving(true);
+    try {
+      if (await saveSuggestionPlacement()) closeEditSession();
+    } finally {
+      editSavingRef.current = false;
+      setEditSaving(false);
+    }
   };
 
   const discardEditModeChanges = () => {
+    if (editSavingRef.current) return;
     const snapshot = editSnapshotRef.current;
     if (snapshot) {
       const currentById = new Map(state.scheduledActivities.map((item) => [item.id, item]));
@@ -3175,6 +3360,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   const handleEditCancelPress = () => {
+    if (editSavingRef.current) return;
     if (!editHasChanges) {
       closeEditSession();
       return;
@@ -3335,13 +3521,13 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
   };
 
   return (
-    <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container}>
+    <LinearGradient colors={[theme.colors.background, theme.colors.backgroundAlt]} style={styles.container} pointerEvents={editSaving ? 'none' : 'auto'}>
       <View style={[styles.header, { paddingTop: insets.top + theme.spacing.sm }]}>
         <View style={styles.headerSideLeft}>
           {editMode ? (
             editHasChanges ? (
-              <Pressable onPress={saveEditModeChanges} style={styles.editSaveBtn} hitSlop={8}>
-                <Text style={styles.editSaveText}>Save</Text>
+              <Pressable onPress={saveEditModeChanges} disabled={editSaving || draggingBlockId !== null} style={styles.editSaveBtn} hitSlop={8}>
+                <Text style={styles.editSaveText}>{editSaving ? 'Saving…' : 'Save'}</Text>
               </Pressable>
             ) : (
               <View style={styles.editSavePlaceholder} />
@@ -3359,7 +3545,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
 
         <View style={styles.headerSideRight}>
           {editMode ? (
-            <Pressable onPress={handleEditCancelPress} style={styles.editCancelBtn} hitSlop={8}>
+            <Pressable onPress={handleEditCancelPress} disabled={editSaving} style={styles.editCancelBtn} hitSlop={8}>
               <Text style={styles.editCancelText}>Cancel</Text>
             </Pressable>
           ) : (
@@ -3386,7 +3572,11 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
       {editMode && (
         <View style={styles.editHintBar}>
           <Text style={styles.editHintText}>
-            Edit mode — drag up/down to reschedule. Push into the left/right edge with a little resistance to move across days. 🚫 items are locked. Tap Cancel to finish.
+            {suggestionPlacement
+              ? (isGerman
+                ? `Ziehe „${suggestionPlacement.activity.title}“ auf die gewünschte Zeit. Am linken oder rechten Rand wechselst du den Tag. Tippe dann auf Save.`
+                : `Drag “${suggestionPlacement.activity.title}” to your preferred time. Push into the left or right edge to change days, then tap Save.`)
+              : 'Edit mode — drag up/down to reschedule. Push into the left/right edge with a little resistance to move across days. 🚫 items are locked. Tap Save to keep changes.'}
           </Text>
         </View>
       )}
@@ -3563,7 +3753,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                       const canOpenPlan = segment.block.source === 'scheduled';
                       const openPlan = () => {
                         if (!canOpenPlan) return;
-                        const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
+                        const scheduled = calendarActivities.find((item) => item.id === segment.block!.id);
                         if (!scheduled) return;
                         openScheduledActivityModal(scheduled);
                       };
@@ -3607,7 +3797,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                           }}
                           onDragGesture={handleDragGesture}
                           onDragStateChange={(gestureState, oldState, translationY, translationX, absoluteX, absoluteY) => {
-                            const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
+                            const scheduled = calendarActivities.find((item) => item.id === segment.block!.id);
                             if (scheduled) handleDragStateChange(
                               scheduled,
                               gestureState,
@@ -3619,7 +3809,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                             );
                           }}
                           onDelete={editMode && isMovable ? () => {
-                            const scheduled = state.scheduledActivities.find((item) => item.id === segment.block!.id);
+                            const scheduled = calendarActivities.find((item) => item.id === segment.block!.id);
                             if (scheduled) confirmDeleteActivityById(scheduled);
                           } : undefined}
                         />
@@ -3689,9 +3879,10 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                             </View>
                           ) : (
                             <Pressable
+                              disabled={!!suggestionPlacement}
                               style={[
                                 styles.plusButton,
-                                !premiumEnabled && styles.plusButtonLocked,
+                                (!premiumEnabled || !!suggestionPlacement) && styles.plusButtonLocked,
                               ]}
                               onPress={() => {
                                 if (!premiumEnabled) {
@@ -3790,12 +3981,20 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             <Text style={styles.modalTitle}>{t('smart_gap_suggestions')}</Text>
             {suggestionsLoading ? (
               <View style={styles.centerWrap}>
-                <ActivityIndicator size="large" color={theme.colors.accent} style={{ marginBottom: theme.spacing.md }} />
+                <BrandLoader size="large" style={{ marginBottom: theme.spacing.md }} />
                 <Text style={styles.subtle}>{t('smart_gathering')}</Text>
                 <Text style={[styles.subtle, { fontSize: 12, marginTop: theme.spacing.xs, opacity: 0.6 }]}>{t('smart_finding_fit')}</Text>
               </View>
             ) : gapSuggestions.length === 0 ? (
-              <Text style={styles.subtle}>{t('smart_no_option')}</Text>
+              <View>
+                <Text style={styles.subtle}>{t('smart_no_option')}</Text>
+                <Pressable accessibilityRole="button" style={styles.newSetBtn} onPress={() => {
+                  if (!selectedGap) return;
+                  fetchGapSuggestions(selectedGap, gapBatchIndexByKey[gapCacheKey(selectedGap)] ?? 0, true);
+                }}>
+                  <Text style={styles.newSetBtnText}>{isGerman ? 'Erneut versuchen' : 'Try again'}</Text>
+                </Pressable>
+              </View>
             ) : (
               <>
                 <View style={styles.deckTagRow}>
@@ -3861,7 +4060,7 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                         onSwipeLeft={handleSuggestionSkip}
                         onSwipeRight={() => {
                           if (!selectedGap || !gapSuggestions[suggestionIndex]) return;
-                          void scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex]);
+                          return scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex]);
                         }}
                         disabled={!hasSwipesRemaining}
                         deckColors={SMART_CALENDAR_DECK_COLORS}
@@ -3869,15 +4068,12 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
                     </View>
 
                     <View style={styles.modalActionRow}>
-                      <Pressable style={styles.modalTinyBtn} onPress={handleSuggestionSkip}>
+                      <Pressable style={styles.modalTinyBtn} onPress={() => suggestionDeckRef.current?.swipeLeft()}>
                         <Text style={styles.modalTinyBtnText}>Skip</Text>
                       </Pressable>
                       <Pressable
                         style={[styles.scheduleBtn, { flex: 1 }]}
-                        onPress={() => {
-                          if (!selectedGap || !gapSuggestions[suggestionIndex]) return;
-                          void scheduleSuggestion(selectedGap, gapSuggestions[suggestionIndex]);
-                        }}
+                        onPress={() => suggestionDeckRef.current?.swipeRight()}
                       >
                         <Text style={styles.scheduleBtnText}>Add to plan</Text>
                       </Pressable>
@@ -4010,23 +4206,22 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
         </View>
       </Modal>
 
-      <Modal visible={todoModalOpen} transparent animationType="fade" onRequestClose={() => setTodoModalOpen(false)}>
-        <View style={styles.modalBackdrop}>
+      <Modal
+        visible={todoModalOpen || todoFormModalOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => { if (todoFormModalOpen) closeTodoForm(); else setTodoModalOpen(false); }}
+      >
+        <KeyboardAvoidingView style={styles.modalBackdrop} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          {!todoFormModalOpen && (
           <View style={styles.todoModalCard}>
             <Text style={styles.modalTitle}>To-do List</Text>
             <View style={styles.todoListActionRow}>
               <Pressable
                 style={styles.addTodoBtn}
                 hitSlop={8}
-                onPress={() => {
-                  setTodoTitle('');
-                  setTodoDeadlineAt(null);
-                  setTodoHasExplicitTime(false);
-                  setTodoDatePickerVisible(false);
-                  setTodoTimePickerVisible(false);
-                  setTodoModalOpen(false);
-                  setTimeout(() => setTodoFormModalOpen(true), 0);
-                }}
+                accessibilityRole="button"
+                onPress={() => openTodoForm()}
               >
                 <Text style={styles.addTodoBtnText}>Add to-do</Text>
               </Pressable>
@@ -4082,42 +4277,57 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
               <Text style={styles.closeBtnText}>Done</Text>
             </Pressable>
           </View>
-        </View>
-      </Modal>
-
-      <Modal
-        visible={todoFormModalOpen}
-        transparent
-        animationType="fade"
-        onRequestClose={() => {
-          setTodoFormModalOpen(false);
-          setTodoDatePickerVisible(false);
-          setTodoTimePickerVisible(false);
-        }}
-      >
-        <View style={styles.modalBackdrop}>
+          )}
+          {todoFormModalOpen && (
           <View style={styles.todoModalCard}>
-            <Text style={styles.modalTitle}>Add To-do</Text>
+            <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.todoFormContent}>
+            <Text style={styles.modalTitle}>{editingTodoId
+              ? (isGerman ? 'To-do bearbeiten' : 'Edit to-do')
+              : (isGerman ? 'To-do hinzufügen' : 'Add to-do')}</Text>
+            <Text style={styles.todoFieldLabel}>{isGerman ? 'Titel' : 'Title'}</Text>
             <TextInput
               value={todoTitle}
               onChangeText={setTodoTitle}
-              placeholder="Task title"
+              editable={!todoSaving}
+              accessibilityLabel={isGerman ? 'To-do-Titel' : 'Task title'}
+              placeholder={isGerman ? 'To-do-Titel' : 'Task title'}
               placeholderTextColor={theme.colors.textMuted}
               style={styles.input}
             />
+            <Text style={styles.todoFieldLabel}>{isGerman ? 'Notizen' : 'Notes'}</Text>
+            <TextInput
+              value={todoNotes}
+              onChangeText={setTodoNotes}
+              editable={!todoSaving}
+              accessibilityLabel={isGerman ? 'Notizen' : 'Notes'}
+              placeholder={isGerman ? 'Notizen (optional)' : 'Notes (optional)'}
+              placeholderTextColor={theme.colors.textMuted}
+              multiline
+              textAlignVertical="top"
+              style={[styles.input, styles.todoNotesInput]}
+            />
+            {editingTodoId && state.smartTodos.some(todo => todo.id === editingTodoId && (todo.linkedScheduledActivityId || todo.scheduledAt)) && (
+              <Text style={styles.deadlineSummaryText}>
+                {isGerman
+                  ? 'Der Kalendertermin bleibt bestehen. Änderungen am Fälligkeitsdatum verschieben ihn nicht. Tippe in der Liste auf „Scheduled“, um die Terminzeit zu ändern.'
+                  : 'The calendar slot stays in place. Changing the due date does not move it. Tap Scheduled in the list to change its time.'}
+              </Text>
+            )}
 
             <View style={styles.deadlinePickerRow}>
-              <Pressable style={styles.deadlinePickerButton} onPress={openTodoDatePicker}>
+              <Pressable accessibilityRole="button" disabled={todoSaving} style={styles.deadlinePickerButton} onPress={openTodoDatePicker}>
                 <Text style={styles.deadlinePickerButtonText}>
-                  {todoDeadlineAt ? todoDeadlineAt.toLocaleDateString() : 'Pick date'}
+                  {todoDeadlineAt ? todoDeadlineAt.toLocaleDateString() : (isGerman ? 'Datum wählen' : 'Pick date')}
                 </Text>
               </Pressable>
               <Pressable
                 style={styles.deadlinePickerButton}
+                accessibilityRole="button"
+                disabled={todoSaving}
                 onPress={openTodoTimePicker}
               >
                 <Text style={styles.deadlinePickerButtonText}>
-                  {todoDeadlineAt && todoHasExplicitTime ? formatCalendarTime(todoDeadlineAt) : 'Pick time'}
+                  {todoDeadlineAt && todoHasExplicitTime ? formatCalendarTime(todoDeadlineAt) : (isGerman ? 'Uhrzeit wählen' : 'Pick time')}
                 </Text>
               </Pressable>
             </View>
@@ -4160,43 +4370,54 @@ export const SmartCalendarScreen: React.FC<Props> = ({ navigation }) => {
             )}
 
             <View style={styles.deadlinePresetRow}>
-              <Pressable style={styles.deadlineChip} onPress={() => setDeadlinePreset(0, 18, 0)}>
-                <Text style={styles.deadlineChipText}>Today {formatClockMinutes(18 * 60, timeZone)}</Text>
+              <Pressable accessibilityRole="button" disabled={todoSaving} style={styles.deadlineChip} onPress={() => setDeadlinePreset(0, 18, 0)}>
+                <Text style={styles.deadlineChipText}>{isGerman ? 'Heute' : 'Today'} {formatClockMinutes(18 * 60, timeZone)}</Text>
               </Pressable>
-              <Pressable style={styles.deadlineChip} onPress={() => setDeadlinePreset(1, 9, 0)}>
-                <Text style={styles.deadlineChipText}>Tomorrow {formatClockMinutes(9 * 60, timeZone)}</Text>
+              <Pressable accessibilityRole="button" disabled={todoSaving} style={styles.deadlineChip} onPress={() => setDeadlinePreset(1, 9, 0)}>
+                <Text style={styles.deadlineChipText}>{isGerman ? 'Morgen' : 'Tomorrow'} {formatClockMinutes(9 * 60, timeZone)}</Text>
               </Pressable>
-              <Pressable style={styles.deadlineChip} onPress={() => setDeadlinePreset(7, 18, 0)}>
-                <Text style={styles.deadlineChipText}>+7 days</Text>
+              <Pressable accessibilityRole="button" disabled={todoSaving} style={styles.deadlineChip} onPress={() => setDeadlinePreset(7, 18, 0)}>
+                <Text style={styles.deadlineChipText}>{isGerman ? '+7 Tage' : '+7 days'}</Text>
               </Pressable>
               <Pressable
                 style={[styles.deadlineChip, styles.deadlineChipMuted]}
+                accessibilityRole="button"
+                disabled={todoSaving}
                 onPress={() => {
                   setTodoDeadlineAt(null);
                   setTodoHasExplicitTime(false);
+                  setTodoDateChanged(true);
                 }}
               >
-                <Text style={styles.deadlineChipText}>Clear</Text>
+                <Text style={styles.deadlineChipText}>{isGerman ? 'Löschen' : 'Clear'}</Text>
               </Pressable>
+              {todoHasExplicitTime && (
+                <Pressable accessibilityRole="button" disabled={todoSaving} style={styles.deadlineChip} onPress={() => { setTodoHasExplicitTime(false); setTodoDateChanged(true); setTodoTimePickerVisible(false); }}>
+                  <Text style={styles.deadlineChipText}>{isGerman ? 'Nur Datum' : 'Date only'}</Text>
+                </Pressable>
+              )}
             </View>
 
+            {!!todoFormError && <Text style={styles.todoFormError} accessibilityRole="alert">{todoFormError}</Text>}
+            </ScrollView>
             <View style={styles.modalActionRow}>
               <Pressable
                 style={styles.modalTinyBtn}
-                onPress={() => {
-                  setTodoFormModalOpen(false);
-                  setTodoDatePickerVisible(false);
-                  setTodoTimePickerVisible(false);
-                }}
+                accessibilityRole="button"
+                disabled={todoSaving}
+                onPress={closeTodoForm}
               >
-                <Text style={styles.modalTinyBtnText}>Cancel</Text>
+                <Text style={styles.modalTinyBtnText}>{isGerman ? 'Abbrechen' : 'Cancel'}</Text>
               </Pressable>
-              <Pressable style={[styles.scheduleBtn, { flex: 1 }]} onPress={addTodo}>
-                <Text style={styles.scheduleBtnText}>Add task</Text>
+              <Pressable accessibilityRole="button" accessibilityState={{ disabled: todoSaving, busy: todoSaving }} disabled={todoSaving} style={[styles.scheduleBtn, { flex: 1 }, todoSaving && { opacity: 0.6 }]} onPress={() => { void saveTodo(); }}>
+                <Text style={styles.scheduleBtnText}>{todoSaving
+                  ? (isGerman ? 'Wird gespeichert…' : 'Saving…')
+                  : editingTodoId ? (isGerman ? 'Speichern' : 'Save changes') : (isGerman ? 'Hinzufügen' : 'Add task')}</Text>
               </Pressable>
             </View>
           </View>
-        </View>
+          )}
+        </KeyboardAvoidingView>
       </Modal>
 
       <VideoAdModal ad={videoAd} onClose={closeVideoAd} deckColors={SMART_CALENDAR_DECK_COLORS} />
@@ -5145,6 +5366,16 @@ const createStyles = (theme: ReturnType<typeof useTheme>) => StyleSheet.create({
     fontFamily: theme.fonts.semibold,
     color: theme.colors.text,
   },
+  todoEdit: {
+    fontFamily: theme.fonts.semibold,
+    color: theme.colors.accent,
+    fontSize: 12,
+    textDecorationLine: 'underline',
+  },
+  todoFormContent: { gap: theme.spacing.sm },
+  todoFieldLabel: { fontFamily: theme.fonts.semibold, color: theme.colors.text, fontSize: 13 },
+  todoNotesInput: { minHeight: 80 },
+  todoFormError: { fontFamily: theme.fonts.body, color: theme.colors.danger, fontSize: 13 },
   overdueBadge: {
     paddingHorizontal: 6,
     paddingVertical: 2,

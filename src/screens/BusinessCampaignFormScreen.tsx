@@ -6,13 +6,13 @@ import {
   ScrollView,
   TextInput,
   Pressable,
-  ActivityIndicator,
   Alert,
   Image,
   Modal,
   Dimensions,
   PanResponder,
 } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import * as ImagePicker from 'expo-image-picker';
 import { RootStackParamList } from '../navigation/types';
@@ -959,7 +959,7 @@ export const BusinessCampaignFormScreen: React.FC<Props> = ({ navigation, route 
           style={[styles.saveButton, loading && styles.saveButtonDisabled]}
         >
           {loading ? (
-            <ActivityIndicator color="#fff" />
+            <BrandLoader color="#fff" />
           ) : (
             <Text style={styles.saveButtonText}>
               {campaignId ? 'Update Campaign' : 'Create Campaign'}

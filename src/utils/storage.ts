@@ -21,6 +21,7 @@ const KEYS = {
   geminiUsage: 'gemini_usage',
   profileAvatar: 'profile_avatar_uri',
   preloadedDeck: 'preloaded_deck',
+  habitAdaptation: 'habit_adaptation',
 };
 
 const keyFor = (base: string, userId?: string | null): string => {
@@ -173,7 +174,7 @@ export const saveIsBusinessOnly = async (isBusinessOnly: boolean, userId?: strin
 export type SwipeBankStorage = { current: number; max: number; lastUpdated?: string };
 
 export type GeminiUsageStorage = { callCount: number; date?: string };
-export type PreloadedDeckStorage = { deck: DeckSuggestion[]; usedFallback: boolean; savedAt: string };
+export type PreloadedDeckStorage = { deck: DeckSuggestion[]; usedFallback: boolean; mapCandidates?: DeckSuggestion[]; savedAt: string };
 
 export const loadSwipeBank = async (userId?: string | null): Promise<SwipeBankStorage | null> => {
   const raw = await AsyncStorage.getItem(keyFor(KEYS.swipeBank, userId));
@@ -204,13 +205,37 @@ export const saveGeminiUsage = async (usage: GeminiUsageStorage, userId?: string
   await AsyncStorage.setItem(keyFor(KEYS.geminiUsage, userId), JSON.stringify(usage));
 };
 
+export type HabitAdaptationStorage = { title: string; description: string };
+
+/** Cache key: one entry per habit per calendar day, so the daily adaptation call fires at most once/day/habit. */
+const habitAdaptationKey = (habitId: string, dateKey: string, userId?: string | null): string =>
+  keyFor(`${KEYS.habitAdaptation}:${habitId}:${dateKey}`, userId);
+
+export const loadHabitAdaptation = async (
+  habitId: string,
+  dateKey: string,
+  userId?: string | null,
+): Promise<HabitAdaptationStorage | null> => {
+  const raw = await AsyncStorage.getItem(habitAdaptationKey(habitId, dateKey, userId));
+  return raw ? (JSON.parse(raw) as HabitAdaptationStorage) : null;
+};
+
+export const saveHabitAdaptation = async (
+  habitId: string,
+  dateKey: string,
+  value: HabitAdaptationStorage,
+  userId?: string | null,
+): Promise<void> => {
+  await AsyncStorage.setItem(habitAdaptationKey(habitId, dateKey, userId), JSON.stringify(value));
+};
+
 export const loadPreloadedDeck = async (userId?: string | null): Promise<PreloadedDeckStorage | null> => {
   const raw = await AsyncStorage.getItem(keyFor(KEYS.preloadedDeck, userId));
   return raw ? (JSON.parse(raw) as PreloadedDeckStorage) : null;
 };
 
 export const savePreloadedDeck = async (
-  value: { deck: DeckSuggestion[]; usedFallback: boolean } | null,
+  value: { deck: DeckSuggestion[]; usedFallback: boolean; mapCandidates?: DeckSuggestion[] } | null,
   userId?: string | null,
 ): Promise<void> => {
   const key = keyFor(KEYS.preloadedDeck, userId);
@@ -221,6 +246,7 @@ export const savePreloadedDeck = async (
   const payload: PreloadedDeckStorage = {
     deck: value.deck,
     usedFallback: value.usedFallback,
+    ...(value.mapCandidates ? { mapCandidates: value.mapCandidates.slice(0, 20) } : {}),
     savedAt: new Date().toISOString(),
   };
   await AsyncStorage.setItem(key, JSON.stringify(payload));

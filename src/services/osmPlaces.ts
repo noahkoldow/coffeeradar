@@ -1,6 +1,7 @@
 import { Availability, LocationState, Suggestion, UserPrefs } from '../types';
 import { fromISO, getTimeZoneParts } from '../utils/time';
 import { addDebugMessage } from './debug';
+import { discoveryReferenceTime, isPlanningAhead } from './discoveryTiming';
 
 const OVERPASS_ENDPOINTS = [
   'https://overpass-api.de/api/interpreter',
@@ -8,7 +9,14 @@ const OVERPASS_ENDPOINTS = [
   'https://overpass.nchc.org.tw/api/interpreter',
 ];
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHE_ENTRIES = 64;
 const cache = new Map<string, { ts: number; data: Suggestion[] }>();
+
+export type OsmRequestOptions = {
+  signal?: AbortSignal;
+  maxEndpoints?: number;
+  allowWidening?: boolean;
+};
 
 const buildCacheKey = (lat: number, lng: number, radius: number, filters: string[]) => {
   const keyFilters = [...filters].sort().join(',');
@@ -167,28 +175,38 @@ ${nodes}
 out center qt 40;`;
 };
 
-const fetchWithTimeout = async (url: string, timeoutMs: number) => {
+const fetchWithTimeout = async (url: string, timeoutMs: number, signal?: AbortSignal) => {
   const controller = new AbortController();
+  const abort = () => controller.abort();
+  if (signal?.aborted) controller.abort();
+  signal?.addEventListener('abort', abort);
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
-    return await fetch(url, { signal: controller.signal });
+    const response = await fetch(url, { signal: controller.signal });
+    // Keep cancellation active while the body is being read as well.
+    const data = response.ok ? await response.json() : null;
+    return { ok: response.ok, status: response.status, data };
   } finally {
     clearTimeout(timer);
+    signal?.removeEventListener('abort', abort);
   }
 };
 
-const fetchOverpass = async (query: string) => {
+const fetchOverpass = async (query: string, options: OsmRequestOptions = {}) => {
   const encoded = encodeURIComponent(query);
-  for (const endpoint of OVERPASS_ENDPOINTS) {
+  const endpoints = OVERPASS_ENDPOINTS.slice(0, options.maxEndpoints ?? OVERPASS_ENDPOINTS.length);
+  for (const endpoint of endpoints) {
+    if (options.signal?.aborted) return null;
     const url = `${endpoint}?data=${encoded}`;
     try {
-      const response = await fetchWithTimeout(url, 8000);
+      const response = await fetchWithTimeout(url, 8000, options.signal);
       if (!response.ok) {
         addDebugMessage('osm', `Overpass error ${response.status} (${endpoint})`);
         continue;
       }
-      return response.json();
+      return response.data;
     } catch (error) {
+      if (options.signal?.aborted) return null;
       addDebugMessage('osm', `Overpass failed (${endpoint})`);
     }
   }
@@ -440,8 +458,11 @@ export const fetchOsmSuggestions = async (
   location: LocationState,
   prefs: UserPrefs,
   availability: Availability,
+  options: OsmRequestOptions = {},
 ): Promise<Suggestion[]> => {
-  if (!location.lat || !location.lng) return [];
+  if (location.lat == null || location.lng == null || !Number.isFinite(location.lat)
+    || !Number.isFinite(location.lng) || Math.abs(location.lat) > 90 || Math.abs(location.lng) > 180
+    || options.signal?.aborted) return [];
 
   const radiusKm = Math.max(1, Math.min(prefs.radiusKm || 5, 25));
   const radius = Math.round(radiusKm * 1000);
@@ -454,7 +475,8 @@ export const fetchOsmSuggestions = async (
       ),
     );
   const activeFilters = filters.length ? filters : DEFAULT_FILTERS;
-  const cacheKey = buildCacheKey(location.lat, location.lng, radius, activeFilters);
+  const now = discoveryReferenceTime(availability);
+  const cacheKey = `${buildCacheKey(location.lat, location.lng, radius, activeFilters)}_${location.timeZone ?? ''}_${Math.floor(now.getTime() / 900000)}_${availability.durationMin}`;
   const cached = cache.get(cacheKey);
   if (cached && Date.now() - cached.ts < CACHE_TTL_MS) {
     addDebugMessage('osm', `Cache hit (${cached.data.length} results).`);
@@ -462,7 +484,6 @@ export const fetchOsmSuggestions = async (
   }
 
   const availabilityEnd = fromISO(availability.end);
-  const now = new Date();
 
   const mapElements = (elements: any[]) => {
     const seen = new Map<string, { lat: number; lng: number }>();
@@ -471,7 +492,8 @@ export const fetchOsmSuggestions = async (
       .map((element: any) => {
         const lat = element.lat ?? element.center?.lat;
         const lon = element.lon ?? element.center?.lon;
-        if (!lat || !lon) return null;
+        if (typeof lat !== 'number' || !Number.isFinite(lat) || Math.abs(lat) > 90
+          || typeof lon !== 'number' || !Number.isFinite(lon) || Math.abs(lon) > 180) return null;
 
         const rawTags = element.tags || {};
         const name = rawTags.name || rawTags.brand;
@@ -496,7 +518,10 @@ export const fetchOsmSuggestions = async (
           ? rawTags.cuisine.split(';')[0].replace(/_/g, ' ')
           : undefined;
 
-        const whyNow = buildWhyNow(ohStatus.openStatus, ohStatus.opensInMin, ohStatus.closesInMin);
+        const whyNow = isPlanningAhead(availability)
+          ? ohStatus.openStatus === 'open_now' ? 'Listed as open at the start of your planned window.'
+            : 'Check opening hours for your planned visit.'
+          : buildWhyNow(ohStatus.openStatus, ohStatus.opensInMin, ohStatus.closesInMin);
         const confidence = computeConfidence(!!rawTags.opening_hours, ohStatus.openStatus, !!cuisine);
 
         const addressParts = [rawTags['addr:street'], rawTags['addr:housenumber']].filter(Boolean);
@@ -544,7 +569,7 @@ export const fetchOsmSuggestions = async (
   const runQuery = async (queryFilters: string[]) => {
     addDebugMessage('osm', `Querying Overpass (${queryFilters.length} filters, ${radius}m).`);
     const query = buildOverpassQuery(location.lat!, location.lng!, radius, queryFilters);
-    const data = await fetchOverpass(query);
+    const data = await fetchOverpass(query, options);
     if (!data?.elements) {
       addDebugMessage('osm', 'No elements in Overpass response.');
       return [];
@@ -556,11 +581,13 @@ export const fetchOsmSuggestions = async (
   };
 
   let suggestions = await runQuery(activeFilters);
-  if (suggestions.length < 3 && activeFilters !== DEFAULT_FILTERS) {
+  if (options.signal?.aborted) return [];
+  if (options.allowWidening !== false && suggestions.length < 3 && activeFilters !== DEFAULT_FILTERS) {
     addDebugMessage('osm', 'Few results — widening to default filters.');
     suggestions = await runQuery(DEFAULT_FILTERS);
   }
-  if (suggestions.length < 3) {
+  if (options.signal?.aborted) return [];
+  if (options.allowWidening !== false && suggestions.length < 3) {
     addDebugMessage('osm', 'Few results — using broad filters.');
     suggestions = await runQuery(BROAD_FILTERS);
   }
@@ -571,7 +598,9 @@ export const fetchOsmSuggestions = async (
   }
 
   suggestions = suggestions.slice(0, 15);
+  cache.delete(cacheKey);
   cache.set(cacheKey, { ts: Date.now(), data: suggestions });
+  while (cache.size > MAX_CACHE_ENTRIES) cache.delete(cache.keys().next().value!);
   addDebugMessage('osm', `Returning ${suggestions.length} suggestions (${suggestions.filter((s) => s.openStatus === 'open_now').length} open now).`);
   return suggestions;
 };

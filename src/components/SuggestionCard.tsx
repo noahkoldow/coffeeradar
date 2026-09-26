@@ -14,6 +14,7 @@ import { CARD_HEIGHT } from './cardConstants';
 type Props = {
   suggestion: DeckSuggestion;
   preview?: boolean;
+  animateEntrance?: boolean;
   deckColors?: { bg: string; text: string };
   showSourceDebug?: boolean;
 };
@@ -22,6 +23,7 @@ const SOURCE_DEBUG_CONFIG: Record<string, { bg: string; text: string; emoji: str
   gemini:       { bg: 'rgba(123,79,191,0.92)',  text: '#fff', emoji: '🤖' },
   curated:      { bg: 'rgba(41,128,185,0.92)',  text: '#fff', emoji: '✍️' },
   ticketmaster: { bg: 'rgba(26,74,138,0.92)',   text: '#fff', emoji: '🎟️' },
+  web:          { bg: 'rgba(154,106,18,0.92)',  text: '#fff', emoji: '🌐' },
   habit:        { bg: 'rgba(39,174,96,0.92)',   text: '#fff', emoji: '🔁' },
   library:      { bg: 'rgba(230,126,34,0.92)',  text: '#fff', emoji: '📚' },
   todo:         { bg: 'rgba(22,160,133,0.92)',  text: '#fff', emoji: '✅' },
@@ -109,10 +111,10 @@ const getCardTheme = (
 
 const formatEta = (suggestion: DeckSuggestion): string | null => {
   const etaMin = suggestion.meta?.etaMin;
-  if (!etaMin) return null;
+  if (etaMin == null || !Number.isFinite(etaMin)) return null;
   const distKm = suggestion.meta?.distanceKm;
-  const mode = distKm ? chooseTravelMode(distKm) : 'transit';
-  const modeLabel = mode === 'walk' ? 'walk' : 'transit';
+  const mode = suggestion.meta?.travelMode ?? (distKm ? chooseTravelMode(distKm) : 'transit');
+  const modeLabel = mode === 'walk' ? '🚶 walk' : mode === 'car' ? '🚗 drive' : '🚌 transit';
   if (etaMin < 60) return `~${etaMin} min ${modeLabel}`;
   const hours = Math.floor(etaMin / 60);
   const mins = etaMin % 60;
@@ -312,8 +314,18 @@ type BadgeTone = {
   textColor: string;
 };
 
-const getSourceBadge = (source?: DeckSuggestion['source']): { label: string; tone: BadgeTone } | null => {
+const getSourceBadge = (source?: DeckSuggestion['source'], event?: DeckSuggestion['event']): { label: string; tone: BadgeTone } | null => {
   switch (source) {
+    case 'web':
+    case 'rausgegangen':
+      let sourceLabel = event?.sourceName?.trim().slice(0, 80);
+      if (!sourceLabel && event?.sourceUrl) {
+        try { sourceLabel = new URL(event.sourceUrl).hostname.replace(/^www\./, ''); } catch { /* Old saved cards may contain an invalid URL. */ }
+      }
+      return {
+        label: sourceLabel || (source === 'rausgegangen' ? 'Rausgegangen' : 'Web'),
+        tone: { backgroundColor: 'rgba(249, 189, 95, 0.18)', borderColor: 'rgba(249, 189, 95, 0.34)', textColor: '#9A6A12' },
+      };
     case 'ticketmaster':
       return {
         label: 'Ticketmaster',
@@ -439,7 +451,7 @@ const buildSocialAvatarLabels = (count: number): string[] => {
  *  Card component (flip)
  * ================================================================ */
 
-export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColors, showSourceDebug }) => {
+export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, animateEntrance = true, deckColors, showSourceDebug }) => {
   const theme = useTheme();
   const visibleTags = useMemo(() => getVisibleTags(suggestion.tags), [suggestion.tags]);
   const cardTheme = useMemo(() => getCardTheme(suggestion, theme, deckColors), [suggestion.tags, suggestion.type, theme, deckColors]);
@@ -447,27 +459,30 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
   const slideCoreColor = theme.isDark ? theme.colors.card : '#FFFFFF';
   const slideCoreTransparent = theme.isDark ? hexToRgba(theme.colors.card, 0) : 'rgba(255,255,255,0)';
   const [flipped, setFlipped] = useState(false);
-  const [frontCanScroll, setFrontCanScroll] = useState(false);
-  const [backCanScroll, setBackCanScroll] = useState(false);
+  const [frontContentH, setFrontContentH] = useState(0);
+  const [backContentH, setBackContentH] = useState(0);
   const [frontViewportH, setFrontViewportH] = useState(0);
   const [backViewportH, setBackViewportH] = useState(0);
+  const frontCanScroll = frontViewportH > 0 && frontContentH > frontViewportH + 4;
+  const backCanScroll = backViewportH > 0 && backContentH > backViewportH + 4;
   const [nowMs, setNowMs] = useState(Date.now());
   const flipAnim = useRef(new Animated.Value(0)).current;
-  const entranceAnim = useRef(new Animated.Value(0)).current;
+  const entranceAnim = useRef(new Animated.Value(animateEntrance ? 0 : 1)).current;
 
   // Reset flip state when suggestion changes
   useEffect(() => {
     setFlipped(false);
-    setFrontCanScroll(false);
-    setBackCanScroll(false);
     flipAnim.setValue(0);
-    entranceAnim.setValue(0);
-    Animated.timing(entranceAnim, {
+    entranceAnim.setValue(animateEntrance ? 0 : 1);
+    if (!animateEntrance) return;
+    const animation = Animated.timing(entranceAnim, {
       toValue: 1,
       duration: 260,
       useNativeDriver: true,
-    }).start();
-  }, [suggestion.id, flipAnim, entranceAnim]);
+    });
+    animation.start();
+    return () => animation.stop();
+  }, [suggestion.id, flipAnim, entranceAnim, animateEntrance]);
 
   useEffect(() => {
     if (preview) return undefined;
@@ -497,7 +512,8 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
   const instructions = useMemo(() => getInstructions(suggestion), [suggestion]);
   const isTodoSuggestion = suggestion.source === 'todo';
   const hasChecklist = instructions.length > 0;
-  const flipDisabled = preview || (isTodoSuggestion && !hasChecklist);
+  const canFlip = !isTodoSuggestion || hasChecklist;
+  const flipDisabled = preview || !canFlip;
   const todoDueLabel = useMemo(
     () => formatTodoDueLabel(suggestion.meta?.todoDeadlineAt, suggestion.meta?.todoDueDate),
     [suggestion.meta?.todoDeadlineAt, suggestion.meta?.todoDueDate],
@@ -582,7 +598,7 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
     const isEventHero = suggestion.type === 'EVENT';
     const hasMap = hasMapHero;
     const frontSteps = hasMap ? [] : instructions.slice(0, 3);
-    const sourceBadge = getSourceBadge(suggestion.source);
+    const sourceBadge = getSourceBadge(suggestion.source, suggestion.event);
     const socialAvatarLabels = buildSocialAvatarLabels(socialProofCount);
     const timingLine = subParts.join(' · ');
     const titleNode = isTodoSuggestion ? (
@@ -607,7 +623,7 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
         scrollEnabled={frontCanScroll}
         nestedScrollEnabled
         onLayout={(e) => setFrontViewportH(e.nativeEvent.layout.height)}
-        onContentSizeChange={(_, h) => setFrontCanScroll(frontViewportH > 0 && h > frontViewportH + 4)}
+        onContentSizeChange={(_, h) => setFrontContentH(h)}
       >
         <View style={styles.frontTopRow}>
           <View style={styles.badgeCluster}>
@@ -792,8 +808,8 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
 
         {/* Decorative emoji row is now part of the crown above (uses the same emojis) */}
 
-        {/* Flip hint */}
-        {!flipDisabled && (
+        {/* Keep the same content layout in previews; only interaction changes. */}
+        {canFlip && (
           <Text style={styles.flipHint}>Tap for details →</Text>
         )}
       </ScrollView>
@@ -813,7 +829,7 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
         scrollEnabled={backCanScroll}
         nestedScrollEnabled
         onLayout={(e) => setBackViewportH(e.nativeEvent.layout.height)}
-        onContentSizeChange={(_, h) => setBackCanScroll(backViewportH > 0 && h > backViewportH + 4)}
+        onContentSizeChange={(_, h) => setBackContentH(h)}
       >
         {/* Header row: title on the left, time badge on the top right */}
         <View style={styles.backHeader}>
@@ -893,7 +909,7 @@ export const SuggestionCard: React.FC<Props> = ({ suggestion, preview, deckColor
           </View>
         )}
 
-        {!flipDisabled && <Text style={styles.flipHint}>← Tap to flip back</Text>}
+        {canFlip && <Text style={styles.flipHint}>← Tap to flip back</Text>}
       </ScrollView>
     );
   };
@@ -1085,10 +1101,10 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors: { bg: stri
   const cardBackground = theme.isDark ? theme.colors.card : '#FFFFFF';
   return StyleSheet.create({
   cardOuter: {
-    minHeight: CARD_HEIGHT,
+    height: CARD_HEIGHT,
   },
   cardOuterPressable: {
-    minHeight: CARD_HEIGHT,
+    height: CARD_HEIGHT,
     zIndex: 4,
   },
   sourceDebugStrip: {
@@ -1108,7 +1124,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors: { bg: stri
     letterSpacing: 0.4,
   },
   card: {
-    minHeight: CARD_HEIGHT,
+    height: CARD_HEIGHT,
     backgroundColor: cardBackground,
     borderWidth: 1,
     borderColor: cardTheme.border,
@@ -1128,7 +1144,7 @@ const createStyles = (theme: ReturnType<typeof useTheme>, deckColors: { bg: stri
     top: 0,
     left: 0,
     right: 0,
-    minHeight: CARD_HEIGHT,
+    height: CARD_HEIGHT,
   },
   slideBg: {
     ...StyleSheet.absoluteFillObject,

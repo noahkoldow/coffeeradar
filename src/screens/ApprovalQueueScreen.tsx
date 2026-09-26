@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, FlatList, Image, Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -420,14 +421,14 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
             onPress={() => handleReject(item)}
             disabled={reviewing === item.id}
           >
-            {reviewing === item.id ? <ActivityIndicator size="small" color={theme.colors.error} /> : <Text style={styles.rejectButtonText}>Reject</Text>}
+            {reviewing === item.id ? <BrandLoader size="small" /> : <Text style={styles.rejectButtonText}>Reject</Text>}
           </Pressable>
           <Pressable
             style={[styles.actionButton, styles.approveButton]}
             onPress={() => handleApprove(item)}
             disabled={reviewing === item.id}
           >
-            {reviewing === item.id ? <ActivityIndicator size="small" color={theme.colors.accent} /> : <Text style={styles.approveButtonText}>Approve</Text>}
+            {reviewing === item.id ? <BrandLoader size="small" /> : <Text style={styles.approveButtonText}>Approve</Text>}
           </Pressable>
         </View>
       </View>
@@ -719,7 +720,7 @@ export const ApprovalQueueScreen: React.FC<Props> = ({ navigation }) => {
 
       {loading ? (
         <View style={styles.emptyState}>
-          <ActivityIndicator color={theme.colors.accent} />
+          <BrandLoader />
         </View>
       ) : items.length === 0 ? (
         <View style={styles.emptyState}>

@@ -1,5 +1,6 @@
 import React, { useCallback, useMemo, useState } from 'react';
-import { ActivityIndicator, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { useFocusEffect } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -105,7 +106,7 @@ export const MyActivitiesScreen: React.FC<Props> = ({ navigation }) => {
 
         {loading ? (
           <View style={styles.loadingBox}>
-            <ActivityIndicator color={theme.colors.accent} />
+            <BrandLoader />
           </View>
         ) : ideas.length === 0 ? (
           <View style={styles.section}>

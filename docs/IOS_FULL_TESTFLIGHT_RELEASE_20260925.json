@@ -1,0 +1,803 @@
+﻿{
+    "preparedAt":  "2026-09-25T20:32:27.1981828Z",
+    "status":  "OTA_LIVE_NATIVE_UPLOAD_QUEUED",
+    "delivery":  "Verified OTA update for current compatible TestFlight installations; new native build 13 completed with automatic App Store Connect upload queued",
+    "appVersion":  "1.0.0",
+    "profile":  "testflight-staging",
+    "channel":  "production",
+    "runtimeVersion":  "1.0.0",
+    "appStoreConnectId":  "6801029604",
+    "sourceBase":  "72d522eee5cf276aea1718c215719ec98ceb0c23",
+    "includesUncommittedWorkspaceChanges":  true,
+    "sourceFilesAndAssetsVerified":  175,
+    "sourceManifestSha256":  "d762f4ad166c15776e9108cafa338a3d01a6eee5e8456c29b1c873d0ab0e62a3",
+    "localIosExportBundleSha256":  "75c9b05b76883e33ae5ac18f715be9b671097ddb1e8c0b0b33ab85d213d7834b",
+    "backendDeployed":  false,
+    "validation":  {
+                       "nativeIosExportPassed":  true,
+                       "backendRegressionTestsPassed":  77,
+                       "nativeDeviceVerified":  false,
+                       "habitAccountRegressionTestsPassed":  3,
+                       "appRegressionTestsPassed":  196,
+                       "swipeBrowserTestsPassed":  16,
+                       "swipeAndNativeMapChecksPassed":  14,
+                       "releaseEntrypointTypeCheckPassed":  true,
+                       "workspaceTypeCheckPassed":  true,
+                       "runtimeDependenciesVerified":  37
+                   },
+    "scope":  [
+                  "Session map with saved and skipped activities",
+                  "Stable swipe card transitions and native map previews",
+                  "Redesigned swipe bank and battery indicator",
+                  "Calendar editing and activity placement",
+                  "Activity checklists and varied suggestions",
+                  "Premium subscription management",
+                  "AI privacy screen and consent controls",
+                  "Completed activity to reusable habit with account-switch guard"
+              ],
+    "sourceManifest":  [
+                           {
+                               "sha256":  "54f586914b051c20a35731e534c3609a1871a9b6a09985eeee50ced688609f6f",
+                               "file":  "src/theme.ts"
+                           },
+                           {
+                               "sha256":  "ff5f9236a89baa79a7cb7ddcbce548579849ca6c5a97a5a8f2895aff5cfa6967",
+                               "file":  "src/components/ActivityBanner.tsx"
+                           },
+                           {
+                               "sha256":  "f6965e0d0cc96f28a80aad25c606066f8b8f94a6f465ac2c5b95aa7355de6d13",
+                               "file":  "src/components/ActivityMap.native.tsx"
+                           },
+                           {
+                               "sha256":  "aee10b0827cc44edb67ac7af8d7c77aa0b735838508b74a6404cd3c51029b261",
+                               "file":  "src/components/ActivityMap.types.ts"
+                           },
+                           {
+                               "sha256":  "a1f81c6fdfee46cf7f48c98f55dd0c0683cd24adc09074947cc3a980f174467c",
+                               "file":  "src/components/ActivityMap.web.tsx"
+                           },
+                           {
+                               "sha256":  "a0358c015640d92c2617800ca18944bf295e3d636913aacf0bd72c6ce814b89b",
+                               "file":  "src/components/ActivityMapDiagram.tsx"
+                           },
+                           {
+                               "sha256":  "cd1b825e3bb96abc7d7358ba217b78c494362b88fcb743b911e6648139f09afb",
+                               "file":  "src/components/BadgeIcon.tsx"
+                           },
+                           {
+                               "sha256":  "bded7f1c3c4878eec5fe533a390458aa17378b64ecdfa8f60ec5c7f259f88497",
+                               "file":  "src/components/BadgeRing.tsx"
+                           },
+                           {
+                               "sha256":  "c78957ebd4d51f47a4f763ed2e7d97b973c6a94c08f83d90a4afdcaca2da8e05",
+                               "file":  "src/components/BrandCollabLockup.tsx"
+                           },
+                           {
+                               "sha256":  "1a8e8e7c2f87c3051707daacfc5409e51a9e5a2bde82f5accabaa39a8bcb93e2",
+                               "file":  "src/components/BusinessHeader.tsx"
+                           },
+                           {
+                               "sha256":  "586b122aab74885bcc41e48a74c3585ca67ab71bc98db385d534a7ebda2e0f1e",
+                               "file":  "src/components/cardConstants.ts"
+                           },
+                           {
+                               "sha256":  "86b9c38fa1de72aaecb63b0246dd3a520b3a25d60496cfe93f1189f567f0c403",
+                               "file":  "src/components/ChargeBar.tsx"
+                           },
+                           {
+                               "sha256":  "1c700a045622f1ea09439cdb700e36e149db36b60cdbddfdc90b975d2f8b2230",
+                               "file":  "src/components/Chip.tsx"
+                           },
+                           {
+                               "sha256":  "c5b34a8edd53ffd02554fb3a782615786b3350df308120b3cf1d3944fbb7f3af",
+                               "file":  "src/components/Countdown.tsx"
+                           },
+                           {
+                               "sha256":  "2641247db1360332316c8d63c1435dc0db96538ba3ba499111c6aec11e1fbd0f",
+                               "file":  "src/components/DeckLoader.tsx"
+                           },
+                           {
+                               "sha256":  "28b2ac19ea22316923043310957e7f429e091271dec72fbd56f51f9b89fb7c2a",
+                               "file":  "src/components/EmojiConfetti.tsx"
+                           },
+                           {
+                               "sha256":  "9ddddb8e84237ff48399471e049084a973ad96e42ab144c46ff97cbc99d9ce3b",
+                               "file":  "src/components/MapDiscoveryCard.tsx"
+                           },
+                           {
+                               "sha256":  "addf96cb33ae7e683465aafc868cadb3407a9eb00298f68317377dd8f026be82",
+                               "file":  "src/components/MapThumbnail.native.tsx"
+                           },
+                           {
+                               "sha256":  "5384f1b7b0508c8b1d72a7a518ff5783000004a76f3d8eaece532f4b1d85796b",
+                               "file":  "src/components/MapThumbnail.web.tsx"
+                           },
+                           {
+                               "sha256":  "cd0ef746844180b64292039c338af8da6cf80914f864177bd08d5f1fe47c7709",
+                               "file":  "src/components/PrimaryButton.tsx"
+                           },
+                           {
+                               "sha256":  "afc263ae06c9a1130a7ae3bd8cbc9e1775dd93f616dd94b2faced81476073c0c",
+                               "file":  "src/components/SessionActivityMap.native.tsx"
+                           },
+                           {
+                               "sha256":  "d86830a5210615006feeb8e2fe6d51d7e6164ab943b599e7527b0e715581ca3c",
+                               "file":  "src/components/SessionActivityMap.types.ts"
+                           },
+                           {
+                               "sha256":  "0c9c213613789602c7e747d3bb13bbb3334d8055b24525ef4bc2aec3e79a043b",
+                               "file":  "src/components/SessionActivityMap.web.tsx"
+                           },
+                           {
+                               "sha256":  "1afb3f765980d52ecb2cd93e3d59bd7f89bc27702a984ae8dad395f1163f7e91",
+                               "file":  "src/components/SessionMapButton.tsx"
+                           },
+                           {
+                               "sha256":  "96f6703322542a9820e0bd3e4937c2c4e7665ba8813e480921746d5eda213d07",
+                               "file":  "src/components/SessionMapPanel.tsx"
+                           },
+                           {
+                               "sha256":  "c6686c83f7c6384ea87520248029f37fbc70741cf25125d93f788b71df07c65d",
+                               "file":  "src/components/SuggestionCard.tsx"
+                           },
+                           {
+                               "sha256":  "38a9e64cdac01e859a8494d34236c326493817305c930c9152eba7c122d383c7",
+                               "file":  "src/components/SwipeBattery.tsx"
+                           },
+                           {
+                               "sha256":  "ea13c55bf52e595ab8e1247b1624c33df43567c6b8a819046bcd0c28de1f1a74",
+                               "file":  "src/components/SwipeDeck.tsx"
+                           },
+                           {
+                               "sha256":  "9e5f62c3330c4d367a5e50095546f00c64ca14e8d605fa1835bccce53bd202a8",
+                               "file":  "src/components/TimePickerScroll.tsx"
+                           },
+                           {
+                               "sha256":  "294c24452ebfc250c7a7b17bda0b6facc1f0fd7549bc971864190df01ac94a12",
+                               "file":  "src/components/TimerSteps.tsx"
+                           },
+                           {
+                               "sha256":  "57d501d20ae5104f22d4dc7301e083a87caf7621b3402f8d3ac0b2cf9ad3a643",
+                               "file":  "src/components/ToggleRow.tsx"
+                           },
+                           {
+                               "sha256":  "373d5dbf69a2be9d12d9d36c832f639aa13d55e3f44b6afe20b17f16376383c2",
+                               "file":  "src/components/WakeWindowRange.tsx"
+                           },
+                           {
+                               "sha256":  "860905941a9f9f91fbd3a6107061156b4fd66de496c24a5bdcacec3a4e6ffde8",
+                               "file":  "src/components/ads/NativeAdSlide.tsx"
+                           },
+                           {
+                               "sha256":  "bb01691c89c425a8c4c1b5ff90f76c7af2e129a9c9889bab2efb908b42816c95",
+                               "file":  "src/components/ads/NativeAdSlide.web.tsx"
+                           },
+                           {
+                               "sha256":  "1f83fd834eb710d6b058136cb04ea69eae3775d02e54921dbd225430a5d875ad",
+                               "file":  "src/components/ads/VideoAdModal.tsx"
+                           },
+                           {
+                               "sha256":  "eddc430728faeef019c05505eb14d969f75fae7cebe5ceafafd1e47c1e667b30",
+                               "file":  "src/components/ads/VideoAdModal.web.tsx"
+                           },
+                           {
+                               "sha256":  "5ae3c81574aa9f5163a4d50c9a2050be3a7e28ad41f135df345efb334fbf2c9a",
+                               "file":  "src/data/atHome.ts"
+                           },
+                           {
+                               "sha256":  "dd9631f9ab5e3dc40b2fea9786f86ff97f5ec02ddc0c45f96283652ac0215f29",
+                               "file":  "src/data/badges.ts"
+                           },
+                           {
+                               "sha256":  "8fcdcfc1e75e989558de3f845680fee11656d5b934f307d5c183d3a43ab151ba",
+                               "file":  "src/data/events.ts"
+                           },
+                           {
+                               "sha256":  "0fe54a6739ecb39fac2de73df5b9a4bf82c582d295ddcf267037f1feb69e2316",
+                               "file":  "src/data/fallback.ts"
+                           },
+                           {
+                               "sha256":  "67f092e6e4c2e352ad8f68b215426c55d0ab765d69aca1781ad82a35c828a97d",
+                               "file":  "src/data/goOut.ts"
+                           },
+                           {
+                               "sha256":  "add1c4ca9791afd241c2e2c44173c5aa124dfab3d68fb4caf8b1529dbca89d25",
+                               "file":  "src/data/habits.ts"
+                           },
+                           {
+                               "sha256":  "0202b5ad78ad7047bcc1125527c18c104444556748bdba192bb00fb974312693",
+                               "file":  "src/i18n/I18nProvider.tsx"
+                           },
+                           {
+                               "sha256":  "e873b17732c8b7c1de10443b9b2895d44c157544697604a16c618dd7ba145366",
+                               "file":  "src/i18n/translations.ts"
+                           },
+                           {
+                               "sha256":  "01398627e5be1699c7ef5b8e849d760290d835f4f4869f4c80219e7d516505a0",
+                               "file":  "src/legal/legalLinks.ts"
+                           },
+                           {
+                               "sha256":  "ae06a34c4eb45bdfde600f7ad6fba97ab5031340d80e4f10b4a85476dce19294",
+                               "file":  "src/navigation/BusinessNavigator.tsx"
+                           },
+                           {
+                               "sha256":  "fca36430c1bd791688d0587c4b5d8a0f11ba3c55ea576de953c63e8bc44f35ad",
+                               "file":  "src/navigation/types.ts"
+                           },
+                           {
+                               "sha256":  "1741b93144dea6eaa6a51f8ebc91e06dd497dd9fc7faf443b5802458afe3964a",
+                               "file":  "src/screens/ActivityChatScreen.tsx"
+                           },
+                           {
+                               "sha256":  "af40cb5298905d0c50c625660b93cce52ec4e1325ad4be13beea53c8b4e6875f",
+                               "file":  "src/screens/AIPrivacyScreen.tsx"
+                           },
+                           {
+                               "sha256":  "781666e068825ac32ff9f702bce6a4f73f228f4a3cdfa82596d0ed4447acc46e",
+                               "file":  "src/screens/ApprovalQueueScreen.tsx"
+                           },
+                           {
+                               "sha256":  "448282d771cdadf24fd84a380a05449e8556ed95e8a4ae31d9e056be7b8e4a56",
+                               "file":  "src/screens/ApprovalQueueScreen_v2.tsx"
+                           },
+                           {
+                               "sha256":  "be6e3a59909604f2de9cf5f3ca9f2453881927b0c7729d20b13e07f3e4556835",
+                               "file":  "src/screens/AudienceInsightsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "1ea416540c3328ddda518e98d69eca10be0b460499d209b3849607da7b2e3622",
+                               "file":  "src/screens/AuthScreen.tsx"
+                           },
+                           {
+                               "sha256":  "9ccde67a2e441e7a15c77d0e1b599ae55a1e38ff7bc237fafcf4aacd8c9d57f5",
+                               "file":  "src/screens/BadgeDetailScreen.tsx"
+                           },
+                           {
+                               "sha256":  "971d6d60887a978462c94dd4edb91872a14cf81204b2a3078e04ebec7468242d",
+                               "file":  "src/screens/BankScreen.tsx"
+                           },
+                           {
+                               "sha256":  "27333e9f8474fbc07cd0a1c61a4e4fb03e01364f547b48876a1e899e7dd6aa26",
+                               "file":  "src/screens/BillingScreen.tsx"
+                           },
+                           {
+                               "sha256":  "b0999149fe3aa2cdcc702695bbc73d4c6824d9ddeee5d5a8dc7f04c5e1df3069",
+                               "file":  "src/screens/BusinessAccountCreationScreen.tsx"
+                           },
+                           {
+                               "sha256":  "c71c7fd38a82f33be1641be8b0c6b114d4352985eb438634dd7c3caf8186d2e5",
+                               "file":  "src/screens/BusinessAnalyticsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "4836da4693b2294bdb37f2d8b666341126cc9e3282885cc3abda80f9cd4f4b2a",
+                               "file":  "src/screens/BusinessAudienceScreen.tsx"
+                           },
+                           {
+                               "sha256":  "dfd9a20b6727b02f4079149c70914dd0949515519bcdf17a4f537fe42ca7cb3d",
+                               "file":  "src/screens/BusinessCampaignFormScreen.tsx"
+                           },
+                           {
+                               "sha256":  "14ac60f6b962e4b8a28ad2f62d7694bf10399e00d26935b26248fa307ad94a92",
+                               "file":  "src/screens/BusinessCampaignsListScreen.tsx"
+                           },
+                           {
+                               "sha256":  "838bd07658254516f1d087367c01ca83b426e22f23cc328e5e3a3aae2a48eeb5",
+                               "file":  "src/screens/BusinessDashboardScreen.tsx"
+                           },
+                           {
+                               "sha256":  "025fcd42436f76ea31011c203f9c8a239a2c2b8dc2ccf5ee42117fb7592f249d",
+                               "file":  "src/screens/BusinessHubScreen.tsx"
+                           },
+                           {
+                               "sha256":  "69e424d1371571680e8211d221ce6c8f331ce7f5bb4e35928e3daaa6a88fc3c2",
+                               "file":  "src/screens/BusinessOnboardingScreen.tsx"
+                           },
+                           {
+                               "sha256":  "430518754ccf90ada07208e8de480e4b6836de2e34523529fb843e128fc6adbf",
+                               "file":  "src/screens/BusinessProfileEditorScreen.tsx"
+                           },
+                           {
+                               "sha256":  "d7571743249f88a13a913d390eb2950c9d843fc99fcb304bf0d6d201f4fe5c4b",
+                               "file":  "src/screens/BusinessSettingsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "30bf035a26d00fe4bd98836daac96320d5ec731fed9f30f3d5fd106300d804d4",
+                               "file":  "src/screens/CalendarPermissionScreen.tsx"
+                           },
+                           {
+                               "sha256":  "0b10d6ed5598132ce59475370d402ecdc9a688b9df77ce4d75890658bc4a3886",
+                               "file":  "src/screens/CalendarSelectScreen.tsx"
+                           },
+                           {
+                               "sha256":  "dcb7d31a1ebb4f6ac769ff2736179c567d6079a154dd05d58cbfcef6999639b5",
+                               "file":  "src/screens/CampaignCreationScreen.tsx"
+                           },
+                           {
+                               "sha256":  "6943f07abfce5aa583839797a680cd3c5420ba4357be36d9255bf6869bbaa885",
+                               "file":  "src/screens/CampaignDetailsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "fcd4aa702c957454397bb7e34ea9006b69e1f83493ed1f9d94adeb00f351b0d4",
+                               "file":  "src/screens/CampaignListScreen.tsx"
+                           },
+                           {
+                               "sha256":  "4f945d0b877e22d3e67238aae09f1db9d2539aa04dfab983b2a3ef8ee8824dc0",
+                               "file":  "src/screens/CampaignPreviewScreen.tsx"
+                           },
+                           {
+                               "sha256":  "29963945f204bd5b3e57853bc8864d46e64fb381c9281f502666f4cc1226e303",
+                               "file":  "src/screens/CommunityIdeaFormScreen.tsx"
+                           },
+                           {
+                               "sha256":  "fb36da4e6c005088d806f54565d6cb55072e04d5ab8ea1db408508a5496b337c",
+                               "file":  "src/screens/CommunityIdeaSuccessScreen.tsx"
+                           },
+                           {
+                               "sha256":  "4ade2d14e1f48ee6917100d797604cf89bf5da6be92627cc249b26bb57263c67",
+                               "file":  "src/screens/CompletionScreen.tsx"
+                           },
+                           {
+                               "sha256":  "e8c604c49a67fe2444bf07878504e41aa9ffc2b2e84b3122e5b51556820ba917",
+                               "file":  "src/screens/DeckScreen.tsx"
+                           },
+                           {
+                               "sha256":  "18d4fa39b425cf78d6036fc58401c4553cd02c6e6d9440bf9d1e723ca20ed750",
+                               "file":  "src/screens/HabitFormScreen.tsx"
+                           },
+                           {
+                               "sha256":  "89f05bcd7954e6aa00e1ed79f5d253efb9aea17bf944de3244908d248272e901",
+                               "file":  "src/screens/HabitsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "63218a98134a5999f9a2446ab214d122990d5130cb542d4b301b08b0c8aa2cbe",
+                               "file":  "src/screens/HomeScreen.tsx"
+                           },
+                           {
+                               "sha256":  "6b40973f0f110d9e89dbfdf542327277e2bf306b55c3472778b01025235356ea",
+                               "file":  "src/screens/LegalPrivacyScreen.tsx"
+                           },
+                           {
+                               "sha256":  "2ffbcd9d2fbf619fc5e5675b977a38b032d9648e9a42f07e9fe23b406c0209d4",
+                               "file":  "src/screens/LegalTermsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "42caf30cbfc5272b2941c23f75ffd6ab4bcf701437a102d5bf72ec488c57df3e",
+                               "file":  "src/screens/LibraryScreen.tsx"
+                           },
+                           {
+                               "sha256":  "69ef39401313cb28730c8b0484c95ab3c18f1ce576597a9434e4d5e3d2409fc0",
+                               "file":  "src/screens/LocationPermissionScreen.tsx"
+                           },
+                           {
+                               "sha256":  "782ba613dbcb17987613fcf3ddf8ec30395feb6b6eff8ca930fcac885af676db",
+                               "file":  "src/screens/MyActivitiesScreen.tsx"
+                           },
+                           {
+                               "sha256":  "76f3984862201fb7a4c05fa33af170a4f8a7ceb9c29b36b1559a5fde7e339381",
+                               "file":  "src/screens/OnboardingCompleteScreen.tsx"
+                           },
+                           {
+                               "sha256":  "f570ce33d00a0fe2e1ce11b73619560a762e819292dd7a9f1b358dc4df0bdf70",
+                               "file":  "src/screens/PlanScreen.tsx"
+                           },
+                           {
+                               "sha256":  "f4ab829497654ae64b49ae7336783edfc8e603cd0c1315871e119f0d2a0063d9",
+                               "file":  "src/screens/PreferencesScreen.tsx"
+                           },
+                           {
+                               "sha256":  "fb7655a072e9dd5a1608ce331deeca9921851f0e4f887f7b12e7f3972852a30f",
+                               "file":  "src/screens/PremiumScreen.tsx"
+                           },
+                           {
+                               "sha256":  "6c621c13c4a20d9a3c36876649eab2207ed5a5aef0d9043ad4c52099c6f3da3d",
+                               "file":  "src/screens/ProfileScreen.tsx"
+                           },
+                           {
+                               "sha256":  "e2d750825f20cade971cd1bc7f01865afee462a9fb56672258ddd4df8700f3df",
+                               "file":  "src/screens/SettingsScreen.tsx"
+                           },
+                           {
+                               "sha256":  "10ee2b654d76c8f21263d0ce7909b92a56696a4fd625ca0acb8c7bdb87b01e8b",
+                               "file":  "src/screens/SmartCalendarScreen.tsx"
+                           },
+                           {
+                               "sha256":  "eec56a2e1e3475602fcb7784d35a9e7f7d179b4345f9616875a05745abaf3f2c",
+                               "file":  "src/screens/WelcomeScreen.tsx"
+                           },
+                           {
+                               "sha256":  "fd1c31c556bfe0c23af454de1aed95333d3fd156365409f63b5732c124553a9e",
+                               "file":  "src/services/activityChat.ts"
+                           },
+                           {
+                               "sha256":  "b592b94c55b502c207654bdb6ffa0b23a8322a291a542e8fbfb1e406b31e6654",
+                               "file":  "src/services/activityGeneration.ts"
+                           },
+                           {
+                               "sha256":  "80c1e5b77311386af698ac92ddd07ca69a394441703236e066d32839e6f9c62c",
+                               "file":  "src/services/activityPatternService.ts"
+                           },
+                           {
+                               "sha256":  "114e5135908d737b87ba851a0abc533e0e168d30884fb661d81bb1fa0d7ab1ad",
+                               "file":  "src/services/activityRepetitionService.ts"
+                           },
+                           {
+                               "sha256":  "dc575ff59773fd4b180161866d1b7b7d99b1bc578f8894477c828590a6daf138",
+                               "file":  "src/services/adminAccess.ts"
+                           },
+                           {
+                               "sha256":  "2087abcbea2d624ac7a8b3edaf578f98a02b38e3a83ce412be7c49c57e618466",
+                               "file":  "src/services/affinity.ts"
+                           },
+                           {
+                               "sha256":  "393f5dd72f820d7db5bf3233c51d9a8d6fb4dcec00ec5a5602ca306dbc4a0c87",
+                               "file":  "src/services/aiConsent.ts"
+                           },
+                           {
+                               "sha256":  "7be6a4606ea20ae441e5e714f13dc623d62d6e2f3df6469910d9878b72a7c4c7",
+                               "file":  "src/services/analytics.ts"
+                           },
+                           {
+                               "sha256":  "389b51cf867b618a1b4d5d0118b314fe05b67afb1ed0a42004fdb15a8e777f7c",
+                               "file":  "src/services/apiProxyClient.ts"
+                           },
+                           {
+                               "sha256":  "b386c5f3e2c894a3ff6be25bbe1c6a47ea1467022abd0886b4c6e81401c8d5f6",
+                               "file":  "src/services/auth.ts"
+                           },
+                           {
+                               "sha256":  "8cbf64d7e24fe28ca44a60953b9fa7888cdd312a5c1a79cffa36de2223531383",
+                               "file":  "src/services/billing.ts"
+                           },
+                           {
+                               "sha256":  "813d018faa1347a5bbc0a9f78dfffa2df543bbff4650d7399d15c6639191aef9",
+                               "file":  "src/services/business.ts"
+                           },
+                           {
+                               "sha256":  "804b6b13cc9c220bd7b2a5e6b39aae73b53f6317a01b67c02d16b61d96a3a3ea",
+                               "file":  "src/services/businessService.ts"
+                           },
+                           {
+                               "sha256":  "6114edb50a6427cc712ebd9ec475d75de53b87a579c80b9d68909c7d4d0bc268",
+                               "file":  "src/services/business_prod.ts"
+                           },
+                           {
+                               "sha256":  "57aa63236baa6f641c3a0f05940abe6a05587285cd2c9234e58d65ba2ed0f289",
+                               "file":  "src/services/calendar.native.ts"
+                           },
+                           {
+                               "sha256":  "b2b277a8217dfa40a457d7982f72fa27c5c3080b29593a863533d61f0da6b691",
+                               "file":  "src/services/calendar.web.ts"
+                           },
+                           {
+                               "sha256":  "67c7b9f71f2642e590b58e9269b5dfd2b0897d7045b9ec90d1f7733a0b96bbad",
+                               "file":  "src/services/campaigns.ts"
+                           },
+                           {
+                               "sha256":  "294ac9291d69c8b9db909f17e02a814d0a2b2fd015c4a4e75d3779b0bcd3fd2e",
+                               "file":  "src/services/campaigns_prod.ts"
+                           },
+                           {
+                               "sha256":  "57476ed3e8c63a2395a3f872004aa803fca6dd75338753e317abeb15a7103a7f",
+                               "file":  "src/services/communityIdeas.ts"
+                           },
+                           {
+                               "sha256":  "a0e7405b9411526fc819aa91d946f7d8b6d0215a771fe021d7c221c63a2ea2ac",
+                               "file":  "src/services/debug.ts"
+                           },
+                           {
+                               "sha256":  "775ae677f85580dbcf32c2383d49260a0faeb86d2331114d6621d563e76a9279",
+                               "file":  "src/services/deckPresentation.ts"
+                           },
+                           {
+                               "sha256":  "7bd22d3bde1b04c99357a369486c69df1608e9887e6e613c75632d1ac7c5f97e",
+                               "file":  "src/services/firebase.ts"
+                           },
+                           {
+                               "sha256":  "8fc3cd73fb044fb0f45e594393c59c740080be71dd85c47fce4121579f038423",
+                               "file":  "src/services/firebaseAiLogic.ts"
+                           },
+                           {
+                               "sha256":  "63f27a517d4f80de8f2032728004b7b194f75f0c7e172cfaaa233ea493abd759",
+                               "file":  "src/services/firebaseAuth.native.ts"
+                           },
+                           {
+                               "sha256":  "d5e8d746289d4d0566ea04209fa6cada77d4315ed7330234555201a00ce09b5d",
+                               "file":  "src/services/firebaseAuth.ts"
+                           },
+                           {
+                               "sha256":  "f70e7753af701d6a4e051afaf7adb3ec3a455a220af732d2fbc782101ea93416",
+                               "file":  "src/services/geminiSuggestions.ts"
+                           },
+                           {
+                               "sha256":  "83951249e35270e5ab821571bc07c1fd17140303b4389d989f703f97bbacc3fa",
+                               "file":  "src/services/googlePlaces.ts"
+                           },
+                           {
+                               "sha256":  "a11e1e91b0533e6f433a07ec6ef87c0c1b9aaccc6289d2fcdec16c56f14eb980",
+                               "file":  "src/services/location.native.ts"
+                           },
+                           {
+                               "sha256":  "05f41aa2ddc4f10218725512c71da8ea03f71abe6bbaafcb5c4fbb76f6922fe6",
+                               "file":  "src/services/location.web.ts"
+                           },
+                           {
+                               "sha256":  "e9ebcb62f51faa569813c857a02e3f8856892d8a84207c7ad52c8d43060d0286",
+                               "file":  "src/services/locationProfile.ts"
+                           },
+                           {
+                               "sha256":  "6ce9c774a4205cd9ec82776bb70e03abc9e2d1bb1aa2cd745f2429f35fb904ef",
+                               "file":  "src/services/mapDiscovery.ts"
+                           },
+                           {
+                               "sha256":  "21e3937bc0fceb71adb823d78f43c309d2b60bf691f1f56d3905b5858e1e1eb6",
+                               "file":  "src/services/mapDiscoveryCandidates.ts"
+                           },
+                           {
+                               "sha256":  "a3ffa2d48b2a4a7dd5df055db15ee59b65849dd71949dc54bdb26cf2bbdfac15",
+                               "file":  "src/services/notifications.ts"
+                           },
+                           {
+                               "sha256":  "b96a1c30dc59a61cb391039346d88c94d9c7f0ef0c340c0b1d9735bba2955b22",
+                               "file":  "src/services/osmPlaces.ts"
+                           },
+                           {
+                               "sha256":  "3c0ba1b50e83276a61083bc326019b77b1afc899d493babc052af90bc3b1f9a0",
+                               "file":  "src/services/seatgeek.ts"
+                           },
+                           {
+                               "sha256":  "90b69523ba65d1d409062a020772363fc5ed3612476689c008ef9f5ba3505250",
+                               "file":  "src/services/sessionMap.ts"
+                           },
+                           {
+                               "sha256":  "6575506a39a3bcad5c24a37da1896f254bffe880512bd2e53727c95f80dc9cf8",
+                               "file":  "src/services/smartCalendar.ts"
+                           },
+                           {
+                               "sha256":  "a8d251a124d876af70f301c3155677172bc82131e570a8036ad4ccb4ec39aeb1",
+                               "file":  "src/services/suggestionIdentity.ts"
+                           },
+                           {
+                               "sha256":  "49e85d8fe27b4ae6c8d298f5d942247ae5af50831b4a1658ebf7ecb381af1e6e",
+                               "file":  "src/services/suggestions.ts"
+                           },
+                           {
+                               "sha256":  "50eb0a50a3edbaeec6d3f4036adc56f8964a74318943235c8b4ba6ec13079ece",
+                               "file":  "src/services/ticketmaster.ts"
+                           },
+                           {
+                               "sha256":  "77a593fca3affa4bd4be75b90c4abfd927a4c797f80ffd10fbd56b0f4c8847f4",
+                               "file":  "src/services/todoPhotoImport.ts"
+                           },
+                           {
+                               "sha256":  "0ad9212d75328bb8cb6291cdf19b85253c52c4e6a8909e9ce37b5c087afd75b4",
+                               "file":  "src/services/travel.ts"
+                           },
+                           {
+                               "sha256":  "273fe5eb6a65ed98e9108d7681a72b812290774f110d80c6cf7352077ac537d7",
+                               "file":  "src/services/useAdminAccess.ts"
+                           },
+                           {
+                               "sha256":  "69c8aab40b98f731570f0789d0df3332d61c10e644fd6d4cfa221c3fe368cbed",
+                               "file":  "src/services/user.ts"
+                           },
+                           {
+                               "sha256":  "67b4c25762dae9928507996b49d07f85f4a94565667c1798f342ef5429e955c2",
+                               "file":  "src/services/weather.ts"
+                           },
+                           {
+                               "sha256":  "83a0428617c5503db840264aa52770ee482a9af4e2e3270a29fa3900d3870feb",
+                               "file":  "src/services/whyNow.ts"
+                           },
+                           {
+                               "sha256":  "48f3a6a87b0808fa2988402f9310cee9bccfb522e1df11c24fc540e9e9ddcda8",
+                               "file":  "src/services/__integration_test__.ts"
+                           },
+                           {
+                               "sha256":  "41f75ef62de71d9379313a7abd7321b0bb62827c8b060e042a500a5208cd419a",
+                               "file":  "src/services/__validation__.ts"
+                           },
+                           {
+                               "sha256":  "d3de7f3c74bde862a43868ec14a465595af0a9a000ad73a2f4812005498b7f70",
+                               "file":  "src/services/ads/adConfig.ts"
+                           },
+                           {
+                               "sha256":  "910ff00d3bdbf635cfe2ea16fa4e698c18b820cb1a33f23405ec4ecf015b7451",
+                               "file":  "src/services/ads/consent.ts"
+                           },
+                           {
+                               "sha256":  "fc3ffe960bfb0b22a8bf6f925dd5e128aa40826c7b48091e107baf6ad3192b7e",
+                               "file":  "src/services/ads/mobileAds.ts"
+                           },
+                           {
+                               "sha256":  "6b2fda8d96b818ee453606c45e165ea865ecfde52f9a59f9bd7253a959dbda5f",
+                               "file":  "src/services/ads/videoAd.ts"
+                           },
+                           {
+                               "sha256":  "c64febe35b9e8be9efdb4cef6d350976f00335ddb8273ea7ca09207d1e5cd48a",
+                               "file":  "src/state/AppState.tsx"
+                           },
+                           {
+                               "sha256":  "154b0f7ee3de1a647a34fb2f57d77245a07b7a4d239b6f0c92282a6011ad2ca3",
+                               "file":  "src/theme/ThemeProvider.tsx"
+                           },
+                           {
+                               "sha256":  "8e094809ed17a34ba4166cf35c1c0cf7bfe99c5ffd807cb2cd02e70e3ab73619",
+                               "file":  "src/types/business.ts"
+                           },
+                           {
+                               "sha256":  "a9fc6b291b5d6f548d19e42ed2479bdb15cc1244b312495a63715ab928acc726",
+                               "file":  "src/types/env.d.ts"
+                           },
+                           {
+                               "sha256":  "f3099c81ebbb9c7d646450a9c2aa25074f328c1d8d121d40e59d9b17a69bb1e1",
+                               "file":  "src/types/index.ts"
+                           },
+                           {
+                               "sha256":  "de3b07377c5e705ab00603821035671676c2488198935b494637545f95db8058",
+                               "file":  "src/utils/availabilityIgnore.ts"
+                           },
+                           {
+                               "sha256":  "a407e5edef78fc790273dc1cdd5f9cd0046dda7edc0fe66539f8d9b84be4f972",
+                               "file":  "src/utils/badges.ts"
+                           },
+                           {
+                               "sha256":  "62b32eb5361b154a4626007f82edd5e34af803b28c08104b03e6330edec018a8",
+                               "file":  "src/utils/challengeMode.ts"
+                           },
+                           {
+                               "sha256":  "a628766122cda27c14b76c7008eb838233fe3ad6bf272c701e42732fd5bbc464",
+                               "file":  "src/utils/habits.ts"
+                           },
+                           {
+                               "sha256":  "ac9080fdd470bd4482e61a295b459910b8b11d9330c274dcaeb91268e0ee02e0",
+                               "file":  "src/utils/planSession.ts"
+                           },
+                           {
+                               "sha256":  "0c5ade8081aaa86158dc430d597b26a53231c2de71b39258c4f01d434c2bee3d",
+                               "file":  "src/utils/social.ts"
+                           },
+                           {
+                               "sha256":  "9d3a525ce9c1169638d932773f09d13d0839e49c2cc786cea795f41162c0d4c7",
+                               "file":  "src/utils/storage.ts"
+                           },
+                           {
+                               "sha256":  "6e19cf324322391d8705b4b2ccbec2a25898b1588ad327412394f34be8ced0b6",
+                               "file":  "src/utils/time.ts"
+                           },
+                           {
+                               "sha256":  "d01833a46a93b5c2a835175586d35cc668ce102c56d14cbbb9a5bf3f5fcb3161",
+                               "file":  "src/utils/todoAtomization.ts"
+                           },
+                           {
+                               "sha256":  "7e52b0ec327335aef06f1c45c444b41eed074c415e27e489a75618f00e471671",
+                               "file":  "src/utils/todos.ts"
+                           },
+                           {
+                               "sha256":  "84aaaab071a9c3316e780ac62e4566da15761173c268e7afa4c695f0484233a7",
+                               "file":  "src/utils/visibleTags.ts"
+                           },
+                           {
+                               "sha256":  "fe59936aafd88a368ad0492f28471327b6c5fd013d90f3a38f803ccb8e22adac",
+                               "file":  "assets/adaptive-icon.png"
+                           },
+                           {
+                               "sha256":  "2b1b9f4686ecd2175f10812e3cedd7aa81ce0ddc8dab0e6c3ec18a26872c5c38",
+                               "file":  "assets/backarrow.png"
+                           },
+                           {
+                               "sha256":  "fe59936aafd88a368ad0492f28471327b6c5fd013d90f3a38f803ccb8e22adac",
+                               "file":  "assets/favicon.png"
+                           },
+                           {
+                               "sha256":  "fe59936aafd88a368ad0492f28471327b6c5fd013d90f3a38f803ccb8e22adac",
+                               "file":  "assets/icon.png"
+                           },
+                           {
+                               "sha256":  "ba366234d625cb8dce029ec7d06543b71f89b1708e282001c50ee0e14e722360",
+                               "file":  "assets/logo.png"
+                           },
+                           {
+                               "sha256":  "79e39759c8ee774a337dd908c67085646f57e0768d31441167d9e82ecf158069",
+                               "file":  "assets/logo_premium.png"
+                           },
+                           {
+                               "sha256":  "fe59936aafd88a368ad0492f28471327b6c5fd013d90f3a38f803ccb8e22adac",
+                               "file":  "assets/splash-icon.png"
+                           },
+                           {
+                               "sha256":  "51dac10a550210cc407685a5370cfb411314c515aa6779c3c242a7fc2a441aca",
+                               "file":  "App.tsx"
+                           },
+                           {
+                               "sha256":  "3bd265fae89db4fc08089735daa571279bde0d4a2a527ac6b691f6685926c234",
+                               "file":  "index.ts"
+                           },
+                           {
+                               "sha256":  "b6a3e5b6b8d9d0516c6e35b9514fb3007a7ff5aa0fe0dd3c3876bf0be412be8b",
+                               "file":  "app.json"
+                           },
+                           {
+                               "sha256":  "b3f4dce3fe08067f672a12a1b1770e5051283c567d704c3667195a11ba49cf87",
+                               "file":  "eas.json"
+                           },
+                           {
+                               "sha256":  "eebae58052695dc8c5ddb928cf76bf5386d467ca1d44f2773cc1f1ef185e46a8",
+                               "file":  "package.json"
+                           },
+                           {
+                               "sha256":  "08c023a49138bf03c63c84698582a04603ff56834995d6cd7a7e69f54d0e137f",
+                               "file":  "package-lock.json"
+                           },
+                           {
+                               "sha256":  "c27c3e8f3470c96cfa6f165c5ada8dcd66b1db7556c22c31cb8f0450babdf209",
+                               "file":  "babel.config.js"
+                           },
+                           {
+                               "sha256":  "399ea20c6ca908d2d15f47370bc474411283c94b7d0b0a68e1341c947ba4ac5c",
+                               "file":  "tsconfig.json"
+                           }
+                       ],
+    "buildNumber":  "13",
+    "buildId":  "a1d7bafb-dda3-4530-82a4-f24993d6afe7",
+    "buildUrl":  "https://expo.dev/accounts/noehxpo/projects/bits/builds/a1d7bafb-dda3-4530-82a4-f24993d6afe7",
+    "submissionId":  "5150cca2-022f-4df0-9d0e-ed5ea24a83b6",
+    "submissionUrl":  "https://expo.dev/accounts/noehxpo/projects/bits/submissions/5150cca2-022f-4df0-9d0e-ed5ea24a83b6",
+    "buildCompletedAt":  "2026-09-25T20:37:15.411Z",
+    "binaryVerification":  {
+                               "buildId":  "a1d7bafb-dda3-4530-82a4-f24993d6afe7",
+                               "bundleIdentifier":  "com.bitsapp.404",
+                               "appVersion":  "1.0.0",
+                               "buildNumber":  "13",
+                               "runtimeVersion":  "1.0.0",
+                               "channel":  "production",
+                               "ipaSha256":  "de61424544b7d06f89b15f426ebf515e973355efa430bc481c53b0c6295d14b9",
+                               "embeddedBundleSha256":  "7a52f99d0058537761f0524dc52b727e1e7bb080baa841086960210f103551b3",
+                               "embeddedFeatureMarkersVerified":  [
+                                                                      "Session map",
+                                                                      "Your alternatives for this session",
+                                                                      "AIPrivacy",
+                                                                      "Cancel Premium",
+                                                                      "1 swipe recharges every 10 minutes.",
+                                                                      "habit_generalized"
+                                                                  ]
+                           },
+    "otaUpdates":  [
+                       {
+                           "id":  "01a0da63-9813-7d73-ac3f-cfa0b3d9704e",
+                           "createdAt":  "2026-09-25T21:05:55.219Z",
+                           "group":  "ce7e5c6a-c01f-4631-b50b-22f2b39dfd80",
+                           "branch":  "production",
+                           "message":  "All recent changes: smoother swipes, swipe bank, maps, calendar, habits, Premium and privacy",
+                           "runtimeVersion":  "1.0.0",
+                           "platform":  "ios",
+                           "manifestPermalink":  "https://u.expo.dev/update/01a0da63-9813-7d73-ac3f-cfa0b3d9704e",
+                           "isRollBackToEmbedded":  false,
+                           "gitCommitHash":  "72d522eee5cf276aea1718c215719ec98ceb0c23"
+                       }
+                   ],
+    "otaVerification":  {
+                            "verifiedAt":  "2026-09-25T21:06:26.131Z",
+                            "manifestStatus":  200,
+                            "servedUpdateId":  "01a0da63-9813-7d73-ac3f-cfa0b3d9704e",
+                            "servedRuntimeVersion":  "1.0.0",
+                            "manifestBundleSha256Matches":  true,
+                            "assetsDownloadedAndHashVerified":  28,
+                            "allAssetsVerified":  true,
+                            "deviceApplicationVerified":  false
+                        },
+    "otaDashboardUrl":  "https://expo.dev/accounts/noehxpo/projects/bits/updates/ce7e5c6a-c01f-4631-b50b-22f2b39dfd80",
+    "compatibleExistingBuilds":  [
+                                     "11",
+                                     "12"
+                                 ],
+    "submissionStatus":  "IN_QUEUE",
+    "submissionStatusCheckedAt":  "2026-09-25T21:07:23.6975145Z",
+    "testFlightBuild13Available":  false,
+    "applyInstructions":  "Open Bits with internet access, allow the update to download, fully close and reopen Bits. Existing TestFlight installations remain 1.0.0 (12). Build 13 appears only after queued upload and Apple processing finish.",
+    "queueEvidence":  {
+                          "normalPriorityIosQueueLatestSeconds":  7822.823,
+                          "checkedAt":  "2026-09-25T21:05:09Z",
+                          "source":  "https://expo.dev/api/eas-status/snapshot",
+                          "individualCompletionEstimate":  false
+                      }
+}

@@ -1,0 +1,75 @@
+{
+  "publishedAt": "2026-09-25T20:21:01.304Z",
+  "channel": "production",
+  "platform": "ios",
+  "runtimeVersion": "1.0.0",
+  "delivery": "OTA update for existing compatible TestFlight installations",
+  "requestedTestFlightVersion": "1.0.0 (12)",
+  "compatibleBuilds": ["11", "12"],
+  "sourceBase": "72d522eee5cf276aea1718c215719ec98ceb0c23",
+  "supersedesGroup": "e377c798-ffdf-4118-9df8-91aef9f02ead",
+  "supersedesUpdateId": "01a0da28-2173-786a-9aa2-ff0fbeb37e08",
+  "scope": "Persistent session map: DeckScreen, shared map option conversion, session collection service and five new UI modules. Other released app sources preserved.",
+  "behavior": [
+    "A map button centered above the heart opens session alternatives; its red badge counts unread additions.",
+    "Skipped and heart-saved activities remain available across sets. Opening the map clears only the unread badge.",
+    "Verified destinations have emoji pins and estimated walking, transit or driving minutes. Home and unlocated ideas remain in the list.",
+    "Starting an activity or leaving the swiping session clears the map. Closing the map and temporary navigation preserve it.",
+    "Periodic map-card insertion is removed. Session map interactions make no additional AI-generation or routing calls."
+  ],
+  "bundleSha256": "46a5dba7763ee50fdf3360983c72981b775930bd4da93c86bb3a85d803d36c24",
+  "lockedDependencies": true,
+  "runtimeDependenciesVerified": 37,
+  "preservedBaselineAppFiles": 158,
+  "nativeBuildCreated": false,
+  "backendDeployed": false,
+  "updates": [
+    {
+      "id": "01a0da3a-7cf8-7548-8a6f-d383b958c0ec",
+      "createdAt": "2026-09-25T20:21:01.304Z",
+      "group": "2c2364b2-8017-4566-bf4e-9cd6c3ee6e77",
+      "branch": "production",
+      "message": "Add session map for skipped and saved activities",
+      "runtimeVersion": "1.0.0",
+      "platform": "ios",
+      "manifestPermalink": "https://u.expo.dev/update/01a0da3a-7cf8-7548-8a6f-d383b958c0ec",
+      "isRollBackToEmbedded": false,
+      "gitCommitHash": "72d522eee5cf276aea1718c215719ec98ceb0c23"
+    }
+  ],
+  "dashboardUrl": "https://expo.dev/accounts/noehxpo/projects/bits/updates/2c2364b2-8017-4566-bf4e-9cd6c3ee6e77",
+  "validation": {
+    "featureRegressionTestsPassed": 78,
+    "workspaceTypeCheckPassed": true,
+    "releaseEntrypointTypeCheckPassed": true,
+    "nativeIosExportPassed": true,
+    "componentBrowserCasesPassed": 16,
+    "phoneLayoutCasesPassed": 16,
+    "exactReleaseSwipeDeckBrowserGesturePassed": true,
+    "exactReleaseNormalSuggestionCardRevisitPassed": true,
+    "browserPageErrors": [],
+    "priorPrivacyAndPremiumBundleMarkersPresent": true,
+    "nativeDeviceVerified": false
+  },
+  "verification": {
+    "verifiedAt": "2026-09-25T20:21:19.213Z",
+    "manifestStatus": 200,
+    "servedUpdateId": "01a0da3a-7cf8-7548-8a6f-d383b958c0ec",
+    "servedRuntimeVersion": "1.0.0",
+    "manifestBundleSha256Matches": true,
+    "assetsDownloadedAndHashVerified": 28,
+    "allAssetsVerified": true,
+    "deviceApplicationVerified": false
+  },
+  "changedFiles": [
+    { "file": "src/screens/DeckScreen.tsx", "sha256": "e8c604c49a67fe2444bf07878504e41aa9ffc2b2e84b3122e5b51556820ba917", "newFile": false },
+    { "file": "src/services/mapDiscovery.ts", "sha256": "6ce9c774a4205cd9ec82776bb70e03abc9e2d1bb1aa2cd745f2429f35fb904ef", "newFile": false },
+    { "file": "src/services/sessionMap.ts", "sha256": "90b69523ba65d1d409062a020772363fc5ed3612476689c008ef9f5ba3505250", "newFile": true },
+    { "file": "src/components/SessionMapPanel.tsx", "sha256": "96f6703322542a9820e0bd3e4937c2c4e7665ba8813e480921746d5eda213d07", "newFile": true },
+    { "file": "src/components/SessionMapButton.tsx", "sha256": "1afb3f765980d52ecb2cd93e3d59bd7f89bc27702a984ae8dad395f1163f7e91", "newFile": true },
+    { "file": "src/components/SessionActivityMap.native.tsx", "sha256": "afc263ae06c9a1130a7ae3bd8cbc9e1775dd93f616dd94b2faced81476073c0c", "newFile": true },
+    { "file": "src/components/SessionActivityMap.web.tsx", "sha256": "0c9c213613789602c7e747d3bb13bbb3334d8055b24525ef4bc2aec3e79a043b", "newFile": true },
+    { "file": "src/components/SessionActivityMap.types.ts", "sha256": "d86830a5210615006feeb8e2fe6d51d7e6164ab943b599e7527b0e715581ca3c", "newFile": true }
+  ],
+  "applyInstructions": "Open Bits with internet access, allow the update to download, then fully close and reopen Bits. TestFlight remains 1.0.0 (12); this OTA does not add a TestFlight Update button."
+}

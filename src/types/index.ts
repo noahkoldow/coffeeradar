@@ -15,12 +15,20 @@ export type Place = {
   name: string;
   lat?: number;
   lng?: number;
+  /** Set by a place/source adapter after resolving a real destination, never by AI output. */
+  coordinateSource?: 'osm' | 'google' | 'geocoded' | 'source';
   address?: string;
   costHint?: string;
 };
 
 export type EventDetails = {
   startAt: string;
+  endAt?: string;
+  /** Public source for date, venue and access information, including free events. */
+  sourceUrl?: string;
+  /** Display name of the public website backing this event. */
+  sourceName?: string;
+  attendanceMode?: 'fixed' | 'drop_in';
   venue: string;
   ticketUrl: string;
   priceRange?: string;
@@ -29,7 +37,7 @@ export type EventDetails = {
 export type Suggestion = {
   id: string;
   type: SuggestionType;
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community' | 'ad';
+  source?: 'ticketmaster' | 'web' | 'rausgegangen' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community' | 'ad';
   habitId?: string;
   businessId?: string;  // Link to business if business-promoted
   title: string;
@@ -65,6 +73,8 @@ export type SuggestionMeta = {
   timeZone?: string | null;
   distanceKm?: number;
   etaMin?: number;
+  /** Mode used for a displayed distance-based travel estimate. */
+  travelMode?: 'walk' | 'transit' | 'car';
   leaveBy?: string;
   startInMin?: number;
   /** Due date for smart to-do suggestions. */
@@ -92,6 +102,17 @@ export type DeckSuggestion = Suggestion & {
   meta?: SuggestionMeta;
   /** Native ad targeting keywords — only present when source === 'ad'. */
   adKeywords?: string[];
+  /** One discovery slide represents three real activities, never a bookable activity itself. */
+  mapDiscovery?: {
+    origin: { latitude: number; longitude: number };
+    activities: Array<{
+      suggestion: DeckSuggestion;
+      coordinate: { latitude: number; longitude: number };
+      travelMin: number;
+      travelMode: 'walk' | 'transit' | 'car';
+      emoji: string;
+    }>;
+  };
 };
 
 export type DayEventInfo = {
@@ -102,6 +123,7 @@ export type DayEventInfo = {
 };
 
 export type Availability = {
+  discoveryMode?: 'now' | 'plan_ahead';
   start: string;
   end: string;
   durationMin: number;
@@ -213,6 +235,10 @@ export type Habit = {
   longestStreak: number;
   /** ISO timestamps of each completion (most recent first, max 90) */
   completionHistory: string[];
+  /** True once the one-off activity this habit was created from has been generalized into a reusable template via AI. */
+  isGeneralized?: boolean;
+  /** Freeform guidance for adapting this habit day-to-day (weather/time-of-day/weekday). Empty/undefined = show name/description as-is. */
+  adaptationGuidance?: string;
 };
 
 export type ActivityLog = {
@@ -222,7 +248,7 @@ export type ActivityLog = {
   durationMin: number;
   timestamp: string;
   activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me';
-  source?: 'ticketmaster' | 'curated' | 'habit' | 'library' | 'todo' | 'fallback' | 'gemini' | 'business' | 'community' | 'ad';
+  source?: Suggestion['source'];
   isHabit?: boolean;
   habitId?: string;
   tags?: string[];
@@ -283,6 +309,9 @@ export type InProgressPlanSession = {
   suggestion: DeckSuggestion;
   manualStartAt: string | null;
   guideChecks: boolean[];
+  /** Generated guide saved with its checkmarks so resuming does not need another AI request. */
+  aiGuideSteps?: string[] | null;
+  activityMode?: 'all' | 'productive' | 'tomorrow' | 'at_home' | 'challenge_me';
   activityLogged: boolean;
   movementKm: number;
   challengeFailed?: boolean;

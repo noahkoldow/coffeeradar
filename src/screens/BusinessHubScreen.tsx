@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, StyleSheet, View } from 'react-native';
+import { StyleSheet, View } from 'react-native';
+import { BrandLoader } from '../components/BrandLoader';
 import { StackScreenProps } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 import { useTheme } from '../theme/ThemeProvider';
@@ -50,7 +51,7 @@ export const BusinessHubScreen: React.FC<Props> = ({ navigation }) => {
   if (loading) {
     return (
       <View style={[StyleSheet.create({ container: { flex: 1, justifyContent: 'center', alignItems: 'center' } }).container, { backgroundColor: theme.colors.background }]}>
-        <ActivityIndicator color={theme.colors.accent} size="large" />
+        <BrandLoader size="large" />
       </View>
     );
   }
